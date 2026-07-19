@@ -267,6 +267,7 @@ template = """
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
         <button class="btn" onclick="openUploadModal()" style="position: fixed; bottom: 30px; right: 30px; z-index: 100;">上传文件</button>
+        <button class="btn" id="logoutBtn" onclick="logout()" style="position: fixed; bottom: 30px; right: 150px; z-index: 100; display: none; background: #dc3545;">退出登录</button>
 
         <div id="uploadModal" class="modal-overlay">
             <div class="modal-content">
@@ -279,6 +280,10 @@ template = """
                 <div class="form-group">
                     <label>密码</label>
                     <input type="password" id="password" placeholder="请输入密码">
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                    <input type="checkbox" id="rememberMe" style="width: auto; margin: 0;">
+                    <label for="rememberMe" style="margin: 0;">保持登录</label>
                 </div>
                 <div class="form-group">
                     <label>选择文件</label>
@@ -307,6 +312,10 @@ template = """
                 <div class="form-group">
                     <label>密码</label>
                     <input type="password" id="deletePassword" placeholder="请输入密码">
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                    <input type="checkbox" id="deleteRememberMe" style="width: auto; margin: 0;">
+                    <label for="deleteRememberMe" style="margin: 0;">保持登录</label>
                 </div>
                 <button class="btn" onclick="confirmDelete()" id="deleteBtn" style="width: 100%;">确认删除</button>
                 <div id="deleteMessage" class="message"></div>
@@ -350,11 +359,74 @@ template = """
             var previewFileInfo = {{}};
             var fileTreeCache = null;
 
+            var AUTH_STORAGE_KEY = 'cloud_web_auth';
+
+            function saveAuth(username, password) {{
+                try {{
+                    localStorage.setItem(AUTH_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({{ u: username, p: password }})))));
+                }} catch (e) {{}}
+            }}
+
+            function getSavedAuth() {{
+                try {{
+                    var data = localStorage.getItem(AUTH_STORAGE_KEY);
+                    if (!data) return null;
+                    var obj = JSON.parse(decodeURIComponent(escape(atob(data))));
+                    if (obj && obj.u && obj.p) return obj;
+                    return null;
+                }} catch (e) {{
+                    return null;
+                }}
+            }}
+
+            function clearAuth() {{
+                try {{
+                    localStorage.removeItem(AUTH_STORAGE_KEY);
+                }} catch (e) {{}}
+            }}
+
+            function handleRememberAuth(username, password, remember) {{
+                if (remember) {{
+                    saveAuth(username, password);
+                }} else {{
+                    clearAuth();
+                }}
+                updateLogoutBtn();
+            }}
+
+            function fillAuthInputs(usernameId, passwordId, checkboxId) {{
+                var saved = getSavedAuth();
+                if (saved) {{
+                    document.getElementById(usernameId).value = saved.u;
+                    document.getElementById(passwordId).value = saved.p;
+                    document.getElementById(checkboxId).checked = true;
+                }}
+            }}
+
+            function updateLogoutBtn() {{
+                var btn = document.getElementById('logoutBtn');
+                if (btn) {{
+                    btn.style.display = getSavedAuth() ? 'block' : 'none';
+                }}
+            }}
+
+            function logout() {{
+                clearAuth();
+                updateLogoutBtn();
+                document.getElementById('username').value = '';
+                document.getElementById('password').value = '';
+                document.getElementById('rememberMe').checked = false;
+                document.getElementById('deleteUsername').value = '';
+                document.getElementById('deletePassword').value = '';
+                document.getElementById('deleteRememberMe').checked = false;
+            }}
+
             setInterval(function() {{
                 loadFileList();
             }}, 60000);
 
             function openUploadModal() {{
+                fillAuthInputs('username', 'password', 'rememberMe');
                 document.getElementById('uploadModal').classList.add('show');
             }}
 
@@ -472,6 +544,7 @@ template = """
                 deleteFilePath = filePath;
                 deleteFileSha = fileSha;
                 document.getElementById('deleteFileName').textContent = fileName;
+                fillAuthInputs('deleteUsername', 'deletePassword', 'deleteRememberMe');
                 document.getElementById('deleteModal').classList.add('show');
             }}
 
@@ -711,8 +784,15 @@ template = """
                 saveBtn.disabled = true;
                 showPreviewMessage('正在获取授权...', 'success');
                 
-                var username = prompt('请输入用户名:');
-                var password = prompt('请输入密码:');
+                var savedAuth = getSavedAuth();
+                var username, password;
+                if (savedAuth) {{
+                    username = savedAuth.u;
+                    password = savedAuth.p;
+                }} else {{
+                    username = prompt('请输入用户名:');
+                    password = prompt('请输入密码:');
+                }}
                 
                 if (!username || !password) {{
                     showPreviewMessage('请输入用户名和密码', 'error');
@@ -837,6 +917,7 @@ template = """
                         try {{
                             var response = JSON.parse(xhr.responseText);
                             if (response.success && response.key) {{
+                                handleRememberAuth(username, password, document.getElementById('deleteRememberMe').checked);
                                 deleteFile(response.key, deleteFilePath, deleteFileSha);
                             }} else {{
                                 showDeleteMessage('获取授权失败', 'error');
@@ -1120,6 +1201,7 @@ template = """
                         try {{
                             var response = JSON.parse(xhr.responseText);
                             if (response.success && response.key) {{
+                                handleRememberAuth(username, password, document.getElementById('rememberMe').checked);
                                 uploadToGitHub(response.key, file);
                             }} else {{
                                 showMessage('获取授权失败', 'error');
@@ -1202,6 +1284,7 @@ template = """
             document.addEventListener('DOMContentLoaded', function() {{
                 updateBreadcrumbs();
                 loadFileList();
+                updateLogoutBtn();
             }});
         </script>
     </body>
