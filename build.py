@@ -267,7 +267,24 @@ template = """
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
         <button class="btn" onclick="openUploadModal()" style="position: fixed; bottom: 30px; right: 30px; z-index: 100;">上传文件</button>
-        <button class="btn" id="logoutBtn" onclick="logout()" style="position: fixed; bottom: 30px; right: 150px; z-index: 100; display: none; background: #dc3545;">退出登录</button>
+        <button class="btn" id="authBtn" onclick="handleAuthBtnClick()" style="position: fixed; top: 20px; right: 30px; z-index: 100;">登录</button>
+
+        <div id="loginModal" class="modal-overlay">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeLoginModal()">&times;</span>
+                <h2>登录</h2>
+                <div class="form-group">
+                    <label>用户名</label>
+                    <input type="text" id="loginUsername" placeholder="请输入用户名">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="loginPassword" placeholder="请输入密码">
+                </div>
+                <button class="btn" onclick="doLogin()" id="loginBtn" style="width: 100%;">登录</button>
+                <div id="loginMessage" class="message"></div>
+            </div>
+        </div>
 
         <div id="uploadModal" class="modal-overlay">
             <div class="modal-content">
@@ -391,7 +408,7 @@ template = """
                 }} else {{
                     clearAuth();
                 }}
-                updateLogoutBtn();
+                updateAuthBtn();
             }}
 
             function fillAuthInputs(usernameId, passwordId, checkboxId) {{
@@ -403,22 +420,98 @@ template = """
                 }}
             }}
 
-            function updateLogoutBtn() {{
-                var btn = document.getElementById('logoutBtn');
+            function updateAuthBtn() {{
+                var btn = document.getElementById('authBtn');
                 if (btn) {{
-                    btn.style.display = getSavedAuth() ? 'block' : 'none';
+                    btn.textContent = getSavedAuth() ? '退出登录' : '登录';
                 }}
+            }}
+
+            function handleAuthBtnClick() {{
+                if (getSavedAuth()) {{
+                    logout();
+                }} else {{
+                    openLoginModal();
+                }}
+            }}
+
+            function openLoginModal() {{
+                document.getElementById('loginMessage').className = 'message';
+                document.getElementById('loginMessage').textContent = '';
+                document.getElementById('loginModal').classList.add('show');
+            }}
+
+            function closeLoginModal() {{
+                document.getElementById('loginModal').classList.remove('show');
+            }}
+
+            function showLoginMessage(text, type) {{
+                var msg = document.getElementById('loginMessage');
+                msg.className = 'message ' + type;
+                msg.textContent = text;
+            }}
+
+            function doLogin() {{
+                var username = document.getElementById('loginUsername').value;
+                var password = document.getElementById('loginPassword').value;
+                var loginBtn = document.getElementById('loginBtn');
+
+                if (!username || !password) {{
+                    showLoginMessage('请输入用户名和密码', 'error');
+                    return;
+                }}
+
+                loginBtn.disabled = true;
+                showLoginMessage('正在登录...', 'success');
+
+                var params = 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+                var keyUrl = 'https://api.boring-student.cn/?' + params;
+
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', keyUrl, true);
+                xhr.onload = function() {{
+                    if (xhr.status === 200) {{
+                        try {{
+                            var response = JSON.parse(xhr.responseText);
+                            if (response.success && response.key) {{
+                                saveAuth(username, password);
+                                updateAuthBtn();
+                                showLoginMessage('登录成功！', 'success');
+                                setTimeout(function() {{
+                                    closeLoginModal();
+                                    document.getElementById('loginBtn').disabled = false;
+                                }}, 1000);
+                            }} else {{
+                                showLoginMessage('用户名或密码错误', 'error');
+                                loginBtn.disabled = false;
+                            }}
+                        }} catch (e) {{
+                            showLoginMessage('解析响应失败', 'error');
+                            loginBtn.disabled = false;
+                        }}
+                    }} else {{
+                        showLoginMessage('登录失败，状态码: ' + xhr.status, 'error');
+                        loginBtn.disabled = false;
+                    }}
+                }};
+                xhr.onerror = function() {{
+                    showLoginMessage('网络错误，登录失败', 'error');
+                    loginBtn.disabled = false;
+                }};
+                xhr.send();
             }}
 
             function logout() {{
                 clearAuth();
-                updateLogoutBtn();
+                updateAuthBtn();
                 document.getElementById('username').value = '';
                 document.getElementById('password').value = '';
                 document.getElementById('rememberMe').checked = false;
                 document.getElementById('deleteUsername').value = '';
                 document.getElementById('deletePassword').value = '';
                 document.getElementById('deleteRememberMe').checked = false;
+                document.getElementById('loginUsername').value = '';
+                document.getElementById('loginPassword').value = '';
             }}
 
             setInterval(function() {{
@@ -1284,7 +1377,7 @@ template = """
             document.addEventListener('DOMContentLoaded', function() {{
                 updateBreadcrumbs();
                 loadFileList();
-                updateLogoutBtn();
+                updateAuthBtn();
             }});
         </script>
     </body>
