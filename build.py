@@ -451,7 +451,8 @@ template = """
             var fileTreeCache = null;
             var menuOpenedAt = 0;
 
-            var CHUNK_SIZE = 75 * 1024 * 1024 - 3;
+            var CHUNK_SIZE_LEVELS = [75 * 1024 * 1024 - 3, Math.floor(70 * 1024 * 1024 * 3 / 4) - 3];
+            var chunkSizeLevel = 0;
             var PART_SUFFIX = /\\.part(\\d+)$/;
 
             function getPartNumber(name) {{
@@ -1695,15 +1696,17 @@ template = """
             var uploadedParts = [];
 
             function buildUploadTasks() {{
+                var chunkSize = CHUNK_SIZE_LEVELS[chunkSizeLevel];
                 var tasks = [];
                 pendingFiles.forEach(function(item) {{
                     var file = item.file;
-                    if (file.size > CHUNK_SIZE) {{
-                        var parts = Math.ceil(file.size / CHUNK_SIZE);
+                    if (file.size > chunkSize) {{
+                        var parts = Math.ceil(file.size / chunkSize);
                         for (var i = 0; i < parts; i++) {{
                             tasks.push({{
-                                blob: file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size)),
+                                blob: file.slice(i * chunkSize, Math.min((i + 1) * chunkSize, file.size)),
                                 relativePath: item.relativePath + '.part' + (i + 1),
+                                base: item.relativePath,
                                 label: item.relativePath + ' (分片 ' + (i + 1) + '/' + parts + ')'
                             }});
                         }}
@@ -1711,6 +1714,7 @@ template = """
                         tasks.push({{
                             blob: file,
                             relativePath: item.relativePath,
+                            base: item.relativePath,
                             label: item.relativePath
                         }});
                     }}
@@ -1845,6 +1849,7 @@ template = """
                             if (response.success && response.key) {{
                                 uploadTasks = buildUploadTasks();
                                 uploadedParts = [];
+                                chunkSizeLevel = 0;
                                 uploadNextFile(response.key, 0);
                             }} else {{
                                 showMessage('获取授权失败', 'error');
@@ -1893,7 +1898,7 @@ template = """
                     putFileToGitHub(key, filePath, base64Content, null,
                         function(newSha) {{
                             if (PART_SUFFIX.test(item.relativePath) && newSha) {{
-                                uploadedParts.push({{ path: filePath, sha: newSha }});
+                                uploadedParts.push({{ path: filePath, sha: newSha, base: item.base }});
                             }}
                             updateUploadProgress(index + 1, total, 0);
                             uploadNextFile(key, index + 1);
@@ -1904,8 +1909,29 @@ template = """
                                 var error = JSON.parse(responseText);
                                 if (error.message) errMsg = error.message;
                             }} catch (e) {{}}
+
+                            var base = item.base;
+                            var j = index;
+                            while (j > 0 && uploadTasks[j - 1].base === base) j--;
+                            var doneBases = {{}};
+                            for (var k = 0; k < j; k++) doneBases[uploadTasks[k].base] = true;
+                            var staleParts = uploadedParts.filter(function(p) {{ return !doneBases[p.base]; }});
+                            uploadedParts = uploadedParts.filter(function(p) {{ return doneBases[p.base]; }});
+
+                            if (/too large/i.test(responseText || '') && chunkSizeLevel < CHUNK_SIZE_LEVELS.length - 1) {{
+                                chunkSizeLevel++;
+                                showMessage('分片过大，已自动减小分片大小，正在重新上传...', 'success');
+                                deletePartsQuietly(key, staleParts, 0, function() {{
+                                    fileTreeCache = null;
+                                    uploadTasks = buildUploadTasks().filter(function(t) {{ return !doneBases[t.base]; }});
+                                    uploadNextFile(key, 0);
+                                }});
+                                return;
+                            }}
+
                             var finalMsg = '上传失败 (' + item.relativePath + '): ' + errMsg;
-                            if (uploadedParts.length > 0) {{
+                            if (staleParts.length > 0) {{
+                                uploadedParts = staleParts;
                                 cleanupUploadedParts(key, finalMsg);
                             }} else {{
                                 showMessage(finalMsg, 'error');
