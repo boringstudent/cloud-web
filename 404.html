@@ -442,7 +442,12 @@
             var fileTreeCache = null;
             var menuOpenedAt = 0;
 
-            var CHUNK_SIZE_LEVELS = [Math.floor((104857600 - 4096) * 3 / 4), Math.floor((73400320 - 4096) * 3 / 4)];
+            var CHUNK_SIZE_LEVELS = [
+                Math.floor((104857600 - 4096) * 3 / 4),
+                Math.floor((73400320 - 4096) * 3 / 4),
+                Math.floor((41943040 - 4096) * 3 / 4),
+                Math.floor((20971520 - 4096) * 3 / 4)
+            ];
             var chunkSizeLevel = 0;
             var PART_SUFFIX = /\.part(\d+)$/;
 
@@ -1700,7 +1705,7 @@
                                 blob: file.slice(i * chunkSize, Math.min((i + 1) * chunkSize, file.size)),
                                 relativePath: item.relativePath + '.part' + (i + 1),
                                 base: item.relativePath,
-                                label: item.relativePath + ' (分片 ' + (i + 1) + '/' + parts + ')'
+                                label: item.relativePath + ' (分片 ' + (i + 1) + '/' + parts + ', ' + formatSize(chunkSize) + '/片)'
                             }});
                         }}
                     }} else {{
