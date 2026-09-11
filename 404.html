@@ -442,7 +442,7 @@
             var fileTreeCache = null;
             var menuOpenedAt = 0;
 
-            var CHUNK_SIZE_LEVELS = [75 * 1024 * 1024 - 3, Math.floor(70 * 1024 * 1024 * 3 / 4) - 3];
+            var CHUNK_SIZE_LEVELS = [Math.floor((104857600 - 4096) * 3 / 4), Math.floor((73400320 - 4096) * 3 / 4)];
             var chunkSizeLevel = 0;
             var PART_SUFFIX = /\.part(\d+)$/;
 
