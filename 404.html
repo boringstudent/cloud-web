@@ -229,6 +229,22 @@
             .context-menu-item.danger {{
                 color: #dc3545;
             }}
+            .toast {{
+                display: none;
+                position: fixed;
+                bottom: 90px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(51, 51, 51, 0.9);
+                color: white;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-size: 14px;
+                z-index: 3000;
+            }}
+            .toast.show {{
+                display: block;
+            }}
             .preview-modal-content {{
                 max-width: 700px;
                 max-height: 80vh;
@@ -374,6 +390,8 @@
             </div>
         </div>
 
+        <div id="toast" class="toast"></div>
+
         <div id="contextMenu" class="context-menu">
             <div class="context-menu-item" id="menuProperties" onclick="handleMenuAction('properties')">属性</div>
             <div class="context-menu-item" id="menuPreview" onclick="handleMenuAction('preview')">预览</div>
@@ -391,6 +409,14 @@
             var previewFileInfo = {{}};
             var fileTreeCache = null;
             var menuOpenedAt = 0;
+
+            var CHUNK_SIZE = 99 * 1024 * 1024;
+            var PART_SUFFIX = /\.part(\d+)$/;
+
+            function getPartNumber(name) {{
+                var m = name.match(PART_SUFFIX);
+                return m ? parseInt(m[1], 10) : 0;
+            }}
 
             var AUTH_STORAGE_KEY = 'cloud_web_auth';
 
@@ -664,18 +690,28 @@
             var deleteFilePath = '';
             var deleteFileSha = '';
             var deleteFileType = 'file';
+            var deleteParts = null;
 
             function openDeleteModal(filePath, fileSha, fileName, fileType) {{
                 deleteFilePath = filePath;
                 deleteFileSha = fileSha;
                 deleteFileType = fileType || 'file';
+                deleteParts = deleteFileType === 'chunked' ? (menuFileInfo.parts || []) : null;
+                var deleteBtn = document.getElementById('deleteBtn');
+                deleteBtn.disabled = false;
+                var deleteMsg = document.getElementById('deleteMessage');
+                deleteMsg.className = 'message';
+                deleteMsg.textContent = '';
                 var confirmP = document.getElementById('deleteConfirmText');
                 confirmP.textContent = '';
                 confirmP.appendChild(document.createTextNode('确定要删除' + (deleteFileType === 'dir' ? '文件夹 ' : '')));
                 var nameStrong = document.createElement('strong');
                 nameStrong.textContent = fileName;
                 confirmP.appendChild(nameStrong);
-                confirmP.appendChild(document.createTextNode(' 吗？' + (deleteFileType === 'dir' ? '其中的所有文件都将被删除，' : '') + '此操作不可撤销。'));
+                var suffixText = ' 吗？';
+                if (deleteFileType === 'dir') suffixText += '其中的所有文件都将被删除，';
+                else if (deleteFileType === 'chunked') suffixText += '该文件的所有分片都将被删除，';
+                confirmP.appendChild(document.createTextNode(suffixText + '此操作不可撤销。'));
                 var savedAuth = getSavedAuth();
                 document.getElementById('deleteAuthFields').style.display = savedAuth ? 'none' : '';
                 document.getElementById('deleteModal').classList.add('show');
@@ -738,7 +774,7 @@
                 menuOpenedAt = Date.now();
 
                 document.getElementById('menuPreview').style.display = fileInfo.type === 'dir' ? 'none' : '';
-                document.getElementById('menuEdit').style.display = fileInfo.type === 'dir' ? 'none' : '';
+                document.getElementById('menuEdit').style.display = (fileInfo.type === 'dir' || fileInfo.chunked) ? 'none' : '';
                 document.getElementById('menuDownload').style.display = fileInfo.type === 'dir' ? 'none' : '';
                 document.getElementById('menuDelete').style.display = '';
 
@@ -786,11 +822,13 @@
                 }} else if (action === 'download') {{
                     if (fileType === 'dir') {{
                         downloadFolder(filePath, fileName);
+                    }} else if (menuFileInfo.chunked) {{
+                        downloadMergedFile(menuFileInfo.parts, fileName);
                     }} else {{
                         downloadFile(filePath, fileName);
                     }}
                 }} else if (action === 'delete') {{
-                    openDeleteModal(filePath, fileSha, fileName, fileType);
+                    openDeleteModal(filePath, fileSha, fileName, menuFileInfo.chunked ? 'chunked' : fileType);
                 }}
             }}
 
@@ -802,6 +840,68 @@
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
+            }}
+
+            function showToast(text) {{
+                var toast = document.getElementById('toast');
+                toast.textContent = text;
+                toast.classList.add('show');
+            }}
+
+            function hideToast() {{
+                document.getElementById('toast').classList.remove('show');
+            }}
+
+            function fetchMergedBlob(parts, onDone, onFail) {{
+                var buffers = [];
+                var index = 0;
+                showToast('正在加载 0/' + parts.length + ' ...');
+
+                var fail = function() {{
+                    hideToast();
+                    if (onFail) onFail();
+                }};
+
+                var next = function() {{
+                    if (index >= parts.length) {{
+                        hideToast();
+                        onDone(new Blob(buffers));
+                        return;
+                    }}
+                    var url = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[index].path);
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', url, true);
+                    xhr.responseType = 'arraybuffer';
+                    xhr.onload = function() {{
+                        if (xhr.status === 200) {{
+                            buffers.push(xhr.response);
+                            index++;
+                            showToast('正在加载 ' + index + '/' + parts.length + ' ...');
+                            next();
+                        }} else {{
+                            fail();
+                        }}
+                    }};
+                    xhr.onerror = fail;
+                    xhr.send();
+                }};
+                next();
+            }}
+
+            function downloadMergedFile(parts, fileName) {{
+                fetchMergedBlob(parts, function(blob) {{
+                    var url = URL.createObjectURL(blob);
+                    var link = document.createElement('a');
+                    link.href = url;
+                    link.download = fileName;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    setTimeout(function() {{ URL.revokeObjectURL(url); }}, 10000);
+                }}, function() {{
+                    showToast('下载失败，请重试');
+                    setTimeout(hideToast, 2000);
+                }});
             }}
 
             function getFileExtension(fileName) {{
@@ -830,7 +930,54 @@
                 document.getElementById('previewActions').style.display = 'none';
                 document.getElementById('previewMessage').className = 'message';
                 document.getElementById('previewMessage').textContent = '';
-                
+
+                if (menuFileInfo.chunked) {{
+                    fetchMergedBlob(menuFileInfo.parts, function(blob) {{
+                        if (['mp3', 'wav', 'ogg', 'aac', 'flac'].indexOf(ext) !== -1) {{
+                            content.innerHTML = '';
+                            var audio = document.createElement('audio');
+                            audio.src = URL.createObjectURL(blob);
+                            audio.controls = true;
+                            audio.className = 'preview-audio';
+                            content.appendChild(audio);
+                        }} else if (['mp4', 'webm', 'ogg', 'avi', 'mov'].indexOf(ext) !== -1) {{
+                            content.innerHTML = '';
+                            var video = document.createElement('video');
+                            video.src = URL.createObjectURL(blob);
+                            video.controls = true;
+                            video.className = 'preview-video';
+                            content.appendChild(video);
+                        }} else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp'].indexOf(ext) !== -1) {{
+                            content.innerHTML = '';
+                            var img = document.createElement('img');
+                            img.src = URL.createObjectURL(blob);
+                            img.alt = fileName;
+                            img.style.maxWidth = '100%';
+                            img.style.maxHeight = '60vh';
+                            img.style.borderRadius = '8px';
+                            content.appendChild(img);
+                        }} else {{
+                            var textReader = new FileReader();
+                            textReader.onload = function() {{
+                                var textarea = document.createElement('textarea');
+                                textarea.className = 'preview-text';
+                                textarea.value = textReader.result;
+                                textarea.readOnly = true;
+                                content.innerHTML = '';
+                                content.appendChild(textarea);
+                            }};
+                            textReader.readAsText(blob);
+                        }}
+                    }}, function() {{
+                        content.innerHTML = '';
+                        var msgDiv = document.createElement('div');
+                        msgDiv.className = 'message error';
+                        msgDiv.textContent = '无法加载文件分片';
+                        content.appendChild(msgDiv);
+                    }});
+                    return;
+                }}
+
                 if (['mp3', 'wav', 'ogg', 'aac', 'flac'].indexOf(ext) !== -1) {{
                     content.innerHTML = '';
                     var audio = document.createElement('audio');
@@ -1101,6 +1248,8 @@
                                 }}
                                 if (deleteFileType === 'dir') {{
                                     deleteFolder(response.key, deleteFilePath);
+                                }} else if (deleteFileType === 'chunked') {{
+                                    deleteFolderFiles(response.key, deleteParts, 0);
                                 }} else {{
                                     deleteFile(response.key, deleteFilePath, deleteFileSha);
                                 }}
@@ -1387,6 +1536,35 @@
                 dirs.sort(function(a, b) {{ return a.name.localeCompare(b.name); }});
                 files.sort(function(a, b) {{ return a.name.localeCompare(b.name); }});
 
+                var partGroups = {{}};
+                var normalFiles = [];
+                files.forEach(function(file) {{
+                    if (PART_SUFFIX.test(file.name)) {{
+                        var baseName = file.name.replace(PART_SUFFIX, '');
+                        if (!partGroups[baseName]) partGroups[baseName] = [];
+                        partGroups[baseName].push(file);
+                    }} else {{
+                        normalFiles.push(file);
+                    }}
+                }});
+                for (var base in partGroups) {{
+                    var parts = partGroups[base];
+                    parts.sort(function(a, b) {{ return getPartNumber(a.name) - getPartNumber(b.name); }});
+                    var totalSize = 0;
+                    parts.forEach(function(p) {{ totalSize += (p.size || 0); }});
+                    var dirPrefix = parts[0].path.substring(0, parts[0].path.length - parts[0].name.length);
+                    normalFiles.push({{
+                        name: base,
+                        path: dirPrefix + base,
+                        size: totalSize,
+                        sha: '',
+                        type: 'file',
+                        chunked: true,
+                        parts: parts
+                    }});
+                }}
+                normalFiles.sort(function(a, b) {{ return a.name.localeCompare(b.name); }});
+
                 var currentPath = getCurrentPath();
                 var baseUrl = currentPath ? '/' + currentPath + '/' : '/';
 
@@ -1415,13 +1593,20 @@
                     container.appendChild(entry);
                 }});
 
-                files.forEach(function(file) {{
+                normalFiles.forEach(function(file) {{
                     if (file.name === 'index.html' || file.name === 'info.json' || file.name === 'info.md') {{
                         return;
                     }}
                     var entry = document.createElement('a');
-                    entry.href = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(file.path);
-                    entry.target = '_blank';
+                    if (file.chunked) {{
+                        entry.href = 'javascript:void(0);';
+                        entry.onclick = function() {{
+                            downloadMergedFile(file.parts, file.name);
+                        }};
+                    }} else {{
+                        entry.href = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(file.path);
+                        entry.target = '_blank';
+                    }}
                     entry.className = 'entry';
                     var nameSpan = document.createElement('span');
                     nameSpan.textContent = file.name;
@@ -1450,6 +1635,31 @@
             }}
 
             var pendingFiles = [];
+            var uploadTasks = [];
+
+            function buildUploadTasks() {{
+                var tasks = [];
+                pendingFiles.forEach(function(item) {{
+                    var file = item.file;
+                    if (file.size > CHUNK_SIZE) {{
+                        var parts = Math.ceil(file.size / CHUNK_SIZE);
+                        for (var i = 0; i < parts; i++) {{
+                            tasks.push({{
+                                blob: file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size)),
+                                relativePath: item.relativePath + '.part' + (i + 1),
+                                label: item.relativePath + ' (分片 ' + (i + 1) + '/' + parts + ')'
+                            }});
+                        }}
+                    }} else {{
+                        tasks.push({{
+                            blob: file,
+                            relativePath: item.relativePath,
+                            label: item.relativePath
+                        }});
+                    }}
+                }});
+                return tasks;
+            }}
 
             function setPendingFiles(list) {{
                 pendingFiles = list;
@@ -1563,13 +1773,6 @@
                     return;
                 }}
 
-                for (var i = 0; i < pendingFiles.length; i++) {{
-                    if (pendingFiles[i].file.size > 100 * 1024 * 1024) {{
-                        showMessage('文件 ' + pendingFiles[i].relativePath + ' 超过 100MB，GitHub 无法上传该文件', 'error');
-                        return;
-                    }}
-                }}
-
                 uploadBtn.disabled = true;
                 showMessage('正在获取授权...', 'success');
 
@@ -1583,6 +1786,7 @@
                         try {{
                             var response = JSON.parse(xhr.responseText);
                             if (response.success && response.key) {{
+                                uploadTasks = buildUploadTasks();
                                 uploadNextFile(response.key, 0);
                             }} else {{
                                 showMessage('获取授权失败', 'error');
@@ -1605,7 +1809,7 @@
             }}
 
             function uploadNextFile(key, index) {{
-                var total = pendingFiles.length;
+                var total = uploadTasks.length;
                 if (index >= total) {{
                     fileTreeCache = null;
                     showMessage('全部上传成功！', 'success');
@@ -1617,10 +1821,10 @@
                     return;
                 }}
 
-                var item = pendingFiles[index];
+                var item = uploadTasks[index];
                 var progressContainer = document.querySelector('.progress-container');
                 progressContainer.style.display = 'block';
-                showMessage('正在上传 (' + (index + 1) + '/' + total + '): ' + item.relativePath, 'success');
+                showMessage('正在上传 (' + (index + 1) + '/' + total + '): ' + item.label, 'success');
 
                 var reader = new FileReader();
                 reader.onload = function(e) {{
@@ -1647,7 +1851,7 @@
                         }}
                     );
                 }};
-                reader.readAsDataURL(item.file);
+                reader.readAsDataURL(item.blob);
             }}
 
             function updateUploadProgress(index, total, fraction) {{
