@@ -1570,6 +1570,13 @@ template = """
                     return;
                 }}
 
+                for (var i = 0; i < pendingFiles.length; i++) {{
+                    if (pendingFiles[i].file.size > 100 * 1024 * 1024) {{
+                        showMessage('文件 ' + pendingFiles[i].relativePath + ' 超过 100MB，GitHub 无法上传该文件', 'error');
+                        return;
+                    }}
+                }}
+
                 uploadBtn.disabled = true;
                 showMessage('正在获取授权...', 'success');
 
@@ -1634,7 +1641,7 @@ template = """
                             uploadNextFile(key, index + 1);
                         }},
                         function(status, responseText) {{
-                            var errMsg = '状态码: ' + status;
+                            var errMsg = status === 0 ? '网络连接中断，可能是文件过大或网络不稳定' : ('状态码: ' + status);
                             try {{
                                 var error = JSON.parse(responseText);
                                 if (error.message) errMsg = error.message;
@@ -1656,7 +1663,9 @@ template = """
                 document.getElementById('progressText').textContent = percent + '%';
             }}
 
-            function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress) {{
+            function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress, retries) {{
+                if (retries === undefined) retries = 2;
+
                 var data = {{
                     message: 'Upload file: ' + filePath,
                     content: base64Content
@@ -1703,6 +1712,10 @@ template = """
                 }};
 
                 uploadXhr.onerror = function() {{
+                    if (retries > 0) {{
+                        putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress, retries - 1);
+                        return;
+                    }}
                     onError(0, '');
                 }};
 
