@@ -254,6 +254,38 @@ template = """
             .toast.show {{
                 display: block;
             }}
+            .props-list {{
+                font-family: 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif;
+                font-size: 14px;
+            }}
+            .prop-row {{
+                display: flex;
+                padding: 10px 5px;
+                border-bottom: 1px solid #f0f0f0;
+                line-height: 1.6;
+                align-items: baseline;
+            }}
+            .prop-row:last-child {{
+                border-bottom: none;
+            }}
+            .prop-label {{
+                width: 110px;
+                flex-shrink: 0;
+                color: #999;
+                font-weight: 500;
+            }}
+            .prop-value {{
+                color: #333;
+                word-break: break-all;
+                min-width: 0;
+            }}
+            .prop-value.mono {{
+                font-family: Consolas, 'Courier New', monospace;
+                font-size: 12px;
+                background: #f6f8fa;
+                padding: 2px 6px;
+                border-radius: 4px;
+            }}
             .preview-modal-content {{
                 max-width: 700px;
                 max-height: 80vh;
@@ -419,7 +451,7 @@ template = """
             var fileTreeCache = null;
             var menuOpenedAt = 0;
 
-            var CHUNK_SIZE = 99 * 1024 * 1024;
+            var CHUNK_SIZE = 50 * 1024 * 1024;
             var PART_SUFFIX = /\\.part(\\d+)$/;
 
             function getPartNumber(name) {{
@@ -662,13 +694,23 @@ template = """
                 }});
             }}
 
+            function escapeHtml(text) {{
+                var div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }}
+
+            function propRow(label, value, mono) {{
+                return '<div class="prop-row"><span class="prop-label">' + label + '</span><span class="prop-value' + (mono ? ' mono' : '') + '">' + value + '</span></div>';
+            }}
+
             function showProperties(filePath, fileName, fileType) {{
                 document.getElementById('propertiesTitle').textContent = '属性: ' + fileName;
                 var content = document.getElementById('propertiesContent');
-                var propsHtml = '<div style="padding: 10px; line-height: 2;">';
-                propsHtml += '<p><strong>名称:</strong> ' + fileName + '</p>';
-                propsHtml += '<p><strong>类型:</strong> ' + (fileType === 'dir' ? '文件夹' : '文件') + '</p>';
-                propsHtml += '<p><strong>路径:</strong> ' + filePath + '</p>';
+                var propsHtml = '<div class="props-list">';
+                propsHtml += propRow('名称', escapeHtml(fileName));
+                propsHtml += propRow('类型', fileType === 'dir' ? '文件夹' : (menuFileInfo.chunked ? '文件（分片存储）' : '文件'));
+                propsHtml += propRow('路径', escapeHtml(filePath), true);
                 if (fileType === 'dir') {{
                     var fileCount = 0, dirCount = 0, totalSize = 0;
                     if (fileTreeCache) {{
@@ -680,11 +722,15 @@ template = """
                             }}
                         }});
                     }}
-                    propsHtml += '<p><strong>包含文件:</strong> ' + fileCount + ' 个</p>';
-                    propsHtml += '<p><strong>包含子文件夹:</strong> ' + dirCount + ' 个</p>';
-                    propsHtml += '<p><strong>总大小:</strong> ' + formatSize(totalSize) + '</p>';
+                    propsHtml += propRow('包含文件', fileCount + ' 个');
+                    propsHtml += propRow('包含子文件夹', dirCount + ' 个');
+                    propsHtml += propRow('总大小', formatSize(totalSize));
+                }} else if (menuFileInfo.chunked) {{
+                    propsHtml += propRow('分片数量', (menuFileInfo.parts ? menuFileInfo.parts.length : 0) + ' 个');
+                    propsHtml += propRow('总大小', formatSize(menuFileInfo.size));
                 }} else {{
-                    propsHtml += '<p><strong>SHA:</strong> <span style="font-size:12px;word-break:break-all;">' + (menuFileInfo.sha || 'N/A') + '</span></p>';
+                    propsHtml += propRow('大小', formatSize(menuFileInfo.size));
+                    propsHtml += propRow('SHA', menuFileInfo.sha || 'N/A', true);
                 }}
                 propsHtml += '</div>';
                 content.innerHTML = propsHtml;
@@ -1629,7 +1675,10 @@ template = """
                         path: file.path,
                         sha: file.sha,
                         name: file.name,
-                        type: 'file'
+                        type: 'file',
+                        size: file.size,
+                        chunked: file.chunked || false,
+                        parts: file.parts || null
                     }});
                     container.appendChild(entry);
                 }});
@@ -1643,6 +1692,7 @@ template = """
 
             var pendingFiles = [];
             var uploadTasks = [];
+            var uploadedParts = [];
 
             function buildUploadTasks() {{
                 var tasks = [];
@@ -1794,6 +1844,7 @@ template = """
                             var response = JSON.parse(xhr.responseText);
                             if (response.success && response.key) {{
                                 uploadTasks = buildUploadTasks();
+                                uploadedParts = [];
                                 uploadNextFile(response.key, 0);
                             }} else {{
                                 showMessage('获取授权失败', 'error');
@@ -1840,7 +1891,10 @@ template = """
                     var filePath = currentPath ? currentPath + '/' + item.relativePath : item.relativePath;
 
                     putFileToGitHub(key, filePath, base64Content, null,
-                        function() {{
+                        function(newSha) {{
+                            if (PART_SUFFIX.test(item.relativePath) && newSha) {{
+                                uploadedParts.push({{ path: filePath, sha: newSha }});
+                            }}
                             updateUploadProgress(index + 1, total, 0);
                             uploadNextFile(key, index + 1);
                         }},
@@ -1850,8 +1904,13 @@ template = """
                                 var error = JSON.parse(responseText);
                                 if (error.message) errMsg = error.message;
                             }} catch (e) {{}}
-                            showMessage('上传失败 (' + item.relativePath + '): ' + errMsg, 'error');
-                            document.getElementById('uploadBtn').disabled = false;
+                            var finalMsg = '上传失败 (' + item.relativePath + '): ' + errMsg;
+                            if (uploadedParts.length > 0) {{
+                                cleanupUploadedParts(key, finalMsg);
+                            }} else {{
+                                showMessage(finalMsg, 'error');
+                                document.getElementById('uploadBtn').disabled = false;
+                            }}
                         }},
                         function(fraction) {{
                             updateUploadProgress(index, total, fraction);
@@ -1890,7 +1949,11 @@ template = """
 
                 uploadXhr.onload = function() {{
                     if (uploadXhr.status === 200 || uploadXhr.status === 201) {{
-                        onSuccess();
+                        var newSha = null;
+                        try {{
+                            newSha = JSON.parse(uploadXhr.responseText).content.sha;
+                        }} catch (e) {{}}
+                        onSuccess(newSha);
                         return;
                     }}
                     if (uploadXhr.status === 422 && !sha) {{
@@ -1924,6 +1987,38 @@ template = """
                 }};
 
                 uploadXhr.send(JSON.stringify(data));
+            }}
+
+            function cleanupUploadedParts(key, finalMsg) {{
+                showMessage('上传失败，正在清理已上传的分片...', 'error');
+                deletePartsQuietly(key, uploadedParts, 0, function() {{
+                    fileTreeCache = null;
+                    uploadedParts = [];
+                    showMessage(finalMsg + '（残留分片已清理）', 'error');
+                    document.getElementById('uploadBtn').disabled = false;
+                }});
+            }}
+
+            function deletePartsQuietly(key, parts, index, done) {{
+                if (index >= parts.length) {{
+                    done();
+                    return;
+                }}
+                var data = {{
+                    message: 'Delete file: ' + parts[index].path,
+                    sha: parts[index].sha
+                }};
+                var xhr = new XMLHttpRequest();
+                xhr.open('DELETE', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(parts[index].path), true);
+                xhr.setRequestHeader('Authorization', 'Bearer ' + key);
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.onload = function() {{
+                    deletePartsQuietly(key, parts, index + 1, done);
+                }};
+                xhr.onerror = function() {{
+                    deletePartsQuietly(key, parts, index + 1, done);
+                }};
+                xhr.send(JSON.stringify(data));
             }}
 
             document.addEventListener('DOMContentLoaded', function() {{
