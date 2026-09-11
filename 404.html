@@ -442,7 +442,7 @@
             var fileTreeCache = null;
             var menuOpenedAt = 0;
 
-            var CHUNK_SIZE = 50 * 1024 * 1024;
+            var CHUNK_SIZE = 75 * 1024 * 1024 - 3;
             var PART_SUFFIX = /\.part(\d+)$/;
 
             function getPartNumber(name) {{
