@@ -420,7 +420,7 @@ template = """
             var menuOpenedAt = 0;
 
             var CHUNK_SIZE = 99 * 1024 * 1024;
-            var PART_SUFFIX = /\.part(\d+)$/;
+            var PART_SUFFIX = /\\.part(\\d+)$/;
 
             function getPartNumber(name) {{
                 var m = name.match(PART_SUFFIX);
