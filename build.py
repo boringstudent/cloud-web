@@ -445,6 +445,32 @@ template = """
             var REPO_OWNER = '{repo_owner}';
             var REPO_NAME = '{repo_name}';
             var DEFAULT_BRANCH = '{default_branch}';
+            var PROXY_BASE = '';
+
+            function ghUrl(url) {{
+                if (PROXY_BASE) {{
+                    return PROXY_BASE + '/' + url.replace(/^https?:\\/\\//, '');
+                }}
+                return url;
+            }}
+
+            function loadConfig(done) {{
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', './config.json', true);
+                xhr.onload = function() {{
+                    if (xhr.status === 200) {{
+                        try {{
+                            var cfg = JSON.parse(xhr.responseText);
+                            if (cfg && cfg.proxy) {{
+                                PROXY_BASE = String(cfg.proxy).replace(/\\/+$/, '');
+                            }}
+                        }} catch (e) {{}}
+                    }}
+                    done();
+                }};
+                xhr.onerror = function() {{ done(); }};
+                xhr.send();
+            }}
 
             var menuFileInfo = {{}};
             var previewFileInfo = {{}};
@@ -659,14 +685,14 @@ template = """
                     return;
                 }}
                 var xhr = new XMLHttpRequest();
-                xhr.open('GET', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH, true);
+                xhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH), true);
                 xhr.onload = function() {{
                     if (xhr.status === 200) {{
                         try {{
                             var commitData = JSON.parse(xhr.responseText);
                             var treeSha = commitData.commit.tree.sha;
                             var treeXhr = new XMLHttpRequest();
-                            treeXhr.open('GET', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + treeSha + '?recursive=1', true);
+                            treeXhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + treeSha + '?recursive=1'), true);
                             treeXhr.onload = function() {{
                                 if (treeXhr.status === 200) {{
                                     try {{
@@ -744,7 +770,7 @@ template = """
             }}
 
             function downloadFolder(filePath, fileName) {{
-                var url = 'https://github.com/' + REPO_OWNER + '/' + REPO_NAME + '/archive/refs/heads/' + DEFAULT_BRANCH + '.zip';
+                var url = ghUrl('https://github.com/' + REPO_OWNER + '/' + REPO_NAME + '/archive/refs/heads/' + DEFAULT_BRANCH + '.zip');
                 window.open(url, '_blank');
             }}
 
@@ -894,7 +920,7 @@ template = """
             }}
 
             function downloadFile(filePath, fileName) {{
-                var url = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
+                var url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
                 var link = document.createElement('a');
                 link.href = url;
                 link.download = fileName;
@@ -929,7 +955,7 @@ template = """
                         onDone(new Blob(buffers));
                         return;
                     }}
-                    var url = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[index].path);
+                    var url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[index].path));
                     var xhr = new XMLHttpRequest();
                     xhr.open('GET', url, true);
                     xhr.responseType = 'arraybuffer';
@@ -972,7 +998,7 @@ template = """
 
             function previewFile(filePath, fileName) {{
                 var ext = getFileExtension(fileName);
-                var previewUrl = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
+                var previewUrl = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
                 
                 previewFileInfo = {{
                     path: filePath,
@@ -1094,7 +1120,7 @@ template = """
 
             function editFile(filePath, fileName) {{
                 var ext = getFileExtension(fileName);
-                var previewUrl = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
+                var previewUrl = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
                 
                 previewFileInfo = {{
                     path: filePath,
@@ -1211,7 +1237,7 @@ template = """
             }}
 
             function updateFileOnGitHub(key, filePath, newContent) {{
-                var shaUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
+                var shaUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
                 var shaXhr = new XMLHttpRequest();
                 shaXhr.open('GET', shaUrl, true);
                 shaXhr.onload = function() {{
@@ -1228,7 +1254,7 @@ template = """
                             }};
                             
                             var updateXhr = new XMLHttpRequest();
-                            var updateUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
+                            var updateUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
                             updateXhr.open('PUT', updateUrl, true);
                             updateXhr.setRequestHeader('Authorization', 'Bearer ' + key);
                             updateXhr.setRequestHeader('Content-Type', 'application/json');
@@ -1343,7 +1369,7 @@ template = """
                 }};
 
                 var deleteXhr = new XMLHttpRequest();
-                var deleteUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
+                var deleteUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
                 deleteXhr.open('DELETE', deleteUrl, true);
                 deleteXhr.setRequestHeader('Authorization', 'Bearer ' + key);
                 deleteXhr.setRequestHeader('Content-Type', 'application/json');
@@ -1405,13 +1431,13 @@ template = """
                 }}
 
                 var xhr = new XMLHttpRequest();
-                xhr.open('GET', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH, true);
+                xhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH), true);
                 xhr.onload = function() {{
                     if (xhr.status === 200) {{
                         try {{
                             var commitData = JSON.parse(xhr.responseText);
                             var treeXhr = new XMLHttpRequest();
-                            treeXhr.open('GET', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + commitData.commit.tree.sha + '?recursive=1', true);
+                            treeXhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + commitData.commit.tree.sha + '?recursive=1'), true);
                             treeXhr.onload = function() {{
                                 if (treeXhr.status === 200) {{
                                     try {{
@@ -1457,7 +1483,7 @@ template = """
                 }};
 
                 var deleteXhr = new XMLHttpRequest();
-                var deleteUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(files[index].path);
+                var deleteUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(files[index].path));
                 deleteXhr.open('DELETE', deleteUrl, true);
                 deleteXhr.setRequestHeader('Authorization', 'Bearer ' + key);
                 deleteXhr.setRequestHeader('Content-Type', 'application/json');
@@ -1542,7 +1568,7 @@ template = """
 
             function loadFileList() {{
                 var path = getCurrentPath();
-                var apiUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + path;
+                var apiUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + path);
 
                 var container = document.getElementById('fileListContainer');
                 container.innerHTML = '<div class="loading">加载中...</div>';
@@ -1663,7 +1689,7 @@ template = """
                             downloadMergedFile(file.parts, file.name);
                         }};
                     }} else {{
-                        entry.href = 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(file.path);
+                        entry.href = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(file.path));
                         entry.target = '_blank';
                     }}
                     entry.className = 'entry';
@@ -1967,7 +1993,7 @@ template = """
                 if (sha) data.sha = sha;
 
                 var uploadXhr = new XMLHttpRequest();
-                var uploadUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
+                var uploadUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
                 uploadXhr.open('PUT', uploadUrl, true);
                 uploadXhr.setRequestHeader('Authorization', 'Bearer ' + key);
                 uploadXhr.setRequestHeader('Content-Type', 'application/json');
@@ -2040,7 +2066,7 @@ template = """
                     sha: parts[index].sha
                 }};
                 var xhr = new XMLHttpRequest();
-                xhr.open('DELETE', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(parts[index].path), true);
+                xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(parts[index].path)), true);
                 xhr.setRequestHeader('Authorization', 'Bearer ' + key);
                 xhr.setRequestHeader('Content-Type', 'application/json');
                 xhr.onload = function() {{
@@ -2054,8 +2080,8 @@ template = """
 
             document.addEventListener('DOMContentLoaded', function() {{
                 updateBreadcrumbs();
-                loadFileList();
                 updateAuthBtn();
+                loadConfig(loadFileList);
 
                 var dropZone = document.getElementById('dropZone');
                 dropZone.addEventListener('click', function() {{
@@ -2089,7 +2115,7 @@ template = """
 """
 
 def copy_static_files(output_dir):
-    static_files = ['favicon.ico', 'CNAME']
+    static_files = ['favicon.ico', 'CNAME', 'config.json']
     for filename in static_files:
         src = os.path.join('.', filename)
         dst = os.path.join(output_dir, filename)
