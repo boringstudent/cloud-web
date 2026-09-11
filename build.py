@@ -456,7 +456,7 @@ template = """
 
             function loadConfig(done) {{
                 var xhr = new XMLHttpRequest();
-                xhr.open('GET', './config.json', true);
+                xhr.open('GET', '/config.json', true);
                 xhr.onload = function() {{
                     if (xhr.status === 200) {{
                         try {{
