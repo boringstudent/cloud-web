@@ -1,6 +1,7 @@
 <html>
     <head>
         <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{title} - boring_student</title>
         <link rel="icon" href="./favicon.ico" type="image/x-icon">
         <link rel="shortcut icon" href="./favicon.ico" type="image/x-icon">
@@ -205,7 +206,7 @@
             }}
             .context-menu {{
                 display: none;
-                position: absolute;
+                position: fixed;
                 background: white;
                 border: 1px solid #ddd;
                 border-radius: 8px;
@@ -249,6 +250,30 @@
                 resize: none;
                 background: #f8f8f8;
             }}
+            .entry > span:first-child {{
+                word-break: break-all;
+                min-width: 0;
+            }}
+            @media (max-width: 700px) {{
+                .container {{
+                    margin: 75px 10px 20px 10px;
+                    padding: 20px 15px;
+                }}
+                .auth-bar {{
+                    left: 10px;
+                    right: 10px;
+                    justify-content: flex-end;
+                }}
+                .modal-content {{
+                    padding: 20px;
+                }}
+                .preview-text {{
+                    height: 200px;
+                }}
+                .entry {{
+                    padding: 10px;
+                }}
+            }}
         </style>
     </head>
     <body>
@@ -258,7 +283,10 @@
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
         <button class="btn" onclick="openUploadModal()" style="position: fixed; bottom: 30px; right: 30px; z-index: 100;">上传文件</button>
-        <button class="btn" id="authBtn" onclick="handleAuthBtnClick()" style="position: fixed; top: 20px; right: 30px; z-index: 100;">登录</button>
+        <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 100; display: flex; align-items: center; gap: 10px;">
+            <span id="authUser" style="display: none; background: rgba(255, 255, 255, 0.9); padding: 10px 15px; border-radius: 8px; color: #333; font-size: 14px; box-shadow: 0 0 10px rgba(0,0,0,0.1);"></span>
+            <button class="btn" id="authBtn" onclick="handleAuthBtnClick()">登录</button>
+        </div>
 
         <div id="loginModal" class="modal-overlay">
             <div class="modal-content">
@@ -281,29 +309,23 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeUploadModal()">&times;</span>
                 <h2>上传文件</h2>
-                <div class="form-group">
-                    <label>用户名</label>
-                    <input type="text" id="username" placeholder="请输入用户名">
+                <div id="dropZone" style="border: 2px dashed #2c82c9; border-radius: 8px; padding: 30px 15px; text-align: center; color: #666; cursor: pointer; transition: background 0.3s; line-height: 1.8;">
+                    拖拽文件或文件夹到此处<br>或点击选择文件
                 </div>
-                <div class="form-group">
-                    <label>密码</label>
-                    <input type="password" id="password" placeholder="请输入密码">
+                <input type="file" id="fileInput" multiple style="display: none;">
+                <input type="file" id="folderInput" webkitdirectory style="display: none;">
+                <div style="display: flex; gap: 10px; margin-top: 10px;">
+                    <button class="btn" id="pickFileBtn" style="flex: 1;">选择文件</button>
+                    <button class="btn" id="pickFolderBtn" style="flex: 1;">选择文件夹</button>
                 </div>
-                <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                    <input type="checkbox" id="rememberMe" style="width: auto; margin: 0;">
-                    <label for="rememberMe" style="margin: 0;">保持登录</label>
-                </div>
-                <div class="form-group">
-                    <label>选择文件</label>
-                    <input type="file" id="fileInput">
-                </div>
+                <div id="selectedFiles" style="margin-top: 10px; font-size: 13px; color: #666; max-height: 80px; overflow-y: auto; word-break: break-all;"></div>
                 <div class="progress-container" style="display: none;">
                     <div class="progress-bar">
                         <div class="progress-fill" id="progressFill"></div>
                     </div>
                     <div class="progress-text" id="progressText">0%</div>
                 </div>
-                <button class="btn" onclick="uploadFile()" id="uploadBtn" style="width: 100%;">开始上传</button>
+                <button class="btn" onclick="uploadFile()" id="uploadBtn" style="width: 100%; margin-top: 15px;">开始上传</button>
                 <div id="uploadMessage" class="message"></div>
             </div>
         </div>
@@ -312,18 +334,20 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeDeleteModal()">&times;</span>
                 <h2>删除文件</h2>
-                <p style="color: #666; margin-bottom: 15px;">确定要删除 <strong id="deleteFileName"></strong> 吗？此操作不可撤销。</p>
-                <div class="form-group">
-                    <label>用户名</label>
-                    <input type="text" id="deleteUsername" placeholder="请输入用户名">
-                </div>
-                <div class="form-group">
-                    <label>密码</label>
-                    <input type="password" id="deletePassword" placeholder="请输入密码">
-                </div>
-                <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                    <input type="checkbox" id="deleteRememberMe" style="width: auto; margin: 0;">
-                    <label for="deleteRememberMe" style="margin: 0;">保持登录</label>
+                <p style="color: #666; margin-bottom: 15px;" id="deleteConfirmText"></p>
+                <div id="deleteAuthFields">
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input type="text" id="deleteUsername" placeholder="请输入用户名">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" id="deletePassword" placeholder="请输入密码">
+                    </div>
+                    <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                        <input type="checkbox" id="deleteRememberMe" style="width: auto; margin: 0;">
+                        <label for="deleteRememberMe" style="margin: 0;">保持登录</label>
+                    </div>
                 </div>
                 <button class="btn" onclick="confirmDelete()" id="deleteBtn" style="width: 100%;">确认删除</button>
                 <div id="deleteMessage" class="message"></div>
@@ -366,6 +390,7 @@
             var menuFileInfo = {{}};
             var previewFileInfo = {{}};
             var fileTreeCache = null;
+            var menuOpenedAt = 0;
 
             var AUTH_STORAGE_KEY = 'cloud_web_auth';
 
@@ -413,8 +438,18 @@
 
             function updateAuthBtn() {{
                 var btn = document.getElementById('authBtn');
+                var user = document.getElementById('authUser');
+                var saved = getSavedAuth();
                 if (btn) {{
-                    btn.textContent = getSavedAuth() ? '退出登录' : '登录';
+                    btn.textContent = saved ? '退出登录' : '登录';
+                }}
+                if (user) {{
+                    if (saved) {{
+                        user.textContent = '当前用户: ' + saved.u;
+                        user.style.display = 'block';
+                    }} else {{
+                        user.style.display = 'none';
+                    }}
                 }}
             }}
 
@@ -495,9 +530,6 @@
             function logout() {{
                 clearAuth();
                 updateAuthBtn();
-                document.getElementById('username').value = '';
-                document.getElementById('password').value = '';
-                document.getElementById('rememberMe').checked = false;
                 document.getElementById('deleteUsername').value = '';
                 document.getElementById('deletePassword').value = '';
                 document.getElementById('deleteRememberMe').checked = false;
@@ -510,7 +542,11 @@
             }}, 60000);
 
             function openUploadModal() {{
-                fillAuthInputs('username', 'password', 'rememberMe');
+                if (!getSavedAuth()) {{
+                    openLoginModal();
+                    showLoginMessage('请先登录后再上传文件', 'error');
+                    return;
+                }}
                 document.getElementById('uploadModal').classList.add('show');
             }}
 
@@ -521,6 +557,10 @@
                 document.querySelector('.progress-container').style.display = 'none';
                 document.getElementById('progressFill').style.width = '0%';
                 document.getElementById('progressText').textContent = '0%';
+                pendingFiles = [];
+                document.getElementById('selectedFiles').textContent = '';
+                document.getElementById('fileInput').value = '';
+                document.getElementById('folderInput').value = '';
             }}
 
             function showMessage(text, type) {{
@@ -623,12 +663,21 @@
 
             var deleteFilePath = '';
             var deleteFileSha = '';
+            var deleteFileType = 'file';
 
-            function openDeleteModal(filePath, fileSha, fileName) {{
+            function openDeleteModal(filePath, fileSha, fileName, fileType) {{
                 deleteFilePath = filePath;
                 deleteFileSha = fileSha;
-                document.getElementById('deleteFileName').textContent = fileName;
-                fillAuthInputs('deleteUsername', 'deletePassword', 'deleteRememberMe');
+                deleteFileType = fileType || 'file';
+                var confirmP = document.getElementById('deleteConfirmText');
+                confirmP.textContent = '';
+                confirmP.appendChild(document.createTextNode('确定要删除' + (deleteFileType === 'dir' ? '文件夹 ' : '')));
+                var nameStrong = document.createElement('strong');
+                nameStrong.textContent = fileName;
+                confirmP.appendChild(nameStrong);
+                confirmP.appendChild(document.createTextNode(' 吗？' + (deleteFileType === 'dir' ? '其中的所有文件都将被删除，' : '') + '此操作不可撤销。'));
+                var savedAuth = getSavedAuth();
+                document.getElementById('deleteAuthFields').style.display = savedAuth ? 'none' : '';
                 document.getElementById('deleteModal').classList.add('show');
             }}
 
@@ -646,26 +695,63 @@
                 msg.textContent = text;
             }}
 
-            function openContextMenu(e, fileInfo) {{
-                e.stopPropagation();
-                e.preventDefault();
+            function bindEntryEvents(entry, fileInfo) {{
+                entry.addEventListener('contextmenu', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openContextMenu(e.clientX, e.clientY, fileInfo);
+                }});
+                entry.addEventListener('click', function(e) {{
+                    if (Date.now() - menuOpenedAt < 400) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }}
+                }});
+                var touchTimer = null;
+                var touchX = 0;
+                var touchY = 0;
+                entry.addEventListener('touchstart', function(e) {{
+                    if (e.touches.length !== 1) return;
+                    touchX = e.touches[0].clientX;
+                    touchY = e.touches[0].clientY;
+                    touchTimer = setTimeout(function() {{
+                        touchTimer = null;
+                        openContextMenu(touchX, touchY, fileInfo);
+                    }}, 500);
+                }});
+                entry.addEventListener('touchmove', function() {{
+                    if (touchTimer) {{
+                        clearTimeout(touchTimer);
+                        touchTimer = null;
+                    }}
+                }});
+                entry.addEventListener('touchend', function() {{
+                    if (touchTimer) {{
+                        clearTimeout(touchTimer);
+                        touchTimer = null;
+                    }}
+                }});
+            }}
+
+            function openContextMenu(x, y, fileInfo) {{
                 menuFileInfo = fileInfo;
+                menuOpenedAt = Date.now();
 
                 document.getElementById('menuPreview').style.display = fileInfo.type === 'dir' ? 'none' : '';
                 document.getElementById('menuEdit').style.display = fileInfo.type === 'dir' ? 'none' : '';
                 document.getElementById('menuDownload').style.display = fileInfo.type === 'dir' ? 'none' : '';
-                document.getElementById('menuDelete').style.display = fileInfo.type === 'dir' ? 'none' : '';
+                document.getElementById('menuDelete').style.display = '';
 
                 var menu = document.getElementById('contextMenu');
-                var rect = e.target.getBoundingClientRect();
-
-                if (rect.right + 120 > window.innerWidth) {{
-                    menu.style.left = (rect.left - 120) + 'px';
-                }} else {{
-                    menu.style.left = rect.right + 'px';
-                }}
-                menu.style.top = rect.top + 'px';
                 menu.classList.add('show');
+                var menuWidth = menu.offsetWidth || 120;
+                var menuHeight = menu.offsetHeight || 160;
+                if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 5;
+                if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 5;
+                if (x < 0) x = 5;
+                if (y < 0) y = 5;
+                menu.style.left = x + 'px';
+                menu.style.top = y + 'px';
 
                 document.addEventListener('click', closeContextMenuHandler);
             }}
@@ -677,6 +763,7 @@
             }}
 
             function closeContextMenuHandler(e) {{
+                if (Date.now() - menuOpenedAt < 400) return;
                 var menu = document.getElementById('contextMenu');
                 if (!menu.contains(e.target)) {{
                     closeContextMenu();
@@ -703,7 +790,7 @@
                         downloadFile(filePath, fileName);
                     }}
                 }} else if (action === 'delete') {{
-                    openDeleteModal(filePath, fileSha, fileName);
+                    openDeleteModal(filePath, fileSha, fileName, fileType);
                 }}
             }}
 
@@ -940,6 +1027,7 @@
                             
                             updateXhr.onload = function() {{
                                 if (updateXhr.status === 200 || updateXhr.status === 201) {{
+                                    fileTreeCache = null;
                                     showPreviewMessage('保存成功！', 'success');
                                     setTimeout(function() {{
                                         closePreviewModal();
@@ -979,8 +1067,15 @@
             }}
 
             function confirmDelete() {{
-                var username = document.getElementById('deleteUsername').value;
-                var password = document.getElementById('deletePassword').value;
+                var savedAuth = getSavedAuth();
+                var username, password;
+                if (savedAuth) {{
+                    username = savedAuth.u;
+                    password = savedAuth.p;
+                }} else {{
+                    username = document.getElementById('deleteUsername').value;
+                    password = document.getElementById('deletePassword').value;
+                }}
                 var deleteBtn = document.getElementById('deleteBtn');
 
                 if (!username || !password) {{
@@ -1001,8 +1096,14 @@
                         try {{
                             var response = JSON.parse(xhr.responseText);
                             if (response.success && response.key) {{
-                                handleRememberAuth(username, password, document.getElementById('deleteRememberMe').checked);
-                                deleteFile(response.key, deleteFilePath, deleteFileSha);
+                                if (!savedAuth) {{
+                                    handleRememberAuth(username, password, document.getElementById('deleteRememberMe').checked);
+                                }}
+                                if (deleteFileType === 'dir') {{
+                                    deleteFolder(response.key, deleteFilePath);
+                                }} else {{
+                                    deleteFile(response.key, deleteFilePath, deleteFileSha);
+                                }}
                             }} else {{
                                 showDeleteMessage('获取授权失败', 'error');
                                 deleteBtn.disabled = false;
@@ -1039,11 +1140,121 @@
 
                 deleteXhr.onload = function() {{
                     if (deleteXhr.status === 200 || deleteXhr.status === 201) {{
+                        fileTreeCache = null;
                         showDeleteMessage('删除成功！', 'success');
                         setTimeout(function() {{
                             closeDeleteModal();
                             loadFileList();
                         }}, 1500);
+                    }} else {{
+                        try {{
+                            var error = JSON.parse(deleteXhr.responseText);
+                            showDeleteMessage('删除失败: ' + (error.message || '未知错误'), 'error');
+                        }} catch (e) {{
+                            showDeleteMessage('删除失败，状态码: ' + deleteXhr.status, 'error');
+                        }}
+                        document.getElementById('deleteBtn').disabled = false;
+                    }}
+                }};
+
+                deleteXhr.onerror = function() {{
+                    showDeleteMessage('网络错误，删除失败', 'error');
+                    document.getElementById('deleteBtn').disabled = false;
+                }};
+
+                deleteXhr.send(JSON.stringify(data));
+            }}
+
+            function deleteFolderError() {{
+                showDeleteMessage('获取文件夹内容失败', 'error');
+                document.getElementById('deleteBtn').disabled = false;
+            }}
+
+            function deleteFolder(key, folderPath) {{
+                showDeleteMessage('正在获取文件夹内容...', 'success');
+
+                var doDelete = function() {{
+                    var prefix = folderPath + '/';
+                    var files = [];
+                    fileTreeCache.forEach(function(item) {{
+                        if (item.type === 'blob' && item.path && item.path.indexOf(prefix) === 0) {{
+                            files.push(item);
+                        }}
+                    }});
+                    if (!files.length) {{
+                        showDeleteMessage('文件夹为空或不存在', 'error');
+                        document.getElementById('deleteBtn').disabled = false;
+                        return;
+                    }}
+                    deleteFolderFiles(key, files, 0);
+                }};
+
+                if (fileTreeCache) {{
+                    doDelete();
+                    return;
+                }}
+
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH, true);
+                xhr.onload = function() {{
+                    if (xhr.status === 200) {{
+                        try {{
+                            var commitData = JSON.parse(xhr.responseText);
+                            var treeXhr = new XMLHttpRequest();
+                            treeXhr.open('GET', 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + commitData.commit.tree.sha + '?recursive=1', true);
+                            treeXhr.onload = function() {{
+                                if (treeXhr.status === 200) {{
+                                    try {{
+                                        var data = JSON.parse(treeXhr.responseText);
+                                        fileTreeCache = data.tree || [];
+                                        doDelete();
+                                    }} catch (e) {{
+                                        deleteFolderError();
+                                    }}
+                                }} else {{
+                                    deleteFolderError();
+                                }}
+                            }};
+                            treeXhr.onerror = deleteFolderError;
+                            treeXhr.send();
+                        }} catch (e) {{
+                            deleteFolderError();
+                        }}
+                    }} else {{
+                        deleteFolderError();
+                    }}
+                }};
+                xhr.onerror = deleteFolderError;
+                xhr.send();
+            }}
+
+            function deleteFolderFiles(key, files, index) {{
+                if (index >= files.length) {{
+                    fileTreeCache = null;
+                    showDeleteMessage('删除成功！', 'success');
+                    setTimeout(function() {{
+                        closeDeleteModal();
+                        loadFileList();
+                    }}, 1500);
+                    return;
+                }}
+
+                showDeleteMessage('正在删除 (' + (index + 1) + '/' + files.length + '): ' + files[index].path, 'success');
+
+                var data = {{
+                    message: 'Delete file: ' + files[index].path,
+                    sha: files[index].sha
+                }};
+
+                var deleteXhr = new XMLHttpRequest();
+                var deleteUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(files[index].path);
+                deleteXhr.open('DELETE', deleteUrl, true);
+                deleteXhr.setRequestHeader('Authorization', 'Bearer ' + key);
+                deleteXhr.setRequestHeader('Content-Type', 'application/json');
+
+                deleteXhr.onload = function() {{
+                    if (deleteXhr.status === 200 || deleteXhr.status === 201) {{
+                        deleteFolderFiles(key, files, index + 1);
                     }} else {{
                         try {{
                             var error = JSON.parse(deleteXhr.responseText);
@@ -1192,24 +1403,15 @@
                     sizeSpan.setAttribute('data-path', dir.path);
                     sizeSpan.textContent = '-';
 
-                    var menuBtn = document.createElement('button');
-                    menuBtn.className = 'menu-btn';
-                    menuBtn.textContent = '⋮';
-                    menuBtn.onclick = function(e) {{
-                        e.stopPropagation();
-                        e.preventDefault();
-                        openContextMenu(e, {{
-                            path: dir.path,
-                            sha: dir.sha,
-                            name: dir.name,
-                            type: 'dir'
-                        }});
-                    }};
-
                     infoSpan.appendChild(sizeSpan);
-                    infoSpan.appendChild(menuBtn);
                     entry.appendChild(nameSpan);
                     entry.appendChild(infoSpan);
+                    bindEntryEvents(entry, {{
+                        path: dir.path,
+                        sha: dir.sha,
+                        name: dir.name,
+                        type: 'dir'
+                    }});
                     container.appendChild(entry);
                 }});
 
@@ -1228,24 +1430,15 @@
                     var sizeSpan = document.createElement('span');
                     sizeSpan.textContent = formatSize(file.size);
                     
-                    var menuBtn = document.createElement('button');
-                    menuBtn.className = 'menu-btn';
-                    menuBtn.textContent = '⋮';
-                    menuBtn.onclick = function(e) {{
-                        e.stopPropagation();
-                        e.preventDefault();
-                        openContextMenu(e, {{
-                            path: file.path,
-                            sha: file.sha,
-                            name: file.name,
-                            type: 'file'
-                        }});
-                    }};
-                    
                     infoSpan.appendChild(sizeSpan);
-                    infoSpan.appendChild(menuBtn);
                     entry.appendChild(nameSpan);
                     entry.appendChild(infoSpan);
+                    bindEntryEvents(entry, {{
+                        path: file.path,
+                        sha: file.sha,
+                        name: file.name,
+                        type: 'file'
+                    }});
                     container.appendChild(entry);
                 }});
 
@@ -1256,28 +1449,124 @@
                 fetchFolderSizes();
             }}
 
+            var pendingFiles = [];
+
+            function setPendingFiles(list) {{
+                pendingFiles = list;
+                var el = document.getElementById('selectedFiles');
+                if (!list.length) {{
+                    el.textContent = '';
+                    return;
+                }}
+                var names = [];
+                for (var i = 0; i < list.length && i < 5; i++) {{
+                    names.push(list[i].relativePath);
+                }}
+                var text = '已选择 ' + list.length + ' 个文件: ' + names.join(', ');
+                if (list.length > 5) text += ' 等';
+                el.textContent = text;
+            }}
+
+            function handleFileInput(input) {{
+                var list = [];
+                for (var i = 0; i < input.files.length; i++) {{
+                    var f = input.files[i];
+                    list.push({{ file: f, relativePath: f.webkitRelativePath || f.name }});
+                }}
+                setPendingFiles(list);
+            }}
+
+            function traverseEntry(entry, path, list, done) {{
+                if (entry.isFile) {{
+                    entry.file(function(f) {{
+                        list.push({{ file: f, relativePath: path + f.name }});
+                        done();
+                    }}, done);
+                }} else if (entry.isDirectory) {{
+                    var dirReader = entry.createReader();
+                    var allEntries = [];
+                    var readAll = function() {{
+                        dirReader.readEntries(function(entries) {{
+                            if (entries.length === 0) {{
+                                if (allEntries.length === 0) {{
+                                    done();
+                                    return;
+                                }}
+                                var remaining = allEntries.length;
+                                allEntries.forEach(function(child) {{
+                                    traverseEntry(child, path + entry.name + '/', list, function() {{
+                                        remaining--;
+                                        if (remaining === 0) done();
+                                    }});
+                                }});
+                            }} else {{
+                                for (var i = 0; i < entries.length; i++) {{
+                                    allEntries.push(entries[i]);
+                                }}
+                                readAll();
+                            }}
+                        }}, done);
+                    }};
+                    readAll();
+                }} else {{
+                    done();
+                }}
+            }}
+
+            function handleDrop(e) {{
+                e.preventDefault();
+                var dropZone = document.getElementById('dropZone');
+                dropZone.style.background = '';
+                var items = e.dataTransfer.items;
+                if (items && items.length && items[0].webkitGetAsEntry) {{
+                    var entries = [];
+                    for (var i = 0; i < items.length; i++) {{
+                        var entry = items[i].webkitGetAsEntry();
+                        if (entry) entries.push(entry);
+                    }}
+                    if (!entries.length) {{
+                        setPendingFiles([]);
+                        return;
+                    }}
+                    var list = [];
+                    var remaining = entries.length;
+                    entries.forEach(function(entry) {{
+                        traverseEntry(entry, '', list, function() {{
+                            remaining--;
+                            if (remaining === 0) {{
+                                list.sort(function(a, b) {{ return a.relativePath.localeCompare(b.relativePath); }});
+                                setPendingFiles(list);
+                            }}
+                        }});
+                    }});
+                }} else {{
+                    var list = [];
+                    for (var i = 0; i < e.dataTransfer.files.length; i++) {{
+                        var f = e.dataTransfer.files[i];
+                        list.push({{ file: f, relativePath: f.name }});
+                    }}
+                    setPendingFiles(list);
+                }}
+            }}
+
             function uploadFile() {{
-                var username = document.getElementById('username').value;
-                var password = document.getElementById('password').value;
-                var fileInput = document.getElementById('fileInput');
+                var auth = getSavedAuth();
                 var uploadBtn = document.getElementById('uploadBtn');
 
-                if (!username || !password) {{
-                    showMessage('请输入用户名和密码', 'error');
+                if (!auth) {{
+                    showMessage('请先登录后再上传文件', 'error');
                     return;
                 }}
 
-                if (!fileInput.files || fileInput.files.length === 0) {{
+                if (!pendingFiles.length) {{
                     showMessage('请选择要上传的文件', 'error');
                     return;
                 }}
 
-                var file = fileInput.files[0];
                 uploadBtn.disabled = true;
-
                 showMessage('正在获取授权...', 'success');
 
-                var params = 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
+                var params = 'username=' + encodeURIComponent(auth.u) + '&password=' + encodeURIComponent(auth.p);
                 var keyUrl = 'https://api.boring-student.cn/?' + params;
 
                 var xhr = new XMLHttpRequest();
@@ -1287,8 +1576,7 @@
                         try {{
                             var response = JSON.parse(xhr.responseText);
                             if (response.success && response.key) {{
-                                handleRememberAuth(username, password, document.getElementById('rememberMe').checked);
-                                uploadToGitHub(response.key, file);
+                                uploadNextFile(response.key, 0);
                             }} else {{
                                 showMessage('获取授权失败', 'error');
                                 uploadBtn.disabled = false;
@@ -1309,68 +1597,141 @@
                 xhr.send();
             }}
 
-            function uploadToGitHub(key, file) {{
+            function uploadNextFile(key, index) {{
+                var total = pendingFiles.length;
+                if (index >= total) {{
+                    fileTreeCache = null;
+                    showMessage('全部上传成功！', 'success');
+                    setTimeout(function() {{
+                        closeUploadModal();
+                        document.getElementById('uploadBtn').disabled = false;
+                        loadFileList();
+                    }}, 1500);
+                    return;
+                }}
+
+                var item = pendingFiles[index];
+                var progressContainer = document.querySelector('.progress-container');
+                progressContainer.style.display = 'block';
+                showMessage('正在上传 (' + (index + 1) + '/' + total + '): ' + item.relativePath, 'success');
+
                 var reader = new FileReader();
                 reader.onload = function(e) {{
                     var base64Content = e.target.result.split(',')[1];
                     var currentPath = getCurrentPath();
-                    var filePath = currentPath ? currentPath + '/' + file.name : file.name;
+                    var filePath = currentPath ? currentPath + '/' + item.relativePath : item.relativePath;
 
-                    var data = {{
-                        message: 'Upload file: ' + file.name,
-                        content: base64Content
-                    }};
-
-                    var uploadXhr = new XMLHttpRequest();
-                    var uploadUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + filePath;
-                    uploadXhr.open('PUT', uploadUrl, true);
-                    uploadXhr.setRequestHeader('Authorization', 'Bearer ' + key);
-                    uploadXhr.setRequestHeader('Content-Type', 'application/json');
-
-                    var progressContainer = document.querySelector('.progress-container');
-                    progressContainer.style.display = 'block';
-                    showMessage('正在上传...', 'success');
-
-                    uploadXhr.upload.onprogress = function(e) {{
-                        if (e.lengthComputable) {{
-                            var percent = Math.round((e.loaded / e.total) * 100);
-                            document.getElementById('progressFill').style.width = percent + '%';
-                            document.getElementById('progressText').textContent = percent + '%';
-                        }}
-                    }};
-
-                    uploadXhr.onload = function() {{
-                        if (uploadXhr.status === 200 || uploadXhr.status === 201) {{
-                            showMessage('上传成功！', 'success');
-                            setTimeout(function() {{
-                                closeUploadModal();
-                                loadFileList();
-                            }}, 1500);
-                        }} else {{
+                    putFileToGitHub(key, filePath, base64Content, null,
+                        function() {{
+                            updateUploadProgress(index + 1, total, 0);
+                            uploadNextFile(key, index + 1);
+                        }},
+                        function(status, responseText) {{
+                            var errMsg = '状态码: ' + status;
                             try {{
-                                var error = JSON.parse(uploadXhr.responseText);
-                                showMessage('上传失败: ' + (error.message || '未知错误'), 'error');
-                            }} catch (e) {{
-                                showMessage('上传失败，状态码: ' + uploadXhr.status, 'error');
-                            }}
+                                var error = JSON.parse(responseText);
+                                if (error.message) errMsg = error.message;
+                            }} catch (e) {{}}
+                            showMessage('上传失败 (' + item.relativePath + '): ' + errMsg, 'error');
                             document.getElementById('uploadBtn').disabled = false;
+                        }},
+                        function(fraction) {{
+                            updateUploadProgress(index, total, fraction);
                         }}
-                    }};
-
-                    uploadXhr.onerror = function() {{
-                        showMessage('网络错误，上传失败', 'error');
-                        document.getElementById('uploadBtn').disabled = false;
-                    }};
-
-                    uploadXhr.send(JSON.stringify(data));
+                    );
                 }};
-                reader.readAsDataURL(file);
+                reader.readAsDataURL(item.file);
+            }}
+
+            function updateUploadProgress(index, total, fraction) {{
+                var percent = Math.round(((index + fraction) / total) * 100);
+                document.getElementById('progressFill').style.width = percent + '%';
+                document.getElementById('progressText').textContent = percent + '%';
+            }}
+
+            function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress) {{
+                var data = {{
+                    message: 'Upload file: ' + filePath,
+                    content: base64Content
+                }};
+                if (sha) data.sha = sha;
+
+                var uploadXhr = new XMLHttpRequest();
+                var uploadUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
+                uploadXhr.open('PUT', uploadUrl, true);
+                uploadXhr.setRequestHeader('Authorization', 'Bearer ' + key);
+                uploadXhr.setRequestHeader('Content-Type', 'application/json');
+
+                uploadXhr.upload.onprogress = function(e) {{
+                    if (e.lengthComputable && onProgress) {{
+                        onProgress(e.loaded / e.total);
+                    }}
+                }};
+
+                uploadXhr.onload = function() {{
+                    if (uploadXhr.status === 200 || uploadXhr.status === 201) {{
+                        onSuccess();
+                        return;
+                    }}
+                    if (uploadXhr.status === 422 && !sha) {{
+                        var shaXhr = new XMLHttpRequest();
+                        shaXhr.open('GET', uploadUrl, true);
+                        shaXhr.onload = function() {{
+                            if (shaXhr.status === 200) {{
+                                try {{
+                                    var info = JSON.parse(shaXhr.responseText);
+                                    putFileToGitHub(key, filePath, base64Content, info.sha, onSuccess, onError, onProgress);
+                                    return;
+                                }} catch (e) {{}}
+                            }}
+                            onError(uploadXhr.status, uploadXhr.responseText);
+                        }};
+                        shaXhr.onerror = function() {{
+                            onError(uploadXhr.status, uploadXhr.responseText);
+                        }};
+                        shaXhr.send();
+                        return;
+                    }}
+                    onError(uploadXhr.status, uploadXhr.responseText);
+                }};
+
+                uploadXhr.onerror = function() {{
+                    onError(0, '');
+                }};
+
+                uploadXhr.send(JSON.stringify(data));
             }}
 
             document.addEventListener('DOMContentLoaded', function() {{
                 updateBreadcrumbs();
                 loadFileList();
                 updateAuthBtn();
+
+                var dropZone = document.getElementById('dropZone');
+                dropZone.addEventListener('click', function() {{
+                    document.getElementById('fileInput').click();
+                }});
+                dropZone.addEventListener('dragover', function(e) {{
+                    e.preventDefault();
+                    dropZone.style.background = 'rgba(44, 130, 201, 0.1)';
+                }});
+                dropZone.addEventListener('dragleave', function(e) {{
+                    e.preventDefault();
+                    dropZone.style.background = '';
+                }});
+                dropZone.addEventListener('drop', handleDrop);
+                document.getElementById('pickFileBtn').addEventListener('click', function() {{
+                    document.getElementById('fileInput').click();
+                }});
+                document.getElementById('pickFolderBtn').addEventListener('click', function() {{
+                    document.getElementById('folderInput').click();
+                }});
+                document.getElementById('fileInput').addEventListener('change', function() {{
+                    handleFileInput(this);
+                }});
+                document.getElementById('folderInput').addEventListener('change', function() {{
+                    handleFileInput(this);
+                }});
             }});
         </script>
     </body>
