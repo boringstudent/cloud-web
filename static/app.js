@@ -1532,43 +1532,57 @@ function deleteFolderFiles(key, files) {
             var f = files[state.next++];
             state.active++;
             (function(file) {
-                var data = {
-                    message: 'Delete file: ' + file.path,
-                    sha: file.sha
-                };
-                var xhr = new XMLHttpRequest();
-                xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(file.path)), true);
-                xhr.setRequestHeader('Authorization', 'Bearer ' + key);
-                xhr.setRequestHeader('Content-Type', 'application/json');
-                xhr.onload = function() {
-                    state.active--;
-                    if (xhr.status === 200 || xhr.status === 201) {
-                        state.done++;
-                        state.okStreak++;
-                        if (state.okStreak >= 4 && state.limit < 5) {
-                            state.limit++;
-                            state.okStreak = 0;
+                var attempt = function() {
+                    var data = {
+                        message: 'Delete file: ' + file.path,
+                        sha: file.sha
+                    };
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(file.path)), true);
+                    xhr.setRequestHeader('Authorization', 'Bearer ' + key);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.onload = function() {
+                        // Ref conflict from parallel commits: retry this file with
+                        // jittered backoff instead of failing the whole batch.
+                        var isRefConflict = xhr.status === 409 || /is at [0-9a-f]{40} but expected/i.test(xhr.responseText || '');
+                        if (isRefConflict) {
+                            file._conflicts = (file._conflicts || 0) + 1;
+                            if (file._conflicts <= 8) {
+                                showDeleteMessage('提交冲突，重试 (' + file._conflicts + '/8): ' + file.path, 'success');
+                                setTimeout(attempt, 1200 * file._conflicts + Math.floor(Math.random() * 800));
+                                return;
+                            }
                         }
-                        showDeleteMessage('正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
-                    } else {
+                        state.active--;
+                        if (xhr.status === 200 || xhr.status === 201) {
+                            state.done++;
+                            state.okStreak++;
+                            if (state.okStreak >= 4 && state.limit < 5) {
+                                state.limit++;
+                                state.okStreak = 0;
+                            }
+                            showDeleteMessage('正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
+                        } else {
+                            state.failed = true;
+                            try {
+                                var error = JSON.parse(xhr.responseText);
+                                state.errMsg = error.message || ('状态码 ' + xhr.status);
+                            } catch (e) {
+                                state.errMsg = '状态码 ' + xhr.status;
+                            }
+                        }
+                        pump();
+                        settle();
+                    };
+                    xhr.onerror = function() {
+                        state.active--;
                         state.failed = true;
-                        try {
-                            var error = JSON.parse(xhr.responseText);
-                            state.errMsg = error.message || ('状态码 ' + xhr.status);
-                        } catch (e) {
-                            state.errMsg = '状态码 ' + xhr.status;
-                        }
-                    }
-                    pump();
-                    settle();
+                        state.errMsg = '网络错误';
+                        settle();
+                    };
+                    xhr.send(JSON.stringify(data));
                 };
-                xhr.onerror = function() {
-                    state.active--;
-                    state.failed = true;
-                    state.errMsg = '网络错误';
-                    settle();
-                };
-                xhr.send(JSON.stringify(data));
+                attempt();
             })(f);
         }
     }

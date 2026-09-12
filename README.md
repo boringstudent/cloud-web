@@ -1,0 +1,80 @@
+# cloud-web
+
+一个基于 GitHub 仓库作为存储后端的网页版网盘。纯静态前端，部署在 GitHub Pages 上，通过 GitHub REST API 实现文件的上传、下载、预览、编辑与删除。
+
+> 该项目代码由 AI 辅助编写。
+
+## 功能总览
+
+- **文件浏览**：文件夹层级导航、面包屑、文件/文件夹大小显示（文件夹大小由 git tree 递归统计）
+- **自动刷新**：每 45 秒自动刷新文件列表，标题右侧显示刷新倒计时；标签页隐藏时暂停轮询，恢复可见时立即刷新
+- **增量渲染**：列表按 key 做 diff，仅更新变化的文件大小文本（带高亮闪烁）、增删对应条目（带过渡动画），不再整列表闪屏；后台刷新失败保留原列表仅 toast 提示
+- **请求优化**：
+  - GitHub API 使用 ETag 条件请求（304 不占速率限制、不触发重渲染）
+  - 变更操作（上传/编辑/删除）后开启 15 秒缓存穿透窗口，请求附加时间戳绕过代理与 ETag 缓存
+  - 首屏 `config.json` 与授权密钥并行请求；`preconnect` 预热连接
+  - JS/CSS 外链并按构建时间戳做缓存清除
+- **上传**：
+  - 支持多文件、文件夹拖拽/选择上传
+  - 大文件自动分片（45MB / 30MB 两档，按 base64 后不超过 GitHub 单文件限制反算切片大小），`too large` 时自动降档续传
+  - 并行上传：并行数可选（自适应 / 1 / 2 / 3(默认) / 5 / 自定义 1-10），上传中修改立即生效
+  - 自适应算法：按分片耗时与失败情况动态增减并行数（1-6）
+  - 单分片失败自动重试 3 次（递增退避）；409 及 `is at <sha> but expected <sha>` 引用冲突独立重试 6 次（退避 + 随机抖动）
+  - 实时总速率与进度条；可折叠"分片详情"面板显示每个进行中分片的进度与速率
+  - 上传前检测当前目录同名项（文件夹提示合并、文件提示覆盖），确认后继续
+  - 失败自动清理残留分片
+- **下载**：
+  - 单文件下载先拉取为 Blob 再用 ObjectURL 保存（跨域时 `download` 属性会被忽略，直接跳转预览的问题由此规避）
+  - 分片文件 6 并发合并下载，toast 实时显示进度、百分比与速率
+  - 复选批量下载（逐个触发，可随时停止）
+- **批量操作**：文件卡片点击切换选中（✓ 高亮），文件夹点击进入不参与选择；底部操作栏提供全选 / 反选 / 批量下载 / 批量删除 / 取消，有选中时才显示
+- **删除**：多文件并行删除，3 线程起步连续成功升档至 5；引用冲突按文件独立重试 8 次（退避 + 抖动）；失败报告已删进度
+- **预览**：
+  - 视频 / 音频 / 图片：带进度与实时速率的加载后播放
+  - 文本：纯文本或代码着色（按扩展名自动识别 JavaScript / JSON / Python / C 等，可手动切换），长行不换行走水平滚动
+  - Markdown：默认渲染预览（标题/列表/引用/代码块/链接/图片等），可切回纯文本查看原文
+- **在线编辑**：文本编辑支持着色（透明 textarea 叠加高亮层）与 Markdown 编辑预览切换，保存经鉴权后通过 contents API 提交
+- **属性面板**：文件 SHA、大小、分片数；文件夹包含文件数、子文件夹数、总大小
+- **路径兼容**：路径段仅解码一次保证字面名可访问；显示层反复解码，历史遗留的编码乱码名称显示为可读中文，重名时追加 `[原名: ...]` 标记区分
+- **安全细节**：外链均带 `noopener`；所有文件名渲染走 `textContent`/转义，无 XSS 注入点
+
+## 架构与文件说明
+
+```
+build.py            构建脚本：读取 template.html 生成 build/index.html 与 build/404.html，
+                    拷贝 static/、favicon.ico、CNAME、config.json，并同步根目录 404.html
+template.html       唯一 HTML 模板（Python str.format，内联启动参数需双大括号转义）
+404.html            与 template.html 保持同步的模板副本（构建时自动覆盖）
+static/app.js       全部前端逻辑（普通 JS，无模板转义）
+static/style.css    全部样式
+config.json         代理配置 {"proxy": "https://..."}
+.github/workflows/  push 到 main 后自动运行 build.py 并部署 build/ 到 GitHub Pages
+```
+
+### 运行原理
+
+1. **存储**：文件存放在另一个 GitHub 仓库（由环境变量 `CLOUD` 指定，格式 `owner/repo`）。目录列表走 contents API，文件夹统计走 git trees API。
+2. **单页应用**：Pages 上任何子路径都由 404.html 兜底渲染，`app.js` 根据 `location.pathname` 解析当前目录并加载列表。
+3. **大文件分片**：超过分片大小的文件切成 `名称.part1、.part2 ...` 上传；列表展示时按后缀归并为一个虚拟文件，下载/预览时并发拉取分片合并为 Blob。
+4. **鉴权**：登录/上传/删除/保存通过 `https://api.boring-student.cn/` 用账号密码换取 GitHub Token；勾选"保持登录"后凭据以 base64 存于 localStorage，Token 仅保存在内存中。
+5. **代理**：`config.json` 中的 `proxy` 会将 GitHub 请求改写为 `proxy/<去协议的URL>`，用于加速或绕限；ETag 缓存键基于原始 URL。
+
+### 本地构建
+
+```bash
+python build.py            # 生成 build/
+# 指定存储仓库与分支
+CLOUD=owner/repo BRANCH=main python build.py
+```
+
+构建后 `build/` 即完整静态站点，可用任意静态服务器预览（如 `python -m http.server -d build`）。
+
+### 部署
+
+推送到 `main` 分支后，GitHub Actions 自动执行 `python build.py`（读取 `secrets.CLOUD` / `secrets.BRANCH`）并将 `build/` 发布到 GitHub Pages。
+
+## 已知限制
+
+- 登录为 GET 请求携带账号密码（受服务端 API 限制），凭据会出现在浏览器历史与服务器日志中
+- "保持登录"的凭据以 base64 存于 localStorage，非加密存储
+- GitHub 单文件 100MB 限制故大文件必须分片；contents API 每次变更产生一个 commit，高频写操作受引用竞争与速率限制约束（已通过并发控制 + 退避重试缓解）
