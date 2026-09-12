@@ -20,29 +20,28 @@ function applyGhAuth(xhr) {
     }
 }
 
-function fetchGhKey(done) {
+function fetchGhKey(done, force) {
     var finish = function() {
         ghApiKeyFetching = false;
         if (done) done();
     };
-    if (ghApiKey || ghApiKeyFetching) { finish(); return; }
+    if (ghApiKeyFetching) { finish(); return; }
+    if (ghApiKey && !force) { finish(); return; }
     var saved = getSavedAuth();
     if (!saved) { finish(); return; }
-    ghApiKeyFetching = true;
-    var params = 'username=' + encodeURIComponent(saved.u) + '&password=' + encodeURIComponent(saved.p);
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', 'https://api.boring-student.cn/?' + params, true);
-    xhr.onload = function() {
-        if (xhr.status === 200) {
-            try {
-                var response = JSON.parse(xhr.responseText);
-                if (response.success && response.key) ghApiKey = response.key;
-            } catch (e) {}
-        }
+    if (saved.key && !force) {
+        ghApiKey = saved.key;
         finish();
-    };
-    xhr.onerror = finish;
-    xhr.send();
+        return;
+    }
+    if (force) {
+        ghApiKey = null;
+    }
+    ghApiKeyFetching = true;
+    var persisted = !sessionAuth;
+    loginAndGetKey(saved.u, saved.h, persisted, function() {
+        finish();
+    });
 }
 
 function loadConfig(done) {
@@ -129,16 +128,63 @@ function getPartNumber(name) {
 }
 
 var AUTH_STORAGE_KEY = 'cloud_web_auth';
+var REMEMBER_STORAGE_KEY = 'cloud_web_remember';
+var sessionAuth = null;
 
-function saveAuth(username, password) {
+// SHA-512 hex digest; falls back to plaintext when WebCrypto is unavailable
+function sha512Hex(text) {
+    if (!window.crypto || !crypto.subtle) {
+        return Promise.resolve(text);
+    }
+    return crypto.subtle.digest('SHA-512', new TextEncoder().encode(text)).then(function(buf) {
+        var arr = new Uint8Array(buf);
+        var hex = '';
+        for (var i = 0; i < arr.length; i++) {
+            hex += arr[i].toString(16).padStart(2, '0');
+        }
+        return hex;
+    });
+}
+
+function saveAuth(username, hash, role, key) {
     try {
-        localStorage.setItem(AUTH_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({ u: username, p: password })))));
+        localStorage.setItem(AUTH_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({
+            v: 2, u: username, h: hash, role: role || 'user', key: key || null
+        })))));
     } catch (e) {}
 }
 
 function getSavedAuth() {
+    if (sessionAuth) return sessionAuth;
     try {
         var data = localStorage.getItem(AUTH_STORAGE_KEY);
+        if (!data) return null;
+        var obj = JSON.parse(decodeURIComponent(escape(atob(data))));
+        if (obj && obj.v === 2 && obj.u && obj.h) return obj;
+        // legacy plaintext format: force re-login once
+        clearAuth();
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function clearAuth() {
+    sessionAuth = null;
+    try {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+    } catch (e) {}
+}
+
+function saveRemember(username, password) {
+    try {
+        localStorage.setItem(REMEMBER_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({ u: username, p: password })))));
+    } catch (e) {}
+}
+
+function getRemember() {
+    try {
+        var data = localStorage.getItem(REMEMBER_STORAGE_KEY);
         if (!data) return null;
         var obj = JSON.parse(decodeURIComponent(escape(atob(data))));
         if (obj && obj.u && obj.p) return obj;
@@ -148,44 +194,130 @@ function getSavedAuth() {
     }
 }
 
-function clearAuth() {
+function clearRemember() {
     try {
-        localStorage.removeItem(AUTH_STORAGE_KEY);
+        localStorage.removeItem(REMEMBER_STORAGE_KEY);
     } catch (e) {}
 }
 
-function handleRememberAuth(username, password, remember) {
-    if (remember) {
-        saveAuth(username, password);
-    } else {
-        clearAuth();
+// ---- auth API (https://api.boring-student.cn) ----
+var API_BASE = 'https://api.boring-student.cn';
+
+function apiGetJson(url, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.onload = function() {
+        if (xhr.status === 200) {
+            try {
+                cb(null, JSON.parse(xhr.responseText));
+            } catch (e) {
+                cb('解析响应失败');
+            }
+        } else {
+            var msg = '状态码: ' + xhr.status;
+            try {
+                var err = JSON.parse(xhr.responseText);
+                if (err.error) msg = err.error;
+            } catch (e) {}
+            cb(msg);
+        }
+    };
+    xhr.onerror = function() { cb('网络错误'); };
+    xhr.send();
+}
+
+function apiSendJson(method, url, body, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.onload = function() {
+        if (xhr.status === 200 || xhr.status === 201) {
+            try {
+                cb(null, JSON.parse(xhr.responseText));
+            } catch (e) {
+                cb('解析响应失败');
+            }
+        } else {
+            var msg = '状态码: ' + xhr.status;
+            try {
+                var err = JSON.parse(xhr.responseText);
+                if (err.error) msg = err.error;
+            } catch (e) {}
+            cb(msg);
+        }
+    };
+    xhr.onerror = function() { cb('网络错误'); };
+    xhr.send(body ? JSON.stringify(body) : null);
+}
+
+// Full login flow: /api/login (hashed password) -> /api/redeem-key -> real key.
+// persist=true stores {u, hash, role, key} locally; otherwise session-only.
+function loginAndGetKey(username, hash, persist, cb) {
+    apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(hash), function(err, data) {
+        if (err) { cb(err); return; }
+        if (!data || !data.success || !data.key_sha512) { cb('用户名或密码错误'); return; }
+        apiGetJson(API_BASE + '/api/redeem-key?key_sha512=' + encodeURIComponent(data.key_sha512), function(err2, data2) {
+            if (err2 || !data2 || !data2.key) { cb(err2 || '兑换密钥失败'); return; }
+            ghApiKey = data2.key;
+            var auth = { v: 2, u: username, h: hash, role: data.role || 'user', key: ghApiKey };
+            if (persist) {
+                saveAuth(username, hash, auth.role, ghApiKey);
+            } else {
+                sessionAuth = auth;
+            }
+            updateAuthBtn();
+            cb(null, ghApiKey);
+        });
+    });
+}
+
+// Resolve a usable GitHub key without re-requesting it every time:
+// memory -> cached key in storage -> re-login with stored hash.
+function ensureGhKey(cb) {
+    if (ghApiKey) { cb(ghApiKey); return; }
+    var saved = getSavedAuth();
+    if (saved && saved.key) {
+        ghApiKey = saved.key;
+        cb(ghApiKey);
+        return;
     }
-    updateAuthBtn();
+    if (saved) {
+        var persisted = !sessionAuth;
+        loginAndGetKey(saved.u, saved.h, persisted, function(err, key) {
+            cb(err ? null : key);
+        });
+        return;
+    }
+    cb(null);
 }
 
 function fillAuthInputs(usernameId, passwordId, checkboxId) {
-    var saved = getSavedAuth();
-    if (saved) {
-        document.getElementById(usernameId).value = saved.u;
-        document.getElementById(passwordId).value = saved.p;
-        document.getElementById(checkboxId).checked = true;
+    var remembered = getRemember();
+    if (remembered) {
+        document.getElementById(usernameId).value = remembered.u;
+        document.getElementById(passwordId).value = remembered.p;
+        if (checkboxId) document.getElementById(checkboxId).checked = true;
     }
 }
 
 function updateAuthBtn() {
     var btn = document.getElementById('authBtn');
     var user = document.getElementById('authUser');
+    var adminBtn = document.getElementById('adminBtn');
     var saved = getSavedAuth();
     if (btn) {
         btn.textContent = saved ? '退出登录' : '登录';
     }
     if (user) {
         if (saved) {
-            user.textContent = '当前用户: ' + saved.u;
+            user.textContent = '当前用户: ' + saved.u + (saved.role === 'admin' ? '（管理员）' : '');
             user.style.display = 'block';
         } else {
             user.style.display = 'none';
         }
+    }
+    if (adminBtn) {
+        adminBtn.style.display = saved && saved.role === 'admin' ? '' : 'none';
     }
 }
 
@@ -200,6 +332,7 @@ function handleAuthBtnClick() {
 function openLoginModal() {
     document.getElementById('loginMessage').className = 'message';
     document.getElementById('loginMessage').textContent = '';
+    fillAuthInputs('loginUsername', 'loginPassword', 'loginRememberPwd');
     document.getElementById('loginModal').classList.add('show');
 }
 
@@ -216,6 +349,8 @@ function showLoginMessage(text, type) {
 function doLogin() {
     var username = document.getElementById('loginUsername').value;
     var password = document.getElementById('loginPassword').value;
+    var keepLogin = document.getElementById('loginKeepLogged').checked;
+    var rememberPwd = document.getElementById('loginRememberPwd').checked;
     var loginBtn = document.getElementById('loginBtn');
 
     if (!username || !password) {
@@ -224,44 +359,27 @@ function doLogin() {
     }
 
     loginBtn.disabled = true;
-    showLoginMessage('正在登录...', 'success');
+    showLoginMessage('正在加密并登录...', 'success');
 
-    var params = 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
-    var keyUrl = 'https://api.boring-student.cn/?' + params;
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', keyUrl, true);
-    xhr.onload = function() {
-        if (xhr.status === 200) {
-            try {
-                var response = JSON.parse(xhr.responseText);
-                if (response.success && response.key) {
-                    ghApiKey = response.key;
-                    saveAuth(username, password);
-                    updateAuthBtn();
-                    showLoginMessage('登录成功！', 'success');
-                    setTimeout(function() {
-                        closeLoginModal();
-                        document.getElementById('loginBtn').disabled = false;
-                    }, 1000);
-                } else {
-                    showLoginMessage('用户名或密码错误', 'error');
-                    loginBtn.disabled = false;
-                }
-            } catch (e) {
-                showLoginMessage('解析响应失败', 'error');
+    sha512Hex(password).then(function(hash) {
+        loginAndGetKey(username, hash, keepLogin, function(err) {
+            if (err) {
+                showLoginMessage('登录失败: ' + err, 'error');
                 loginBtn.disabled = false;
+                return;
             }
-        } else {
-            showLoginMessage('登录失败，状态码: ' + xhr.status, 'error');
-            loginBtn.disabled = false;
-        }
-    };
-    xhr.onerror = function() {
-        showLoginMessage('网络错误，登录失败', 'error');
-        loginBtn.disabled = false;
-    };
-    xhr.send();
+            if (rememberPwd) {
+                saveRemember(username, password);
+            } else {
+                clearRemember();
+            }
+            showLoginMessage('登录成功！', 'success');
+            setTimeout(function() {
+                closeLoginModal();
+                document.getElementById('loginBtn').disabled = false;
+            }, 1000);
+        });
+    });
 }
 
 function logout() {
@@ -273,6 +391,197 @@ function logout() {
     document.getElementById('deleteRememberMe').checked = false;
     document.getElementById('loginUsername').value = '';
     document.getElementById('loginPassword').value = '';
+    document.getElementById('loginKeepLogged').checked = false;
+}
+
+// ---- Admin user management (role=admin only) ----
+function adminCreds() {
+    var a = getSavedAuth();
+    if (!a || a.role !== 'admin') return null;
+    return { admin_user: a.u, admin_pass: a.h };
+}
+
+function openAdminModal() {
+    document.getElementById('adminMessage').className = 'message';
+    document.getElementById('adminMessage').textContent = '';
+    document.getElementById('adminUserList').innerHTML = '<div class="loading">加载中...</div>';
+    document.getElementById('adminModal').classList.add('show');
+    loadAdminUsers();
+}
+
+function closeAdminModal() {
+    document.getElementById('adminModal').classList.remove('show');
+}
+
+function showAdminMessage(text, type) {
+    var msg = document.getElementById('adminMessage');
+    msg.className = 'message ' + type;
+    msg.textContent = text;
+}
+
+function loadAdminUsers() {
+    var creds = adminCreds();
+    if (!creds) {
+        showAdminMessage('需要管理员权限', 'error');
+        return;
+    }
+    apiGetJson(API_BASE + '/api/users?admin_user=' + encodeURIComponent(creds.admin_user) + '&admin_pass=' + encodeURIComponent(creds.admin_pass), function(err, data) {
+        if (err || !data || !data.users) {
+            document.getElementById('adminUserList').innerHTML = '<div class="message error">加载失败: ' + (err || '响应异常') + '</div>';
+            return;
+        }
+        renderAdminUserList(data.users);
+    });
+}
+
+function renderAdminUserList(users) {
+    var container = document.getElementById('adminUserList');
+    container.innerHTML = '';
+    var names = Object.keys(users).sort();
+    if (!names.length) {
+        container.innerHTML = '<div class="loading">暂无用户</div>';
+        return;
+    }
+    var me = getSavedAuth();
+    names.forEach(function(name) {
+        var role = users[name].role || 'user';
+        var row = document.createElement('div');
+        row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 4px; border-bottom: 1px solid #f0f0f0; font-size: 14px; gap: 8px;';
+
+        var info = document.createElement('span');
+        info.style.cssText = 'min-width: 0; word-break: break-all; color: #333;';
+        info.textContent = name + ' ';
+        var roleTag = document.createElement('span');
+        roleTag.style.cssText = 'font-size: 12px; padding: 1px 8px; border-radius: 8px; color: white; background: ' + (role === 'admin' ? '#6c5ce7' : '#95a5a6') + ';';
+        roleTag.textContent = role;
+        info.appendChild(roleTag);
+        row.appendChild(info);
+
+        var ops = document.createElement('span');
+        ops.style.cssText = 'display: flex; gap: 6px; flex-shrink: 0;';
+
+        var mkBtn = function(text, bg, fn) {
+            var b = document.createElement('button');
+            b.className = 'btn';
+            b.style.cssText = 'padding: 4px 10px; font-size: 12px; background: ' + bg + ';';
+            b.textContent = text;
+            b.addEventListener('click', fn);
+            return b;
+        };
+
+        ops.appendChild(mkBtn('改密', '#2c82c9', function() { adminResetPassword(name); }));
+        ops.appendChild(mkBtn(role === 'admin' ? '降为user' : '升为admin', '#e67e22', function() {
+            adminChangeRole(name, role === 'admin' ? 'user' : 'admin');
+        }));
+        if (!me || me.u !== name) {
+            ops.appendChild(mkBtn('删除', '#dc3545', function() { adminDeleteUser(name); }));
+        }
+        row.appendChild(ops);
+        container.appendChild(row);
+    });
+}
+
+function adminAddUser() {
+    var creds = adminCreds();
+    if (!creds) {
+        showAdminMessage('需要管理员权限', 'error');
+        return;
+    }
+    var username = document.getElementById('adminNewUsername').value.trim();
+    var password = document.getElementById('adminNewPassword').value;
+    var role = document.getElementById('adminNewRole').value;
+    if (!username || !password) {
+        showAdminMessage('请输入用户名和密码', 'error');
+        return;
+    }
+    var btn = document.getElementById('adminAddBtn');
+    btn.disabled = true;
+    showAdminMessage('正在加密并添加...', 'success');
+    sha512Hex(password).then(function(hash) {
+        var body = {
+            admin_user: creds.admin_user,
+            admin_pass: creds.admin_pass,
+            username: username,
+            password: hash,
+            role: role
+        };
+        apiSendJson('POST', API_BASE + '/api/users', body, function(err) {
+            btn.disabled = false;
+            if (err) {
+                showAdminMessage('添加失败: ' + err, 'error');
+                return;
+            }
+            showAdminMessage('添加成功: ' + username, 'success');
+            document.getElementById('adminNewUsername').value = '';
+            document.getElementById('adminNewPassword').value = '';
+            loadAdminUsers();
+        });
+    });
+}
+
+function adminResetPassword(username) {
+    var creds = adminCreds();
+    if (!creds) {
+        showAdminMessage('需要管理员权限', 'error');
+        return;
+    }
+    var password = prompt('为用户 ' + username + ' 设置新密码（明文，将加密存储）:');
+    if (!password) return;
+    sha512Hex(password).then(function(hash) {
+        var body = {
+            admin_user: creds.admin_user,
+            admin_pass: creds.admin_pass,
+            password: hash
+        };
+        apiSendJson('PUT', API_BASE + '/api/users/' + encodeURIComponent(username), body, function(err) {
+            if (err) {
+                showAdminMessage('修改失败: ' + err, 'error');
+                return;
+            }
+            showAdminMessage('已重置 ' + username + ' 的密码', 'success');
+        });
+    });
+}
+
+function adminChangeRole(username, newRole) {
+    var creds = adminCreds();
+    if (!creds) {
+        showAdminMessage('需要管理员权限', 'error');
+        return;
+    }
+    var body = {
+        admin_user: creds.admin_user,
+        admin_pass: creds.admin_pass,
+        role: newRole
+    };
+    apiSendJson('PUT', API_BASE + '/api/users/' + encodeURIComponent(username), body, function(err) {
+        if (err) {
+            showAdminMessage('修改失败: ' + err, 'error');
+            return;
+        }
+        showAdminMessage('已将 ' + username + ' 调整为 ' + newRole, 'success');
+        loadAdminUsers();
+    });
+}
+
+function adminDeleteUser(username) {
+    var creds = adminCreds();
+    if (!creds) {
+        showAdminMessage('需要管理员权限', 'error');
+        return;
+    }
+    if (!confirm('确定要删除用户 ' + username + ' 吗？此操作不可撤销。')) return;
+    apiSendJson('DELETE', API_BASE + '/api/users/' + encodeURIComponent(username), {
+        admin_user: creds.admin_user,
+        admin_pass: creds.admin_pass
+    }, function(err) {
+        if (err) {
+            showAdminMessage('删除失败: ' + err, 'error');
+            return;
+        }
+        showAdminMessage('已删除用户: ' + username, 'success');
+        loadAdminUsers();
+    });
 }
 
 // Auto refresh every 45s with a visible countdown; paused while the tab is hidden
@@ -1257,51 +1566,37 @@ function savePreviewFile() {
     saveBtn.disabled = true;
     showPreviewMessage('正在获取授权...', 'success');
 
-    var savedAuth = getSavedAuth();
-    var username, password;
-    if (savedAuth) {
-        username = savedAuth.u;
-        password = savedAuth.p;
-    } else {
-        username = prompt('请输入用户名:');
-        password = prompt('请输入密码:');
-    }
-
-    if (!username || !password) {
-        showPreviewMessage('请输入用户名和密码', 'error');
+    var fail = function(text) {
+        showPreviewMessage(text, 'error');
         saveBtn.disabled = false;
+    };
+
+    if (getSavedAuth()) {
+        ensureGhKey(function(key) {
+            if (!key) {
+                fail('获取授权失败，请重新登录');
+                return;
+            }
+            updateFileOnGitHub(key, previewFileInfo.path, newContent);
+        });
         return;
     }
 
-    var params = 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
-    var keyUrl = 'https://api.boring-student.cn/?' + params;
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', keyUrl, true);
-    xhr.onload = function() {
-        if (xhr.status === 200) {
-            try {
-                var response = JSON.parse(xhr.responseText);
-                if (response.success && response.key) {
-                    updateFileOnGitHub(response.key, previewFileInfo.path, newContent);
-                } else {
-                    showPreviewMessage('获取授权失败', 'error');
-                    saveBtn.disabled = false;
-                }
-            } catch (e) {
-                showPreviewMessage('解析授权响应失败', 'error');
-                saveBtn.disabled = false;
+    var username = prompt('请输入用户名:');
+    var password = prompt('请输入密码:');
+    if (!username || !password) {
+        fail('请输入用户名和密码');
+        return;
+    }
+    sha512Hex(password).then(function(hash) {
+        loginAndGetKey(username, hash, false, function(err, key) {
+            if (err) {
+                fail('获取授权失败: ' + err);
+                return;
             }
-        } else {
-            showPreviewMessage('获取授权失败，状态码: ' + xhr.status, 'error');
-            saveBtn.disabled = false;
-        }
-    };
-    xhr.onerror = function() {
-        showPreviewMessage('网络错误，无法获取授权', 'error');
-        saveBtn.disabled = false;
-    };
-    xhr.send();
+            updateFileOnGitHub(key, previewFileInfo.path, newContent);
+        });
+    });
 }
 
 function updateFileOnGitHub(key, filePath, newContent) {
@@ -1371,63 +1666,51 @@ function updateFileOnGitHub(key, filePath, newContent) {
 }
 
 function confirmDelete() {
-    var savedAuth = getSavedAuth();
-    var username, password;
-    if (savedAuth) {
-        username = savedAuth.u;
-        password = savedAuth.p;
-    } else {
-        username = document.getElementById('deleteUsername').value;
-        password = document.getElementById('deletePassword').value;
-    }
     var deleteBtn = document.getElementById('deleteBtn');
-
-    if (!username || !password) {
-        showDeleteMessage('请输入用户名和密码', 'error');
-        return;
-    }
-
     deleteBtn.disabled = true;
     showDeleteMessage('正在获取授权...', 'success');
 
-    var params = 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password);
-    var keyUrl = 'https://api.boring-student.cn/?' + params;
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', keyUrl, true);
-    xhr.onload = function() {
-        if (xhr.status === 200) {
-            try {
-                var response = JSON.parse(xhr.responseText);
-                if (response.success && response.key) {
-                    if (!savedAuth) {
-                        handleRememberAuth(username, password, document.getElementById('deleteRememberMe').checked);
-                    }
-                    if (deleteFileType === 'dir') {
-                        deleteFolder(response.key, deleteFilePath);
-                    } else if (deleteFileType === 'chunked' || deleteFileType === 'batch') {
-                        deleteFolderFiles(response.key, deleteParts, 0);
-                    } else {
-                        deleteFile(response.key, deleteFilePath, deleteFileSha);
-                    }
-                } else {
-                    showDeleteMessage('获取授权失败', 'error');
-                    deleteBtn.disabled = false;
-                }
-            } catch (e) {
-                showDeleteMessage('解析授权响应失败', 'error');
-                deleteBtn.disabled = false;
-            }
+    var runDelete = function(key) {
+        if (deleteFileType === 'dir') {
+            deleteFolder(key, deleteFilePath);
+        } else if (deleteFileType === 'chunked' || deleteFileType === 'batch') {
+            deleteFolderFiles(key, deleteParts, 0);
         } else {
-            showDeleteMessage('获取授权失败，状态码: ' + xhr.status, 'error');
-            deleteBtn.disabled = false;
+            deleteFile(key, deleteFilePath, deleteFileSha);
         }
     };
-    xhr.onerror = function() {
-        showDeleteMessage('网络错误，无法获取授权', 'error');
+
+    var fail = function(text) {
+        showDeleteMessage(text, 'error');
         deleteBtn.disabled = false;
     };
-    xhr.send();
+
+    if (getSavedAuth()) {
+        ensureGhKey(function(key) {
+            if (!key) {
+                fail('获取授权失败，请重新登录');
+                return;
+            }
+            runDelete(key);
+        });
+        return;
+    }
+
+    var username = document.getElementById('deleteUsername').value;
+    var password = document.getElementById('deletePassword').value;
+    if (!username || !password) {
+        fail('请输入用户名和密码');
+        return;
+    }
+    sha512Hex(password).then(function(hash) {
+        loginAndGetKey(username, hash, document.getElementById('deleteRememberMe').checked, function(err, key) {
+            if (err) {
+                fail('获取授权失败: ' + err);
+                return;
+            }
+            runDelete(key);
+        });
+    });
 }
 
 function deleteFile(key, filePath, sha) {
@@ -1744,8 +2027,9 @@ function loadFileList(retried) {
                 showListError('解析文件列表失败');
             }
         } else if (status === 403) {
-            if (!retried && !ghApiKey && getSavedAuth()) {
-                fetchGhKey(function() { loadFileList(true); });
+            if (!retried && getSavedAuth()) {
+                // cached key may be stale/rate-limited: force a fresh login
+                fetchGhKey(function() { loadFileList(true); }, true);
                 return;
             }
             showListError('API请求受限，请稍后重试');
@@ -2376,36 +2660,15 @@ function uploadFile() {
     uploadBtn.disabled = true;
     showMessage('正在获取授权...', 'success');
 
-    var params = 'username=' + encodeURIComponent(auth.u) + '&password=' + encodeURIComponent(auth.p);
-    var keyUrl = 'https://api.boring-student.cn/?' + params;
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', keyUrl, true);
-    xhr.onload = function() {
-        if (xhr.status === 200) {
-            try {
-                var response = JSON.parse(xhr.responseText);
-                if (response.success && response.key) {
-                    chunkSizeLevel = 0;
-                    startUpload(response.key);
-                } else {
-                    showMessage('获取授权失败', 'error');
-                    uploadBtn.disabled = false;
-                }
-            } catch (e) {
-                showMessage('解析授权响应失败', 'error');
-                uploadBtn.disabled = false;
-            }
-        } else {
-            showMessage('获取授权失败，状态码: ' + xhr.status, 'error');
+    ensureGhKey(function(key) {
+        if (!key) {
+            showMessage('获取授权失败，请重新登录', 'error');
             uploadBtn.disabled = false;
+            return;
         }
-    };
-    xhr.onerror = function() {
-        showMessage('网络错误，无法获取授权', 'error');
-        uploadBtn.disabled = false;
-    };
-    xhr.send();
+        chunkSizeLevel = 0;
+        startUpload(key);
+    });
 }
 
 // ---- Parallel chunked upload with per-chunk retry and live speed ----

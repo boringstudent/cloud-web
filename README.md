@@ -57,7 +57,7 @@ config.json         代理配置 {"proxy": "https://..."}
 1. **存储**：文件存放在另一个 GitHub 仓库（由环境变量 `CLOUD` 指定，格式 `owner/repo`）。目录列表走 contents API，文件夹统计走 git trees API。
 2. **单页应用**：Pages 上任何子路径都由 404.html 兜底渲染，`app.js` 根据 `location.pathname` 解析当前目录并加载列表。
 3. **大文件分片**：超过分片大小的文件切成 `名称.part1、.part2 ...` 上传；列表展示时按后缀归并为一个虚拟文件，下载/预览时并发拉取分片合并为 Blob。
-4. **鉴权**：登录/上传/删除/保存通过 `https://api.boring-student.cn/` 用账号密码换取 GitHub Token；勾选"保持登录"后凭据以 base64 存于 localStorage，Token 仅保存在内存中。
+4. **鉴权**：密码在客户端经 SHA-512 加密后调用 `POST/GET /api/login` 换取 `key_sha512`，再经 `/api/redeem-key` 兑换真实 GitHub Token；Token 与密码哈希、角色一起缓存于 localStorage（勾选"保持登录"）或仅内存（会话级），后续操作直接使用缓存 Token，失效（403）时自动用存储的哈希重新登录刷新。"记住密码"额外保存明文用于下次自动填充（用户可选）。管理员（role=admin）显示"用户管理"入口，可查看用户列表、添加用户（明文密码客户端加密后提交）、重置密码、调整角色、删除用户。
 5. **代理**：`config.json` 中的 `proxy` 会将 GitHub 请求改写为 `proxy/<去协议的URL>`，用于加速或绕限；ETag 缓存键基于原始 URL。
 
 ### 关键算法
@@ -112,6 +112,6 @@ CLOUD=owner/repo BRANCH=main python build.py
 
 ## 已知限制
 
-- 登录为 GET 请求携带账号密码（受服务端 API 限制），凭据会出现在浏览器历史与服务器日志中
-- "保持登录"的凭据以 base64 存于 localStorage，非加密存储
+- 密码以 SHA-512 哈希传输与存储（base64 封装于 localStorage，非加密存储）；"记住密码"功能如需自动填充会保存明文，由用户自行勾选
+- 登录/兑换接口为 GET 请求，参数会出现在浏览器历史与服务器日志中（受服务端 API 限制）
 - GitHub 单文件 100MB 限制故大文件必须分片；contents API 每次变更产生一个 commit，高频写操作受引用竞争与速率限制约束（已通过并发控制 + 退避重试缓解）
