@@ -65,13 +65,25 @@ function loadConfig(done) {
 
 // ---- HTTP cache (ETag conditional requests, 304 responses don't hit rate limits) ----
 var httpCache = {};
+// After a mutation (upload/edit/delete), bypass proxy/ETag caches for a short window
+// so the refreshed list reflects the change immediately.
+var noCacheUntil = 0;
+
+function bypassHttpCache() {
+    httpCache = {};
+    noCacheUntil = Date.now() + 15000;
+}
 
 function cachedGet(url, auth, cb) {
+    var bypass = Date.now() < noCacheUntil;
+    var reqUrl = bypass
+        ? url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now()
+        : url;
     var cached = httpCache[url];
     var xhr = new XMLHttpRequest();
-    xhr.open('GET', ghUrl(url), true);
+    xhr.open('GET', ghUrl(reqUrl), true);
     if (auth) applyGhAuth(xhr);
-    if (cached && cached.etag) {
+    if (!bypass && cached && cached.etag) {
         xhr.setRequestHeader('If-None-Match', cached.etag);
     }
     xhr.onload = function() {
@@ -92,7 +104,7 @@ function cachedGet(url, auth, cb) {
 }
 
 function invalidateHttpCache() {
-    httpCache = {};
+    bypassHttpCache();
 }
 
 var menuFileInfo = {};
