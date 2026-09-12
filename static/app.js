@@ -113,12 +113,14 @@ var fileTreeCache = null;
 var menuOpenedAt = 0;
 
 var CHUNK_SIZE_LEVELS = [
-    Math.floor((104857600 - 4096) * 3 / 4),
-    Math.floor((73400320 - 4096) * 3 / 4),
-    Math.floor((41943040 - 4096) * 3 / 4),
-    Math.floor((20971520 - 4096) * 3 / 4)
+    Math.floor((47185920 - 4096) * 3 / 4),
+    Math.floor((31457280 - 4096) * 3 / 4)
 ];
 var chunkSizeLevel = 0;
+
+function currentChunkLabel() {
+    return formatSize(CHUNK_SIZE_LEVELS[chunkSizeLevel]);
+}
 var PART_SUFFIX = /\.part(\d+)$/;
 
 function getPartNumber(name) {
@@ -1772,7 +1774,7 @@ function startUpload(key, doneBases) {
     });
     document.querySelector('.progress-container').style.display = 'block';
     uploadState.speedTimer = setInterval(sampleUploadSpeed, 1000);
-    showMessage('正在上传 (0/' + uploadTasks.length + ')', 'success');
+    showMessage('正在上传 (0/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
     updateUploadProgressUI();
     var starters = Math.min(UPLOAD_CONCURRENCY, uploadTasks.length);
     for (var i = 0; i < starters; i++) {
@@ -1799,7 +1801,7 @@ function pumpUpload() {
             if (st.baseDones[task.base] === st.baseTotals[task.base]) {
                 st.doneBases[task.base] = true;
             }
-            showMessage('正在上传 (' + st.doneCount + '/' + uploadTasks.length + ')', 'success');
+            showMessage('正在上传 (' + st.doneCount + '/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
         }
         updateUploadProgressUI();
         pumpUpload();
@@ -1817,7 +1819,7 @@ function checkUploadSettled() {
         var key = st.key;
         var doneBases = st.doneBases;
         var staleParts = uploadedParts.filter(function(p) { return !doneBases[p.base]; });
-        showMessage('分片过大，已自动减小分片大小，正在重新上传...', 'success');
+        showMessage('分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），正在重新上传...', 'success');
         stopUploadTimer();
         uploadState = null;
         deletePartsQuietly(key, staleParts, 0, function() {
@@ -1834,6 +1836,7 @@ function checkUploadSettled() {
 function runUploadTask(task, done) {
     var st = uploadState;
     var attempt = 0;
+    var conflicts = 0;
 
     var tryOnce = function() {
         if (!uploadState) {
@@ -1868,10 +1871,22 @@ function runUploadTask(task, done) {
                         if (!st.downgrading) {
                             st.downgrading = true;
                             chunkSizeLevel++;
-                            showMessage('分片过大，已自动减小分片大小，等待进行中的任务完成后重传...', 'success');
+                            showMessage('分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），等待进行中的任务完成后重传...', 'success');
                         }
                         done(false);
                         return;
+                    }
+
+                    // 409: concurrent commits race on the same git ref.
+                    // Retry separately with longer jittered backoff to let other
+                    // in-flight commits land first; does not consume normal attempts.
+                    if (status === 409) {
+                        conflicts++;
+                        if (conflicts <= 6) {
+                            showMessage('提交冲突(409)，等待其他分片完成后重试 (' + conflicts + '/6): ' + task.label, 'success');
+                            setTimeout(tryOnce, 1500 * conflicts + Math.floor(Math.random() * 1000));
+                            return;
+                        }
                     }
 
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
