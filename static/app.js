@@ -421,7 +421,7 @@ function showProperties(filePath, fileName, fileType) {
     document.getElementById('propertiesTitle').textContent = '属性: ' + fileName;
     var content = document.getElementById('propertiesContent');
     var propsHtml = '<div class="props-list">';
-    propsHtml += propRow('名称', escapeHtml(fileName));
+    propsHtml += propRow('名称', escapeHtml(displayName(fileName)));
     propsHtml += propRow('类型', fileType === 'dir' ? '文件夹' : (menuFileInfo.chunked ? '文件（分片存储）' : '文件'));
     propsHtml += propRow('路径', escapeHtml(filePath), true);
     if (fileType === 'dir') {
@@ -1204,23 +1204,30 @@ function deleteFolderFiles(key, files, index) {
     deleteXhr.send(JSON.stringify(data));
 }
 
-// Decode a path segment repeatedly to recover from double/triple encoding
-// (e.g. %25E6%2596... -> %E6%96... -> 新...)
-function decodePathSegment(seg) {
+function safeDecode(seg) {
+    try {
+        return decodeURIComponent(seg);
+    } catch (e) {
+        return seg;
+    }
+}
+
+// Display-only decode: recover readable text from names that were stored
+// percent-encoded by accident (e.g. a folder literally named "%E6%96...").
+// The real name is always kept for navigation and API operations.
+function displayName(name) {
+    var seg = name;
     for (var i = 0; i < 3; i++) {
         if (!/%[0-9A-Fa-f]{2}/.test(seg)) break;
-        try {
-            var decoded = decodeURIComponent(seg);
-            if (decoded === seg) break;
-            seg = decoded;
-        } catch (e) {
-            break;
-        }
+        var decoded = safeDecode(seg);
+        if (decoded === seg) break;
+        seg = decoded;
     }
     return seg;
 }
 
-// Returns the current directory path in DECODED form.
+// Returns the current directory path with each segment decoded exactly once,
+// preserving literal names (a segment stored as "%E6..." stays usable).
 // Callers must encode it themselves when building URLs.
 function getCurrentPath() {
     var path = window.location.pathname;
@@ -1232,7 +1239,7 @@ function getCurrentPath() {
     }
     var parts = path.substring(1).split('/');
     for (var i = 0; i < parts.length; i++) {
-        parts[i] = decodePathSegment(parts[i]);
+        parts[i] = safeDecode(parts[i]);
     }
     if (parts.length > 0 && parts[0] === REPO_NAME) {
         return parts.slice(1).join('/');
@@ -1281,7 +1288,7 @@ function updateBreadcrumbs() {
 
         var link = document.createElement('a');
         link.href = currentPath + '/';
-        link.textContent = parts[i];
+        link.textContent = displayName(parts[i]);
         crumbs.appendChild(link);
     }
 }
@@ -1334,7 +1341,7 @@ function loadFileList(retried) {
                     document.title = 'Home - boring_student';
                 } else {
                     var pathParts = currentPath.split('/');
-                    var dirName = pathParts[pathParts.length - 1];
+                    var dirName = displayName(pathParts[pathParts.length - 1]);
                     pageTitle.textContent = dirName;
                     document.title = dirName + ' - boring_student';
                 }
@@ -1415,6 +1422,7 @@ function buildEntryModels(items) {
             key: 'd:' + dir.name,
             kind: 'dir',
             name: dir.name,
+            displayName: displayName(dir.name),
             path: dir.path,
             sha: dir.sha,
             sizeText: '-'
@@ -1428,6 +1436,7 @@ function buildEntryModels(items) {
             key: 'f:' + file.name,
             kind: 'file',
             name: file.name,
+            displayName: displayName(file.name),
             path: file.path,
             sha: file.sha,
             size: file.size,
@@ -1454,7 +1463,7 @@ function createEntryElement(model) {
 
     if (model.kind === 'dir') {
         entry.href = baseUrl + encodeURIComponent(model.name) + '/';
-        nameSpan.textContent = model.name + '/';
+        nameSpan.textContent = model.displayName + '/';
         sizeSpan.className = 'dir-size';
         sizeSpan.setAttribute('data-path', model.path);
         sizeSpan.textContent = '-';
@@ -1462,18 +1471,20 @@ function createEntryElement(model) {
             path: model.path,
             sha: model.sha,
             name: model.name,
+            displayName: model.displayName,
             type: 'dir'
         };
     } else {
         // Clicking a file card toggles its selection checkbox (batch ops);
         // single-file open/download remains available via the context menu.
         entry.href = 'javascript:void(0);';
-        nameSpan.textContent = model.name;
+        nameSpan.textContent = model.displayName;
         sizeSpan.textContent = model.sizeText;
         entry._model = {
             path: model.path,
             sha: model.sha,
             name: model.name,
+            displayName: model.displayName,
             type: 'file',
             size: model.size,
             chunked: model.chunked,
@@ -1685,6 +1696,7 @@ function renderFileList(items) {
                         path: m.path,
                         sha: m.sha,
                         name: m.name,
+                        displayName: m.displayName,
                         type: 'file',
                         size: m.size,
                         chunked: m.chunked,
@@ -1703,6 +1715,7 @@ function renderFileList(items) {
                         path: m.path,
                         sha: m.sha,
                         name: m.name,
+                        displayName: m.displayName,
                         type: 'dir'
                     };
                 }
@@ -1883,6 +1896,28 @@ function handleDrop(e) {
     }
 }
 
+// Detect same-level name collisions between pending uploads and the current listing
+function findUploadConflicts() {
+    var existing = {};
+    entryOrder.forEach(function(k) {
+        var rec = entryMap[k];
+        if (rec) existing[rec.model.name] = rec.model.kind;
+    });
+    var conflicts = [];
+    var seen = {};
+    pendingFiles.forEach(function(item) {
+        var top = item.relativePath.split('/')[0];
+        if (seen[top]) return;
+        seen[top] = true;
+        if (existing[top] === 'dir') {
+            conflicts.push(top + '（文件夹，将合并内容）');
+        } else if (existing[top] === 'file') {
+            conflicts.push(top + '（文件，将被覆盖）');
+        }
+    });
+    return conflicts;
+}
+
 function uploadFile() {
     var auth = getSavedAuth();
     var uploadBtn = document.getElementById('uploadBtn');
@@ -1894,6 +1929,11 @@ function uploadFile() {
 
     if (!pendingFiles.length) {
         showMessage('请选择要上传的文件', 'error');
+        return;
+    }
+
+    var conflicts = findUploadConflicts();
+    if (conflicts.length && !confirm('以下同名内容已存在于当前目录：\n' + conflicts.join('\n') + '\n\n是否继续上传？')) {
         return;
     }
 
@@ -2360,7 +2400,7 @@ document.addEventListener('DOMContentLoaded', function() {
         pageTitleEl.textContent = 'Home';
         document.title = 'Home - boring_student';
     } else {
-        var initName = initPath.split('/').pop();
+        var initName = displayName(initPath.split('/').pop());
         pageTitleEl.textContent = initName;
         document.title = initName + ' - boring_student';
     }
