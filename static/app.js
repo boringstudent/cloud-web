@@ -719,6 +719,131 @@ var AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'aac', 'flac'];
 var VIDEO_EXTS = ['mp4', 'webm', 'ogg', 'avi', 'mov'];
 var IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp'];
 
+// ---- Lightweight syntax highlighting for text preview/edit ----
+var LANG_KEYWORDS = {
+    js: 'const let var function return if else for while class new typeof instanceof import export from async await try catch finally throw switch case break continue default this null undefined true false of in do extends super static get set yield delete void',
+    json: 'true false null',
+    py: 'def return if elif else for while class import from as try except finally raise with lambda pass break continue True False None and or not in is global nonlocal yield async await print self del assert',
+    c: 'int char float double void return if else for while do switch case break continue default struct typedef const static unsigned signed long short sizeof enum union extern register volatile include define auto inline restrict bool'
+};
+
+function detectLang(ext) {
+    if (['js', 'mjs', 'jsx', 'ts', 'tsx', 'vue'].indexOf(ext) !== -1) return 'js';
+    if (ext === 'json') return 'json';
+    if (ext === 'py') return 'py';
+    if (['c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'java', 'cs', 'go'].indexOf(ext) !== -1) return 'c';
+    return null;
+}
+
+function highlightCode(code, lang) {
+    var kw = {};
+    (LANG_KEYWORDS[lang] || '').split(' ').forEach(function(w) { kw[w] = true; });
+    var re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|#[^\n]*)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
+    var out = '';
+    var last = 0;
+    var m;
+    while ((m = re.exec(code)) !== null) {
+        out += escapeHtml(code.slice(last, m.index));
+        var cls = null;
+        if (m[1] !== undefined) cls = 'tok-c';
+        else if (m[2] !== undefined) cls = 'tok-s';
+        else if (m[3] !== undefined) cls = 'tok-n';
+        else if (m[4] !== undefined && kw[m[4]]) cls = 'tok-k';
+        out += cls ? '<span class="' + cls + '">' + escapeHtml(m[0]) + '</span>' : escapeHtml(m[0]);
+        last = m.index + m[0].length;
+    }
+    out += escapeHtml(code.slice(last));
+    return out;
+}
+
+// Renders text content with a plain/highlight toggle (auto-detects language).
+// editable=true produces an editing surface (highlight via overlay editor).
+function renderTextView(text, editable) {
+    var content = document.getElementById('previewContent');
+    content.innerHTML = '';
+
+    var detected = detectLang(previewFileInfo.ext);
+    var toolbar = document.createElement('div');
+    toolbar.style.cssText = 'display: flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; color: #666;';
+    var label = document.createElement('span');
+    label.textContent = '显示方式';
+    var select = document.createElement('select');
+    select.style.cssText = 'padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; background: white;';
+    [['plain', '纯文本'], ['auto', '代码着色(自动)'], ['js', 'JavaScript'], ['json', 'JSON'], ['py', 'Python'], ['c', 'C/C++']].forEach(function(opt) {
+        var o = document.createElement('option');
+        o.value = opt[0];
+        o.textContent = opt[1];
+        select.appendChild(o);
+    });
+    select.value = detected ? 'auto' : 'plain';
+    toolbar.appendChild(label);
+    toolbar.appendChild(select);
+    content.appendChild(toolbar);
+
+    var viewWrap = document.createElement('div');
+    content.appendChild(viewWrap);
+
+    function currentLang() {
+        if (select.value === 'plain') return null;
+        if (select.value === 'auto') return detected;
+        return select.value;
+    }
+
+    function makePlainTextarea(readOnly) {
+        var ta = document.createElement('textarea');
+        ta.className = 'preview-text';
+        ta.value = text;
+        ta.readOnly = readOnly;
+        ta.spellcheck = false;
+        return ta;
+    }
+
+    function render() {
+        var lang = currentLang();
+        viewWrap.innerHTML = '';
+        if (!editable) {
+            if (lang) {
+                var pre = document.createElement('pre');
+                pre.className = 'code-view';
+                pre.innerHTML = highlightCode(text, lang);
+                viewWrap.appendChild(pre);
+            } else {
+                viewWrap.appendChild(makePlainTextarea(true));
+            }
+            return;
+        }
+        if (lang) {
+            var wrap = document.createElement('div');
+            wrap.className = 'code-editor-wrap';
+            var pre2 = document.createElement('pre');
+            pre2.className = 'code-view';
+            var ta = document.createElement('textarea');
+            ta.className = 'preview-text';
+            ta.value = text;
+            ta.spellcheck = false;
+            var sync = function() {
+                pre2.innerHTML = highlightCode(ta.value, lang) + '\n';
+                pre2.scrollTop = ta.scrollTop;
+                pre2.scrollLeft = ta.scrollLeft;
+            };
+            ta.addEventListener('input', sync);
+            ta.addEventListener('scroll', function() {
+                pre2.scrollTop = ta.scrollTop;
+                pre2.scrollLeft = ta.scrollLeft;
+            });
+            wrap.appendChild(pre2);
+            wrap.appendChild(ta);
+            viewWrap.appendChild(wrap);
+            sync();
+        } else {
+            viewWrap.appendChild(makePlainTextarea(false));
+        }
+    }
+
+    select.addEventListener('change', render);
+    render();
+}
+
 function previewFile(filePath, fileName) {
     var ext = getFileExtension(fileName);
     var previewUrl = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
@@ -771,12 +896,7 @@ function previewFile(filePath, fileName) {
             } else {
                 var textReader = new FileReader();
                 textReader.onload = function() {
-                    var textarea = document.createElement('textarea');
-                    textarea.className = 'preview-text';
-                    textarea.value = textReader.result;
-                    textarea.readOnly = true;
-                    content.innerHTML = '';
-                    content.appendChild(textarea);
+                    renderTextView(textReader.result, false);
                 };
                 textReader.readAsText(blob);
             }
@@ -820,12 +940,7 @@ function previewFile(filePath, fileName) {
         xhr.open('GET', previewUrl, true);
         xhr.onload = function() {
             if (xhr.status === 200) {
-                var textarea = document.createElement('textarea');
-                textarea.className = 'preview-text';
-                textarea.value = xhr.responseText;
-                textarea.readOnly = true;
-                content.innerHTML = '';
-                content.appendChild(textarea);
+                renderTextView(xhr.responseText, false);
             } else {
                 content.innerHTML = '';
                 var msgDiv = document.createElement('div');
@@ -871,12 +986,7 @@ function editFile(filePath, fileName) {
     xhr.open('GET', previewUrl, true);
     xhr.onload = function() {
         if (xhr.status === 200) {
-            var textarea = document.createElement('textarea');
-            textarea.className = 'preview-text';
-            textarea.value = xhr.responseText;
-            textarea.readOnly = false;
-            content.innerHTML = '';
-            content.appendChild(textarea);
+            renderTextView(xhr.responseText, true);
             document.getElementById('previewActions').style.display = 'block';
         } else {
             content.innerHTML = '';
@@ -1156,52 +1266,93 @@ function deleteFolder(key, folderPath) {
     }, deleteFolderError);
 }
 
-function deleteFolderFiles(key, files, index) {
-    if (index >= files.length) {
-        fileTreeCache = null;
-        invalidateHttpCache();
-        showDeleteMessage('删除成功！', 'success');
-        setTimeout(function() {
-            closeDeleteModal();
-            clearSelection();
-            loadFileList();
-        }, 1500);
+// Parallel delete with adaptive concurrency (starts at 3, scales up to 5
+// on consecutive successes, backs off to 3 on errors).
+function deleteFolderFiles(key, files) {
+    if (!files.length) {
+        deleteAllDone();
         return;
     }
-
-    showDeleteMessage('正在删除 (' + (index + 1) + '/' + files.length + '): ' + files[index].path, 'success');
-
-    var data = {
-        message: 'Delete file: ' + files[index].path,
-        sha: files[index].sha
+    var state = {
+        next: 0,
+        active: 0,
+        done: 0,
+        limit: 3,
+        okStreak: 0,
+        failed: false,
+        errMsg: ''
     };
+    showDeleteMessage('正在删除 (0/' + files.length + ')', 'success');
 
-    var deleteXhr = new XMLHttpRequest();
-    var deleteUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(files[index].path));
-    deleteXhr.open('DELETE', deleteUrl, true);
-    deleteXhr.setRequestHeader('Authorization', 'Bearer ' + key);
-    deleteXhr.setRequestHeader('Content-Type', 'application/json');
-
-    deleteXhr.onload = function() {
-        if (deleteXhr.status === 200 || deleteXhr.status === 201) {
-            deleteFolderFiles(key, files, index + 1);
-        } else {
-            try {
-                var error = JSON.parse(deleteXhr.responseText);
-                showDeleteMessage('删除失败: ' + (error.message || '未知错误'), 'error');
-            } catch (e) {
-                showDeleteMessage('删除失败，状态码: ' + deleteXhr.status, 'error');
-            }
+    function settle() {
+        if (state.active > 0) return;
+        if (state.failed) {
+            showDeleteMessage('删除失败: ' + state.errMsg + '（已删除 ' + state.done + '/' + files.length + '）', 'error');
             document.getElementById('deleteBtn').disabled = false;
+            return;
         }
-    };
+        if (state.next >= files.length) {
+            deleteAllDone();
+        }
+    }
 
-    deleteXhr.onerror = function() {
-        showDeleteMessage('网络错误，删除失败', 'error');
-        document.getElementById('deleteBtn').disabled = false;
-    };
+    function pump() {
+        while (!state.failed && state.active < state.limit && state.next < files.length) {
+            var f = files[state.next++];
+            state.active++;
+            (function(file) {
+                var data = {
+                    message: 'Delete file: ' + file.path,
+                    sha: file.sha
+                };
+                var xhr = new XMLHttpRequest();
+                xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(file.path)), true);
+                xhr.setRequestHeader('Authorization', 'Bearer ' + key);
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.onload = function() {
+                    state.active--;
+                    if (xhr.status === 200 || xhr.status === 201) {
+                        state.done++;
+                        state.okStreak++;
+                        if (state.okStreak >= 4 && state.limit < 5) {
+                            state.limit++;
+                            state.okStreak = 0;
+                        }
+                        showDeleteMessage('正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
+                    } else {
+                        state.failed = true;
+                        try {
+                            var error = JSON.parse(xhr.responseText);
+                            state.errMsg = error.message || ('状态码 ' + xhr.status);
+                        } catch (e) {
+                            state.errMsg = '状态码 ' + xhr.status;
+                        }
+                    }
+                    pump();
+                    settle();
+                };
+                xhr.onerror = function() {
+                    state.active--;
+                    state.failed = true;
+                    state.errMsg = '网络错误';
+                    settle();
+                };
+                xhr.send(JSON.stringify(data));
+            })(f);
+        }
+    }
+    pump();
+}
 
-    deleteXhr.send(JSON.stringify(data));
+function deleteAllDone() {
+    fileTreeCache = null;
+    invalidateHttpCache();
+    showDeleteMessage('删除成功！', 'success');
+    setTimeout(function() {
+        closeDeleteModal();
+        clearSelection();
+        loadFileList();
+    }, 1500);
 }
 
 function safeDecode(seg) {
@@ -2069,6 +2220,29 @@ function startUpload(key, doneBases) {
     fillUploads();
 }
 
+// Apply concurrency select changes to an in-progress upload immediately
+function applyConcurrencyChange() {
+    var st = uploadState;
+    if (!st) return;
+    var sel = document.getElementById('concurrencySelect');
+    var mode = sel ? sel.value : '3';
+    if (mode === 'auto') {
+        st.adaptive = true;
+    } else {
+        st.adaptive = false;
+        var v;
+        if (mode === 'custom') {
+            var customInput = document.getElementById('concurrencyCustom');
+            v = customInput ? parseInt(customInput.value, 10) : 3;
+        } else {
+            v = parseInt(mode, 10);
+        }
+        st.limit = Math.min(10, Math.max(UPLOAD_LIMIT_MIN, v || 3));
+    }
+    renderChunkPanel();
+    fillUploads();
+}
+
 // Keep the pipeline filled up to the current concurrency limit.
 // The limit may change at runtime in adaptive mode.
 function fillUploads() {
@@ -2501,6 +2675,11 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('batchStopBtn').addEventListener('click', stopBatchDownload);
     document.getElementById('concurrencySelect').addEventListener('change', function() {
         document.getElementById('concurrencyCustom').style.display = this.value === 'custom' ? '' : 'none';
+        // apply immediately to an in-progress upload
+        applyConcurrencyChange();
+    });
+    document.getElementById('concurrencyCustom').addEventListener('input', function() {
+        applyConcurrencyChange();
     });
     document.getElementById('batchDeleteBtn').addEventListener('click', openBatchDeleteModal);
     document.getElementById('batchCancelBtn').addEventListener('click', clearSelection);

@@ -311,10 +311,66 @@ a:hover {
     padding: 10px;
     border: 1px solid #ddd;
     border-radius: 8px;
-    font-family: monospace;
+    font-family: Consolas, 'Courier New', monospace;
     font-size: 14px;
     resize: none;
     background: #f8f8f8;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 4;
+    box-sizing: border-box;
+}
+#deleteConfirmText,
+.message {
+    word-break: break-all;
+}
+.code-view {
+    white-space: pre;
+    overflow: auto;
+    max-height: 60vh;
+    background: #f8f8f8;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px;
+    margin: 0;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 14px;
+    line-height: normal;
+    tab-size: 4;
+    box-sizing: border-box;
+    color: #333;
+}
+.tok-k { color: #7c3aed; font-weight: bold; }
+.tok-s { color: #b45309; }
+.tok-c { color: #6a9955; }
+.tok-n { color: #1d4ed8; }
+.code-editor-wrap {
+    position: relative;
+    height: 300px;
+}
+.code-editor-wrap .code-view,
+.code-editor-wrap .preview-text {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    max-height: none;
+    line-height: normal;
+}
+.code-editor-wrap .code-view {
+    pointer-events: none;
+    z-index: 1;
+}
+.code-editor-wrap .preview-text {
+    background: transparent;
+    color: transparent;
+    caret-color: #333;
+    z-index: 2;
+}
+.code-editor-wrap .preview-text::selection {
+    background: rgba(44, 130, 201, 0.3);
 }
 .entry > span:first-child {
     min-width: 0;
