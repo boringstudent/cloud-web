@@ -119,6 +119,26 @@ function setPreviewBlobUrl(url) {
     previewBlobUrl = url;
 }
 
+var previewAbort = null; // 图片流式预览的 AbortController
+
+// 关闭/切换预览时停止媒体继续缓冲、中断进行中的流式读取，避免后台浪费带宽
+function stopPreviewMedia() {
+    if (previewAbort) {
+        try { previewAbort.abort(); } catch (e) {}
+        previewAbort = null;
+    }
+    var content = document.getElementById('previewContent');
+    if (!content) return;
+    var media = content.querySelectorAll('audio, video');
+    for (var i = 0; i < media.length; i++) {
+        try {
+            media[i].pause();
+            media[i].removeAttribute('src');
+            media[i].load();
+        } catch (e) {}
+    }
+}
+
 var CHUNK_SIZE_LEVELS = [
     Math.floor((47185920 - 4096) * 3 / 4),
     Math.floor((31457280 - 4096) * 3 / 4)
@@ -921,37 +941,65 @@ document.addEventListener('visibilitychange', function() {
 });
 
 // ---- service status: GitHub proxy + auth API, refreshed every 10 min ----
+// RTT 用 HEAD 轻量请求测量：不含响应体传输与服务端地理查询耗时，更接近真实网络延迟
 var SVC_CHECK_INTERVAL = 10 * 60 * 1000;
 var svcStatus = { proxy: null, api: null };
 var svcChecking = false;
 
-function checkOneService(url, cb) {
+// 浏览器无法 ICMP ping，以请求往返时间（RTT）作为延时
+function measureRtt(url, cb) {
     var xhr = new XMLHttpRequest();
-    var startTs = 0;
+    var done = function(rtt) {
+        if (done.called) return;
+        done.called = true;
+        cb(rtt);
+    };
+    var timer = setTimeout(function() { xhr.abort(); done(null); }, 15000);
+    xhr.open('HEAD', url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now(), true);
+    xhr.setRequestHeader('Cache-Control', 'no-cache');
+    var startTs = performance.now();
+    xhr.onload = function() { clearTimeout(timer); done(Math.round(performance.now() - startTs)); };
+    xhr.onerror = function() { clearTimeout(timer); done(null); };
+    xhr.onabort = function() { clearTimeout(timer); done(null); };
+    xhr.send();
+}
+
+function checkOneService(url, cb) {
+    // RTT 与详情并行：HEAD 测延迟，GET 取 IP/归属地/ISP
+    var rtt = null;
+    var info = null;
+    var pending = 2;
+    var finish = function() {
+        pending--;
+        if (pending > 0) return;
+        var res = info || { ok: false };
+        if (rtt !== null) res.rtt = rtt;
+        cb(res);
+    };
+    measureRtt(url, function(r) { rtt = r; finish(); });
+    var xhr = new XMLHttpRequest();
     var done = function(res) {
         if (done.called) return;
         done.called = true;
-        cb(res);
+        info = res;
+        finish();
     };
-    var timer = setTimeout(function() { xhr.abort(); done({ ok: false }); }, 10000);
+    var timer = setTimeout(function() { xhr.abort(); done({ ok: false }); }, 15000);
     xhr.open('GET', url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now(), true);
     xhr.setRequestHeader('Cache-Control', 'no-cache');
     xhr.onload = function() {
         clearTimeout(timer);
-        // 浏览器无法 ICMP ping，以请求往返时间（RTT）作为延时
-        var rtt = Math.round(performance.now() - startTs);
         if (xhr.status === 200) {
             try {
                 var d = JSON.parse(xhr.responseText);
-                done({ ok: true, ip: d.ip || '', location: d.location || '', isp: d.isp || '', rtt: rtt });
+                done({ ok: true, ip: d.ip || '', location: d.location || '', isp: d.isp || '' });
                 return;
             } catch (e) {}
         }
-        done({ ok: false, rtt: rtt });
+        done({ ok: false });
     };
     xhr.onerror = function() { clearTimeout(timer); done({ ok: false }); };
     xhr.onabort = function() { clearTimeout(timer); done({ ok: false }); };
-    startTs = performance.now();
     xhr.send();
 }
 
@@ -1503,6 +1551,81 @@ function loadMediaWithRate(url, totalSize, loadingDiv, onDone, onFail) {
     xhr.send();
 }
 
+// 图片流式预览：fetch 分块读取，角标实时显示速度与百分比，
+// 每 400ms 用已收到的部分数据重建 ObjectURL 实现渐进式渲染（边下边显示）。
+// 返回 false 表示环境不支持流式读取，调用方回退为直接设置 img.src。
+function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
+    if (!window.fetch || typeof AbortController === 'undefined' || typeof ReadableStream === 'undefined') {
+        return false;
+    }
+    previewAbort = new AbortController();
+    var chunks = [];
+    var received = 0;
+    var total = menuFileInfo.size || 0;
+    var lastLoaded = 0;
+    var lastTime = Date.now();
+    var lastPaint = 0;
+    var tmpUrl = null;
+
+    var paint = function() {
+        var u = URL.createObjectURL(new Blob(chunks));
+        if (tmpUrl) URL.revokeObjectURL(tmpUrl);
+        tmpUrl = u;
+        img.src = u;
+    };
+
+    var isAbort = function(err) { return err && err.name === 'AbortError'; };
+
+    fetch(url, { signal: previewAbort.signal, cache: 'no-store' }).then(function(resp) {
+        if (!resp.ok || !resp.body) {
+            onFail(resp.status || 0);
+            return;
+        }
+        var len = parseInt(resp.headers.get('Content-Length'), 10);
+        if (len > 0) total = len;
+        var reader = resp.body.getReader();
+        var pump = function() {
+            reader.read().then(function(r) {
+                if (r.done) {
+                    var u = URL.createObjectURL(new Blob(chunks));
+                    if (tmpUrl) URL.revokeObjectURL(tmpUrl);
+                    setPreviewBlobUrl(u);
+                    previewAbort = null;
+                    img.src = u;
+                    loadingDiv.style.display = 'none';
+                    rateTag.textContent = '';
+                    return;
+                }
+                chunks.push(r.value);
+                received += r.value.byteLength;
+                var now = Date.now();
+                if (now - lastTime >= 500) {
+                    var sp = (received - lastLoaded) / ((now - lastTime) / 1000);
+                    lastLoaded = received;
+                    lastTime = now;
+                    var parts = [];
+                    if (sp > 1024) parts.push(formatSize(Math.round(sp)) + '/s');
+                    if (total) parts.push(Math.min(99, Math.round(received / total * 100)) + '%');
+                    rateTag.textContent = parts.join(' · ');
+                }
+                if (now - lastPaint >= 400) {
+                    lastPaint = now;
+                    paint();
+                }
+                pump();
+            }, function(err) {
+                if (isAbort(err)) return;
+                onFail(0);
+            });
+        };
+        pump();
+    }, function(err) {
+        if (isAbort(err)) return;
+        onFail(0);
+    });
+    return true;
+}
+
 function downloadMergedFile(parts, fileName) {
     fetchMergedBlob(parts, function(blob) {
         saveBlobAs(blob, fileName);
@@ -1832,6 +1955,7 @@ function previewFile(filePath, fileName) {
 
     document.getElementById('previewTitle').textContent = '预览: ' + fileName;
     var content = document.getElementById('previewContent');
+    stopPreviewMedia();
     content.innerHTML = '';
     var loadingDiv = document.createElement('div');
     loadingDiv.className = 'loading';
@@ -1895,8 +2019,8 @@ function previewFile(filePath, fileName) {
     }
 
     if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
-        // 流式加载：URL 直接交给媒体元素，浏览器按需 Range 拉取、边下边播，
-        // 不再等待整文件下载完成；progress 事件采样缓冲速度实时显示
+        // 流式加载：音/视频 URL 直接交给媒体元素按 Range 边下边播；
+        // 图片走 fetch 分块读取，部分数据渐进渲染；角落实时显示加载速度
         content.innerHTML = '';
         content.appendChild(loadingDiv);
         var mediaEl;
@@ -1918,41 +2042,64 @@ function previewFile(filePath, fileName) {
         var rateBox = document.createElement('div');
         rateBox.className = 'media-wrap';
         rateBox.style.position = 'relative';
+        var showMediaError = function() {
+            loadingDiv.className = 'message error';
+            loadingDiv.textContent = '加载失败，无法播放该文件';
+            rateTag.textContent = '';
+        };
         if (mediaEl.tagName === 'IMG') {
+            // 首帧部分数据成功解码即隐藏 loading，后续持续渐进刷新
             mediaEl.onload = function() { loadingDiv.style.display = 'none'; };
+            mediaEl.onerror = function() {
+                // 部分数据无法解码属正常（图片未收完），仅最终直连失败才报错
+                if (!previewAbort) showMediaError();
+            };
+            var streamed = streamImagePreview(previewUrl, mediaEl, loadingDiv, rateTag, function() {
+                // 流式失败回退为浏览器直连加载
+                previewAbort = null;
+                mediaEl.src = previewUrl;
+            });
+            if (!streamed) mediaEl.src = previewUrl;
         } else {
             mediaEl.addEventListener('canplay', function() { loadingDiv.style.display = 'none'; });
-            // 采样缓冲字节增量推算实时下载速度
+            // 采样缓冲字节增量推算实时下载速度；duration 不可用时回退 seekable 估算
             var lastBuffered = 0, lastSampleT = 0, mediaSize = menuFileInfo.size || 0;
+            var getDuration = function() {
+                var d = mediaEl.duration;
+                if (!isFinite(d) || d <= 0) {
+                    try {
+                        if (mediaEl.seekable.length) d = mediaEl.seekable.end(mediaEl.seekable.length - 1);
+                    } catch (e) {}
+                }
+                return (isFinite(d) && d > 0) ? d : 0;
+            };
             mediaEl.addEventListener('progress', function() {
-                if (!mediaSize || !mediaEl.duration) return;
+                var dur = getDuration();
+                if (!mediaSize || !dur) return;
                 var now = Date.now();
                 var end = mediaEl.buffered.length ? mediaEl.buffered.end(mediaEl.buffered.length - 1) : 0;
-                var bufferedBytes = end / mediaEl.duration * mediaSize;
+                var bufferedBytes = end / dur * mediaSize;
                 if (!lastSampleT) { lastSampleT = now; lastBuffered = bufferedBytes; return; }
                 var dt = (now - lastSampleT) / 1000;
                 if (dt < 0.5) return;
                 var sp = (bufferedBytes - lastBuffered) / dt;
                 lastSampleT = now;
                 lastBuffered = bufferedBytes;
-                if (end >= mediaEl.duration - 0.5 || sp <= 0) {
+                if (end >= dur - 0.5) {
                     rateTag.textContent = '';
                     return;
                 }
-                rateTag.textContent = formatSize(Math.round(sp)) + '/s';
+                var parts = [];
+                if (sp > 1024) parts.push(formatSize(Math.round(sp)) + '/s');
+                parts.push('已缓冲 ' + Math.round(end / dur * 100) + '%');
+                rateTag.textContent = parts.join(' · ');
             });
             mediaEl.addEventListener('ended', function() { rateTag.textContent = ''; });
-        }
-        mediaEl.onerror = function() {
-            loadingDiv.className = 'message error';
-            loadingDiv.textContent = '加载失败，无法播放该文件';
-            rateTag.textContent = '';
-        };
-        if (mediaEl.tagName !== 'IMG') {
+            mediaEl.onerror = showMediaError;
             mediaEl.controls = true;
             mediaEl.preload = 'auto';
+            mediaEl.src = previewUrl;
         }
-        mediaEl.src = previewUrl;
         rateBox.appendChild(mediaEl);
         rateBox.appendChild(rateTag);
         content.appendChild(rateBox);
@@ -1993,6 +2140,7 @@ function editFile(filePath, fileName) {
 
     document.getElementById('previewTitle').textContent = '编辑: ' + fileName;
     var content = document.getElementById('previewContent');
+    stopPreviewMedia();
     content.innerHTML = '';
     var loadingDiv = document.createElement('div');
     loadingDiv.className = 'loading';
@@ -2030,6 +2178,7 @@ function editFile(filePath, fileName) {
 
 function closePreviewModal() {
     document.getElementById('previewModal').classList.remove('show');
+    stopPreviewMedia();
     setPreviewBlobUrl(null);
 }
 
