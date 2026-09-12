@@ -626,9 +626,8 @@ function showAdminMessage(text, type) {
 }
 
 // 用户列表读取 cloud-user 仓库的 user.json，查看列表无需管理员凭据；写操作仍走鉴权 API。
-// 注意：raw.githubusercontent.com 有数分钟 CDN 缓存（外层代理亦可能缓存），写操作后
-// 立刻读取会拿到旧内容，因此优先走实时返回仓库内容的 contents API（用登录令牌鉴权），
-// 失败时回退到 raw + 时间戳。
+// 整条链路不使用任何缓存：不走 ETag/304，请求附加时间戳并带 Cache-Control: no-cache，
+// 每次拿到的都是仓库实时内容；无令牌时回退 raw + 时间戳。
 var ADMIN_USER_REPO = 'boringstudent/cloud-user';
 var ADMIN_USER_BRANCH = 'main';
 var adminUsersData = null;
@@ -654,18 +653,24 @@ function loadAdminUsers() {
     };
     ensureGhKey(function(key) {
         if (!key) { fetchAdminUsersRaw(done); return; }
-        var url = 'https://api.github.com/repos/' + ADMIN_USER_REPO + '/contents/user.json?ref=' + ADMIN_USER_BRANCH;
-        cachedGet(url, true, function(status, body) {
-            if (status === 200 || status === 304) {
+        var url = ghUrl('https://api.github.com/repos/' + ADMIN_USER_REPO + '/contents/user.json?ref=' + ADMIN_USER_BRANCH + '&_=' + Date.now());
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        applyGhAuth(xhr);
+        xhr.setRequestHeader('Cache-Control', 'no-cache');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
                 try {
-                    var obj = JSON.parse(body);
+                    var obj = JSON.parse(xhr.responseText);
                     var b64 = String(obj.content || '').replace(/\s+/g, '');
                     done(null, JSON.parse(decodeURIComponent(escape(atob(b64)))));
                     return;
                 } catch (e) {}
             }
             fetchAdminUsersRaw(done);
-        });
+        };
+        xhr.onerror = function() { fetchAdminUsersRaw(done); };
+        xhr.send();
     });
 }
 
@@ -784,7 +789,6 @@ function adminAddUser() {
                 showAdminMessage('添加成功: ' + username, 'success');
                 document.getElementById('adminNewUsername').value = '';
                 document.getElementById('adminNewPassword').value = '';
-                bypassHttpCache();
                 loadAdminUsers();
             });
         });
@@ -815,7 +819,6 @@ function adminResetPassword(username) {
                     return;
                 }
                 showAdminMessage('已重置 ' + username + ' 的密码', 'success');
-                bypassHttpCache();
                 loadAdminUsers();
             });
         });
@@ -839,7 +842,6 @@ function adminChangeRole(username, newRole) {
                 return;
             }
             showAdminMessage('已将 ' + username + ' 调整为 ' + newRole, 'success');
-            bypassHttpCache();
             loadAdminUsers();
         });
     });
@@ -861,7 +863,6 @@ function adminDeleteUser(username) {
                 return;
             }
             showAdminMessage('已删除用户: ' + username, 'success');
-            bypassHttpCache();
             loadAdminUsers();
         });
     });
