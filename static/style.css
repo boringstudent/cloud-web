@@ -372,6 +372,59 @@ a:hover {
 .code-editor-wrap .preview-text::selection {
     background: rgba(44, 130, 201, 0.3);
 }
+.markdown-view {
+    background: #ffffff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 15px 18px;
+    max-height: 60vh;
+    overflow: auto;
+    line-height: 1.7;
+    font-size: 14px;
+    color: #333;
+    word-break: break-word;
+}
+.markdown-view h1, .markdown-view h2, .markdown-view h3,
+.markdown-view h4, .markdown-view h5, .markdown-view h6 {
+    margin: 12px 0 8px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 4px;
+    white-space: normal;
+    overflow: visible;
+}
+.markdown-view p {
+    margin: 8px 0;
+}
+.markdown-view code {
+    background: #f6f8fa;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 13px;
+}
+.markdown-view pre.code-view {
+    max-height: 300px;
+    margin: 8px 0;
+}
+.markdown-view blockquote {
+    margin: 8px 0;
+    padding: 4px 12px;
+    border-left: 4px solid #2c82c9;
+    background: #f6f8fa;
+    color: #555;
+}
+.markdown-view ul, .markdown-view ol {
+    margin: 8px 0;
+    padding-left: 24px;
+}
+.markdown-view hr {
+    border: none;
+    border-top: 1px solid #ddd;
+    margin: 12px 0;
+}
+.markdown-view a {
+    color: #2c82c9;
+}
 .entry > span:first-child {
     min-width: 0;
     white-space: nowrap;

@@ -654,11 +654,40 @@ function hideToast() {
 // Parallel chunk downloading (limited concurrency) for faster preview/download
 var MERGE_CONCURRENCY = 6;
 
-function fetchMergedBlob(parts, onDone, onFail) {
+function fetchMergedBlob(parts, onDone, onFail, onProgress) {
     var buffers = new Array(parts.length);
     var nextIndex = 0;
     var doneCount = 0;
     var failed = false;
+    var totalBytes = 0;
+    parts.forEach(function(p) { totalBytes += p.size || 0; });
+    var loadedBytes = 0;
+    var lastSampleLoaded = 0;
+    var lastSampleTime = Date.now();
+    var speedText = '';
+
+    var progressText = function() {
+        var pct = totalBytes ? Math.min(99, Math.round(loadedBytes / totalBytes * 100)) : 0;
+        return '正在加载 ' + doneCount + '/' + parts.length + ' · ' + pct + '%' + (speedText ? ' · ' + speedText : '');
+    };
+
+    var report = function() {
+        showToast(progressText());
+        if (onProgress) {
+            onProgress(totalBytes ? Math.min(99, Math.round(loadedBytes / totalBytes * 100)) : null, speedText);
+        }
+    };
+
+    var sample = function() {
+        var now = Date.now();
+        if (now - lastSampleTime >= 500) {
+            var sp = (loadedBytes - lastSampleLoaded) / ((now - lastSampleTime) / 1000);
+            lastSampleLoaded = loadedBytes;
+            lastSampleTime = now;
+            speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+        }
+    };
+
     showToast('正在加载 0/' + parts.length + ' ...');
 
     var fail = function() {
@@ -672,6 +701,7 @@ function fetchMergedBlob(parts, onDone, onFail) {
         if (failed) return;
         if (doneCount >= parts.length) {
             hideToast();
+            if (onProgress) onProgress(100, '');
             onDone(new Blob(buffers));
             return;
         }
@@ -681,11 +711,19 @@ function fetchMergedBlob(parts, onDone, onFail) {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', url, true);
         xhr.responseType = 'arraybuffer';
+        xhr.onprogress = function(e) {
+            var delta = e.loaded - (parts[i]._loaded || 0);
+            parts[i]._loaded = e.loaded;
+            loadedBytes += delta;
+            sample();
+            report();
+        };
         xhr.onload = function() {
             if (xhr.status === 200) {
                 buffers[i] = xhr.response;
+                loadedBytes += (parts[i].size || 0) - (parts[i]._loaded || 0);
                 doneCount++;
-                showToast('正在加载 ' + doneCount + '/' + parts.length + ' ...');
+                report();
                 next();
             } else {
                 fail();
@@ -699,6 +737,40 @@ function fetchMergedBlob(parts, onDone, onFail) {
     for (var k = 0; k < starters; k++) {
         next();
     }
+}
+
+// Fetch a whole file as Blob with live percentage + speed updates
+function loadMediaWithRate(url, totalSize, loadingDiv, onDone, onFail) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'blob';
+    var lastLoaded = 0;
+    var lastTime = Date.now();
+    var speedText = '';
+    xhr.onprogress = function(e) {
+        var now = Date.now();
+        if (now - lastTime >= 500) {
+            var sp = (e.loaded - lastLoaded) / ((now - lastTime) / 1000);
+            lastLoaded = e.loaded;
+            lastTime = now;
+            speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+        }
+        var pct = null;
+        if (totalSize) pct = Math.min(99, Math.round(e.loaded / totalSize * 100));
+        else if (e.lengthComputable) pct = Math.round(e.loaded / e.total * 100);
+        loadingDiv.textContent = '加载中' + (pct !== null ? ' ' + pct + '%' : '...') + (speedText ? ' · ' + speedText : '');
+    };
+    xhr.onload = function() {
+        if (xhr.status === 200) {
+            onDone(xhr.response);
+        } else {
+            onFail(xhr.status);
+        }
+    };
+    xhr.onerror = function() {
+        onFail(0);
+    };
+    xhr.send();
 }
 
 function downloadMergedFile(parts, fileName) {
@@ -756,6 +828,116 @@ function highlightCode(code, lang) {
     return out;
 }
 
+// ---- Lightweight Markdown rendering ----
+function mdInline(text) {
+    var s = escapeHtml(text);
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img alt="$1" src="$2" style="max-width: 100%; border-radius: 6px;">');
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+    s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+    return s;
+}
+
+function markdownToHtml(src) {
+    var lines = src.split('\n');
+    var html = '';
+    var inCode = false;
+    var codeBuf = [];
+    var listType = null;
+    var para = [];
+
+    function flushPara() {
+        if (para.length) {
+            html += '<p>' + para.map(mdInline).join('<br>') + '</p>';
+            para = [];
+        }
+    }
+    function flushList() {
+        if (listType) {
+            html += '</' + listType + '>';
+            listType = null;
+        }
+    }
+    function flushAll() {
+        flushPara();
+        flushList();
+    }
+
+    lines.forEach(function(line) {
+        if (/^\s*```/.test(line)) {
+            if (inCode) {
+                html += '<pre class="code-view">' + escapeHtml(codeBuf.join('\n')) + '</pre>';
+                codeBuf = [];
+                inCode = false;
+            } else {
+                flushAll();
+                inCode = true;
+            }
+            return;
+        }
+        if (inCode) {
+            codeBuf.push(line);
+            return;
+        }
+        var m;
+        if ((m = line.match(/^(#{1,6})\s+(.*)/))) {
+            flushAll();
+            var lvl = m[1].length;
+            html += '<h' + lvl + '>' + mdInline(m[2]) + '</h' + lvl + '>';
+            return;
+        }
+        if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
+            flushAll();
+            html += '<hr>';
+            return;
+        }
+        if ((m = line.match(/^>\s?(.*)/))) {
+            flushAll();
+            html += '<blockquote>' + mdInline(m[1]) + '</blockquote>';
+            return;
+        }
+        if ((m = line.match(/^\s*[-*+]\s+(.*)/))) {
+            flushPara();
+            if (listType !== 'ul') {
+                flushList();
+                html += '<ul>';
+                listType = 'ul';
+            }
+            html += '<li>' + mdInline(m[1]) + '</li>';
+            return;
+        }
+        if ((m = line.match(/^\s*\d+\.\s+(.*)/))) {
+            flushPara();
+            if (listType !== 'ol') {
+                flushList();
+                html += '<ol>';
+                listType = 'ol';
+            }
+            html += '<li>' + mdInline(m[1]) + '</li>';
+            return;
+        }
+        if (/^\s*$/.test(line)) {
+            flushAll();
+            return;
+        }
+        para.push(line);
+    });
+    if (inCode) {
+        html += '<pre class="code-view">' + escapeHtml(codeBuf.join('\n')) + '</pre>';
+    }
+    flushAll();
+    return html || '<p style="color: #999;">（空文档）</p>';
+}
+
+function renderMarkdownView(src) {
+    var div = document.createElement('div');
+    div.className = 'markdown-view';
+    div.innerHTML = markdownToHtml(src);
+    return div;
+}
+
 // Renders text content with a plain/highlight toggle (auto-detects language).
 // editable=true produces an editing surface (highlight via overlay editor).
 function renderTextView(text, editable) {
@@ -763,19 +945,24 @@ function renderTextView(text, editable) {
     content.innerHTML = '';
 
     var detected = detectLang(previewFileInfo.ext);
+    var isMd = previewFileInfo.ext === 'md' || previewFileInfo.ext === 'markdown';
     var toolbar = document.createElement('div');
     toolbar.style.cssText = 'display: flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; color: #666;';
     var label = document.createElement('span');
     label.textContent = '显示方式';
     var select = document.createElement('select');
     select.style.cssText = 'padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; background: white;';
-    [['plain', '纯文本'], ['auto', '代码着色(自动)'], ['js', 'JavaScript'], ['json', 'JSON'], ['py', 'Python'], ['c', 'C/C++']].forEach(function(opt) {
+    var options = [['plain', '纯文本'], ['auto', '代码着色(自动)'], ['js', 'JavaScript'], ['json', 'JSON'], ['py', 'Python'], ['c', 'C/C++']];
+    if (isMd) {
+        options.unshift(['md', 'Markdown 预览']);
+    }
+    options.forEach(function(opt) {
         var o = document.createElement('option');
         o.value = opt[0];
         o.textContent = opt[1];
         select.appendChild(o);
     });
-    select.value = detected ? 'auto' : 'plain';
+    select.value = isMd ? 'md' : (detected ? 'auto' : 'plain');
     toolbar.appendChild(label);
     toolbar.appendChild(select);
     content.appendChild(toolbar);
@@ -801,6 +988,37 @@ function renderTextView(text, editable) {
     function render() {
         var lang = currentLang();
         viewWrap.innerHTML = '';
+        if (select.value === 'md') {
+            if (!editable) {
+                viewWrap.appendChild(renderMarkdownView(text));
+            } else {
+                // edit surface with a live Markdown preview toggle
+                var editWrap = document.createElement('div');
+                var toggleBtn = document.createElement('button');
+                toggleBtn.className = 'btn';
+                toggleBtn.style.cssText = 'padding: 5px 12px; font-size: 13px; margin-bottom: 8px;';
+                toggleBtn.textContent = '预览 Markdown';
+                var ta = makePlainTextarea(false);
+                var mdView = null;
+                toggleBtn.addEventListener('click', function() {
+                    if (mdView) {
+                        editWrap.removeChild(mdView);
+                        mdView = null;
+                        ta.style.display = '';
+                        toggleBtn.textContent = '预览 Markdown';
+                    } else {
+                        mdView = renderMarkdownView(ta.value);
+                        ta.style.display = 'none';
+                        editWrap.appendChild(mdView);
+                        toggleBtn.textContent = '返回编辑';
+                    }
+                });
+                editWrap.appendChild(toggleBtn);
+                editWrap.appendChild(ta);
+                viewWrap.appendChild(editWrap);
+            }
+            return;
+        }
         if (!editable) {
             if (lang) {
                 var pre = document.createElement('pre');
@@ -906,35 +1124,48 @@ function previewFile(filePath, fileName) {
             msgDiv.className = 'message error';
             msgDiv.textContent = '无法加载文件分片';
             content.appendChild(msgDiv);
+        }, function(pct, speed) {
+            if (pct !== null) {
+                loadingDiv.textContent = '加载中 ' + pct + '%' + (speed ? ' · ' + speed : '');
+            }
         });
         return;
     }
 
-    if (AUDIO_EXTS.indexOf(ext) !== -1) {
-        content.innerHTML = '';
-        var audio = document.createElement('audio');
-        audio.src = previewUrl;
-        audio.controls = true;
-        audio.preload = 'auto';
-        audio.className = 'preview-audio';
-        content.appendChild(audio);
-    } else if (VIDEO_EXTS.indexOf(ext) !== -1) {
-        content.innerHTML = '';
-        var video = document.createElement('video');
-        video.src = previewUrl;
-        video.controls = true;
-        video.preload = 'auto';
-        video.className = 'preview-video';
-        content.appendChild(video);
-    } else if (IMAGE_EXTS.indexOf(ext) !== -1) {
-        content.innerHTML = '';
-        var img = document.createElement('img');
-        img.src = previewUrl;
-        img.alt = fileName;
-        img.style.maxWidth = '100%';
-        img.style.maxHeight = '60vh';
-        img.style.borderRadius = '8px';
-        content.appendChild(img);
+    if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
+        loadMediaWithRate(previewUrl, menuFileInfo.size, loadingDiv, function(blob) {
+            content.innerHTML = '';
+            var mediaUrl = URL.createObjectURL(blob);
+            if (AUDIO_EXTS.indexOf(ext) !== -1) {
+                var audio = document.createElement('audio');
+                audio.src = mediaUrl;
+                audio.controls = true;
+                audio.preload = 'auto';
+                audio.className = 'preview-audio';
+                content.appendChild(audio);
+            } else if (VIDEO_EXTS.indexOf(ext) !== -1) {
+                var video = document.createElement('video');
+                video.src = mediaUrl;
+                video.controls = true;
+                video.preload = 'auto';
+                video.className = 'preview-video';
+                content.appendChild(video);
+            } else {
+                var img = document.createElement('img');
+                img.src = mediaUrl;
+                img.alt = fileName;
+                img.style.maxWidth = '100%';
+                img.style.maxHeight = '60vh';
+                img.style.borderRadius = '8px';
+                content.appendChild(img);
+            }
+        }, function(status) {
+            content.innerHTML = '';
+            var msgDiv = document.createElement('div');
+            msgDiv.className = 'message error';
+            msgDiv.textContent = status ? '加载失败，状态码: ' + status : '网络错误，无法加载文件';
+            content.appendChild(msgDiv);
+        });
     } else {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', previewUrl, true);
