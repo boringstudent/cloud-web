@@ -179,7 +179,7 @@
         <div id="adminModal" class="modal-overlay">
             <div class="modal-content preview-modal-content">
                 <span class="modal-close" onclick="closeAdminModal()">&times;</span>
-                <h2>用户管理</h2>
+                <h2>用户管理 <button class="btn" id="adminRefreshBtn" onclick="loadAdminUsers()" style="padding: 4px 12px; font-size: 12px; margin-left: 10px; vertical-align: middle;">刷新</button></h2>
                 <div id="adminUserList" style="max-height: 40vh; overflow-y: auto; margin-bottom: 15px;">
                     <div class="loading">加载中...</div>
                 </div>

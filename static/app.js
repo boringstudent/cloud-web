@@ -626,12 +626,16 @@ function showAdminMessage(text, type) {
 }
 
 function loadAdminUsers() {
+    var refreshBtn = document.getElementById('adminRefreshBtn');
+    if (refreshBtn) refreshBtn.disabled = true;
     withAdminCreds(function(creds) {
         if (!creds) {
             document.getElementById('adminUserList').innerHTML = '<div class="message error">需要管理员权限或身份验证失败</div>';
+            if (refreshBtn) refreshBtn.disabled = false;
             return;
         }
         apiGetJson(API_BASE + '/api/users?admin_user=' + encodeURIComponent(creds.admin_user) + '&admin_pass=' + encodeURIComponent(creds.admin_pass), function(err, data) {
+            if (refreshBtn) refreshBtn.disabled = false;
             if (err || !data || !data.users) {
                 document.getElementById('adminUserList').innerHTML = '<div class="message error">加载失败: ' + (err || '响应异常') + '</div>';
                 return;
@@ -758,6 +762,7 @@ function adminResetPassword(username) {
                     return;
                 }
                 showAdminMessage('已重置 ' + username + ' 的密码', 'success');
+                loadAdminUsers();
             });
         });
     });
