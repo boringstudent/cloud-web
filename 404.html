@@ -62,6 +62,17 @@
                     <button class="btn" id="pickFileBtn" style="flex: 1;">选择文件</button>
                     <button class="btn" id="pickFolderBtn" style="flex: 1;">选择文件夹</button>
                 </div>
+                <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center;">
+                    <label for="concurrencySelect" style="color: #666; font-size: 13px; white-space: nowrap;">上传并行数</label>
+                    <select id="concurrencySelect" style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; background: white;">
+                        <option value="auto">自适应</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3" selected>3</option>
+                        <option value="4">4</option>
+                        <option value="6">6</option>
+                    </select>
+                </div>
                 <div id="selectedFiles" style="margin-top: 10px; font-size: 13px; color: #666; max-height: 80px; overflow-y: auto; word-break: break-all;"></div>
                 <div class="progress-container" style="display: none;">
                     <div class="progress-bar">

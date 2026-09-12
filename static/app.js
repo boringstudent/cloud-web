@@ -1186,6 +1186,24 @@ function deleteFolderFiles(key, files, index) {
     deleteXhr.send(JSON.stringify(data));
 }
 
+// Decode a path segment repeatedly to recover from double/triple encoding
+// (e.g. %25E6%2596... -> %E6%96... -> 新...)
+function decodePathSegment(seg) {
+    for (var i = 0; i < 3; i++) {
+        if (!/%[0-9A-Fa-f]{2}/.test(seg)) break;
+        try {
+            var decoded = decodeURIComponent(seg);
+            if (decoded === seg) break;
+            seg = decoded;
+        } catch (e) {
+            break;
+        }
+    }
+    return seg;
+}
+
+// Returns the current directory path in DECODED form.
+// Callers must encode it themselves when building URLs.
 function getCurrentPath() {
     var path = window.location.pathname;
     if (path.endsWith('/')) {
@@ -1194,11 +1212,19 @@ function getCurrentPath() {
     if (path === '') {
         return '';
     }
-    var parts = path.split('/');
+    var parts = path.substring(1).split('/');
+    for (var i = 0; i < parts.length; i++) {
+        parts[i] = decodePathSegment(parts[i]);
+    }
     if (parts.length > 0 && parts[0] === REPO_NAME) {
         return parts.slice(1).join('/');
     }
-    return path.substring(1);
+    return parts.join('/');
+}
+
+function encodePath(path) {
+    if (!path) return '';
+    return path.split('/').map(encodeURIComponent).join('/');
 }
 
 function updateBreadcrumbs() {
@@ -1230,14 +1256,14 @@ function updateBreadcrumbs() {
 
     var currentPath = '';
     for (var i = 0; i < parts.length; i++) {
-        currentPath += '/' + parts[i];
+        currentPath += '/' + encodeURIComponent(parts[i]);
         var separator = document.createElement('span');
         separator.textContent = ' / ';
         crumbs.appendChild(separator);
 
         var link = document.createElement('a');
         link.href = currentPath + '/';
-        link.textContent = decodeURIComponent(parts[i]);
+        link.textContent = parts[i];
         crumbs.appendChild(link);
     }
 }
@@ -1263,7 +1289,7 @@ function loadFileList(retried) {
     listLoading = true;
 
     var path = getCurrentPath();
-    var apiUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + path;
+    var apiUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodePath(path);
 
     var container = document.getElementById('fileListContainer');
     if (!hasRenderedList) {
@@ -1290,7 +1316,7 @@ function loadFileList(retried) {
                     document.title = 'Home - boring_student';
                 } else {
                     var pathParts = currentPath.split('/');
-                    var dirName = decodeURIComponent(pathParts[pathParts.length - 1]);
+                    var dirName = pathParts[pathParts.length - 1];
                     pageTitle.textContent = dirName;
                     document.title = dirName + ' - boring_student';
                 }
@@ -1397,7 +1423,7 @@ function buildEntryModels(items) {
 
 function createEntryElement(model) {
     var currentPath = getCurrentPath();
-    var baseUrl = currentPath ? '/' + currentPath + '/' : '/';
+    var baseUrl = currentPath ? '/' + encodePath(currentPath) + '/' : '/';
 
     var entry = document.createElement('a');
     entry.className = 'entry';
@@ -1437,13 +1463,7 @@ function createEntryElement(model) {
         };
         var nameWrap = document.createElement('span');
         nameWrap.className = 'entry-name';
-        var checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = 'entry-checkbox';
-        checkbox.tabIndex = -1;
-        nameWrap.appendChild(checkbox);
         nameWrap.appendChild(nameSpan);
-        entry._checkbox = checkbox;
 
         infoSpan.appendChild(sizeSpan);
         entry.appendChild(nameWrap);
@@ -1485,7 +1505,6 @@ function applySelectionVisual(key) {
     } else {
         rec.el.classList.remove('entry-selected');
     }
-    if (rec.el._checkbox) rec.el._checkbox.checked = selected;
 }
 
 function updateBatchBar() {
@@ -1871,8 +1890,9 @@ function uploadFile() {
 }
 
 // ---- Parallel chunked upload with per-chunk retry and live speed ----
-var UPLOAD_CONCURRENCY = 3;
 var UPLOAD_MAX_ATTEMPTS = 4;
+var UPLOAD_LIMIT_MIN = 1;
+var UPLOAD_LIMIT_MAX = 6;
 var uploadState = null;
 
 function startUpload(key, doneBases) {
@@ -1882,6 +1902,13 @@ function startUpload(key, doneBases) {
     uploadedParts = uploadedParts.filter(function(p) {
         return !doneBases || doneBases[p.base];
     });
+    var sel = document.getElementById('concurrencySelect');
+    var mode = sel ? sel.value : '3';
+    var adaptive = mode === 'auto';
+    if (uploadState && uploadState.adaptive) {
+        // keep the learned limit across chunk-size downgrades in adaptive mode
+        adaptive = true;
+    }
     uploadState = {
         key: key,
         nextIndex: 0,
@@ -1898,7 +1925,9 @@ function startUpload(key, doneBases) {
         downgrading: false,
         failedMsg: null,
         speedTimer: null,
-        activeTasks: {}
+        activeTasks: {},
+        adaptive: adaptive,
+        limit: adaptive ? 2 : Math.min(UPLOAD_LIMIT_MAX, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3))
     };
     uploadTasks.forEach(function(t) {
         uploadState.baseTotals[t.base] = (uploadState.baseTotals[t.base] || 0) + 1;
@@ -1908,40 +1937,49 @@ function startUpload(key, doneBases) {
     showMessage('正在上传 (0/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
     updateUploadProgressUI();
     renderChunkPanel();
-    var starters = Math.min(UPLOAD_CONCURRENCY, uploadTasks.length);
-    for (var i = 0; i < starters; i++) {
-        pumpUpload();
-    }
-    if (!uploadTasks.length) {
-        checkUploadSettled();
-    }
+    fillUploads();
 }
 
-function pumpUpload() {
+// Keep the pipeline filled up to the current concurrency limit.
+// The limit may change at runtime in adaptive mode.
+function fillUploads() {
     var st = uploadState;
-    if (!st || st.failedMsg || st.downgrading || st.nextIndex >= uploadTasks.length) {
-        checkUploadSettled();
-        return;
-    }
-    var task = uploadTasks[st.nextIndex++];
-    st.active++;
-    st.activeTasks[task.relativePath] = task;
-    renderChunkPanel();
-    runUploadTask(task, function(ok) {
-        st.active--;
-        delete st.activeTasks[task.relativePath];
+    if (!st) return;
+    while (!st.failedMsg && !st.downgrading && st.active < st.limit && st.nextIndex < uploadTasks.length) {
+        var task = uploadTasks[st.nextIndex++];
+        st.active++;
+        st.activeTasks[task.relativePath] = task;
         renderChunkPanel();
-        if (ok) {
-            st.doneCount++;
-            st.baseDones[task.base] = (st.baseDones[task.base] || 0) + 1;
-            if (st.baseDones[task.base] === st.baseTotals[task.base]) {
-                st.doneBases[task.base] = true;
-            }
-            showMessage('正在上传 (' + st.doneCount + '/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
-        }
-        updateUploadProgressUI();
-        pumpUpload();
-    });
+        (function(t) {
+            runUploadTask(t, function(ok) {
+                var st2 = uploadState;
+                if (!st2) return;
+                st2.active--;
+                delete st2.activeTasks[t.relativePath];
+                renderChunkPanel();
+                if (ok) {
+                    st2.doneCount++;
+                    st2.baseDones[t.base] = (st2.baseDones[t.base] || 0) + 1;
+                    if (st2.baseDones[t.base] === st2.baseTotals[t.base]) {
+                        st2.doneBases[t.base] = true;
+                    }
+                    // adaptive: fast chunks -> scale up, slow chunks -> scale down
+                    if (st2.adaptive && t.startTime) {
+                        var dur = Date.now() - t.startTime;
+                        if (dur < 10000 && st2.limit < UPLOAD_LIMIT_MAX) {
+                            st2.limit++;
+                        } else if (dur > 30000 && st2.limit > UPLOAD_LIMIT_MIN) {
+                            st2.limit--;
+                        }
+                    }
+                    showMessage('正在上传 (' + st2.doneCount + '/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
+                }
+                updateUploadProgressUI();
+                fillUploads();
+            });
+        })(task);
+    }
+    checkUploadSettled();
 }
 
 function checkUploadSettled() {
@@ -1981,6 +2019,7 @@ function runUploadTask(task, done) {
         }
         attempt++;
         task.loadedBytes = 0;
+        task.startTime = Date.now();
         var reader = new FileReader();
         reader.onload = function(e) {
             var base64Content = e.target.result.split(',')[1];
@@ -2026,6 +2065,10 @@ function runUploadTask(task, done) {
                     }
 
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
+                        // adaptive: failures hint the network is saturated, back off
+                        if (st.adaptive && st.limit > UPLOAD_LIMIT_MIN) {
+                            st.limit--;
+                        }
                         showMessage('分片上传失败(状态码 ' + status + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
                         setTimeout(tryOnce, 1000 * attempt);
                         return;
@@ -2138,7 +2181,7 @@ function renderChunkPanel() {
         activeList.push(st.activeTasks[key]);
     }
     document.getElementById('chunkPanelSummary').textContent =
-        '· 进行中 ' + activeList.length + ' · 已完成 ' + st.doneCount + '/' + uploadTasks.length;
+        '· 并行 ' + st.limit + (st.adaptive ? '(自适应)' : '') + ' · 进行中 ' + activeList.length + ' · 已完成 ' + st.doneCount + '/' + uploadTasks.length;
     var list = document.getElementById('chunkList');
     if (!activeList.length) {
         list.innerHTML = '<div style="padding: 6px 8px; color: #999;">等待分片调度...</div>';
@@ -2274,7 +2317,7 @@ document.addEventListener('DOMContentLoaded', function() {
         pageTitleEl.textContent = 'Home';
         document.title = 'Home - boring_student';
     } else {
-        var initName = decodeURIComponent(initPath.split('/').pop());
+        var initName = initPath.split('/').pop();
         pageTitleEl.textContent = initName;
         document.title = initName + ' - boring_student';
     }

@@ -317,8 +317,10 @@ a:hover {
     background: #f8f8f8;
 }
 .entry > span:first-child {
-    word-break: break-all;
     min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .entry-name {
     display: flex;
@@ -326,20 +328,33 @@ a:hover {
     min-width: 0;
 }
 .entry-name > span {
-    word-break: break-all;
     min-width: 0;
-}
-.entry-checkbox {
-    pointer-events: none;
-    margin-right: 8px;
-    flex-shrink: 0;
-    width: 15px;
-    height: 15px;
-    accent-color: #2c82c9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .entry-selected {
     background: rgba(44, 130, 201, 0.15) !important;
     box-shadow: 0 0 0 2px rgba(44, 130, 201, 0.6);
+}
+.entry-selected .entry-name::before {
+    content: '✓';
+    color: #2c82c9;
+    font-weight: bold;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+h1 {
+    white-space: nowrap;
+    overflow: hidden;
+}
+#pageTitle {
+    display: inline-block;
+    max-width: 75%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
 }
 .batch-bar {
     position: fixed;
