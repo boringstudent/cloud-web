@@ -1520,252 +1520,6 @@ function getFileExtension(fileName) {
 var AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'aac', 'flac'];
 var VIDEO_EXTS = ['mp4', 'webm', 'ogg', 'avi', 'mov'];
 var IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp'];
-var ARCHIVE_EXTS = ['zip'];
-
-// ---- ZIP online preview ----
-// The central directory sits at the END of a zip file, so listing entries only
-// needs the tail + directory byte ranges — no full download. Extracting an
-// entry fetches just that entry's range. If the proxy ignores HTTP Range the
-// probe response (whole body, status 200) is reused directly as an in-memory
-// zip; later range failures fall back to one full download.
-var ZIP_TAIL_LEN = 65557; // EOCD record (22B) + max comment length (65535B)
-
-function zipShowError(content, text) {
-    content.innerHTML = '';
-    var msgDiv = document.createElement('div');
-    msgDiv.className = 'message error';
-    msgDiv.textContent = text;
-    content.appendChild(msgDiv);
-}
-
-function zipGetRange(url, start, end, cb, onFail) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', url, true);
-    xhr.setRequestHeader('Range', 'bytes=' + start + '-' + end);
-    xhr.responseType = 'arraybuffer';
-    xhr.onload = function() {
-        if (xhr.status === 206 || xhr.status === 200) cb(xhr.response, xhr.status);
-        else onFail(xhr.status);
-    };
-    xhr.onerror = function() { onFail(0); };
-    xhr.send();
-}
-
-// Readers always call cb with a DataView of exactly the requested bytes.
-function makeZipMemReader(buf) {
-    return {
-        read: function(start, len, cb) {
-            cb(new DataView(buf, start, Math.min(len, buf.byteLength - start)));
-        }
-    };
-}
-
-function makeZipRemoteReader(url, onRangeBroke) {
-    return {
-        read: function(start, len, cb) {
-            zipGetRange(url, start, start + len - 1, function(buf, status) {
-                if (status !== 206) { onRangeBroke(); return; }
-                cb(new DataView(buf));
-            }, function() { onRangeBroke(); });
-        }
-    };
-}
-
-function zipDecodeName(bytes, flags) {
-    // Bit 11 marks UTF-8 names; otherwise old zips usually carry GBK bytes
-    if (flags & 0x800) return new TextDecoder('utf-8').decode(bytes);
-    try {
-        return new TextDecoder('gbk').decode(bytes);
-    } catch (e) {
-        return new TextDecoder('utf-8').decode(bytes);
-    }
-}
-
-function parseZipCentralDir(dv, count) {
-    var entries = [];
-    var off = 0;
-    for (var i = 0; i < count; i++) {
-        if (off + 46 > dv.byteLength || dv.getUint32(off, true) !== 0x02014b50) return null;
-        var flags = dv.getUint16(off + 8, true);
-        var method = dv.getUint16(off + 10, true);
-        var compSize = dv.getUint32(off + 20, true);
-        var rawSize = dv.getUint32(off + 24, true);
-        var nameLen = dv.getUint16(off + 28, true);
-        var extraLen = dv.getUint16(off + 30, true);
-        var cmtLen = dv.getUint16(off + 32, true);
-        var lhOff = dv.getUint32(off + 42, true);
-        if (compSize === 0xFFFFFFFF || rawSize === 0xFFFFFFFF || lhOff === 0xFFFFFFFF) return 'zip64';
-        var name = zipDecodeName(new Uint8Array(dv.buffer, dv.byteOffset + off + 46, nameLen), flags);
-        entries.push({
-            name: name,
-            method: method,
-            compSize: compSize,
-            rawSize: rawSize,
-            lhOff: lhOff,
-            dir: name.charAt(name.length - 1) === '/'
-        });
-        off += 46 + nameLen + extraLen + cmtLen;
-    }
-    return entries;
-}
-
-function listZipEntries(reader, content, tailDv, onRangeBroke) {
-    var dv = tailDv;
-    var eocd = -1;
-    for (var i = dv.byteLength - 22; i >= 0; i--) {
-        if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
-    }
-    if (eocd === -1) { zipShowError(content, '无效的 ZIP 文件'); return; }
-    var count = dv.getUint16(eocd + 10, true);
-    var cdSize = dv.getUint32(eocd + 12, true);
-    var cdOff = dv.getUint32(eocd + 16, true);
-    if (count === 0xFFFF || cdOff === 0xFFFFFFFF || cdSize === 0xFFFFFFFF) {
-        zipShowError(content, '暂不支持 ZIP64 格式的压缩包');
-        return;
-    }
-    if (count === 0) { zipShowError(content, '压缩包为空'); return; }
-    reader.read(cdOff, cdSize, function(cd) {
-        var entries = parseZipCentralDir(cd, count);
-        if (entries === 'zip64') { zipShowError(content, '暂不支持 ZIP64 格式的压缩包'); return; }
-        if (!entries) { zipShowError(content, '无法解析 ZIP 目录'); return; }
-        renderZipList(reader, entries, content);
-    }, onRangeBroke);
-}
-
-function renderZipList(reader, entries, content) {
-    content.innerHTML = '';
-    var list = document.createElement('div');
-    list.className = 'zip-list';
-    var detail = document.createElement('div');
-    detail.className = 'zip-detail';
-    entries.forEach(function(en) {
-        var row = document.createElement('div');
-        row.className = 'zip-row' + (en.dir ? ' zip-dir' : '');
-        var nm = document.createElement('span');
-        nm.className = 'zip-name';
-        nm.textContent = en.name;
-        var sz = document.createElement('span');
-        sz.className = 'zip-size';
-        sz.textContent = en.dir ? '目录' : formatSize(en.rawSize);
-        row.appendChild(nm);
-        row.appendChild(sz);
-        if (!en.dir) {
-            row.addEventListener('click', function() { previewZipEntry(reader, en, detail); });
-        }
-        list.appendChild(row);
-    });
-    content.appendChild(list);
-    content.appendChild(detail);
-}
-
-function extractZipEntry(reader, en, cb, onFail) {
-    reader.read(en.lhOff, 30, function(lh) {
-        if (lh.byteLength < 30 || lh.getUint32(0, true) !== 0x04034b50) { onFail('无效的本地文件头'); return; }
-        var dataStart = en.lhOff + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
-        reader.read(dataStart, en.compSize, function(dv) {
-            var data = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-            if (en.method === 0) { cb(new Blob([data])); return; }
-            if (en.method !== 8) { onFail('不支持的压缩方式 (method ' + en.method + ')'); return; }
-            if (typeof DecompressionStream === 'undefined') { onFail('当前浏览器不支持在线解压'); return; }
-            new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer()
-                .then(function(buf) { cb(new Blob([buf])); })
-                .catch(function() { onFail('解压失败，数据可能已损坏'); });
-        }, function() { onFail('读取压缩数据失败'); });
-    }, function() { onFail('读取文件头失败'); });
-}
-
-function previewZipEntry(reader, en, detail) {
-    detail.innerHTML = '';
-    var st = document.createElement('div');
-    st.className = 'loading';
-    st.textContent = '解压中...';
-    detail.appendChild(st);
-    extractZipEntry(reader, en, function(blob) {
-        if (st.parentNode) st.parentNode.removeChild(st);
-        var ext = getFileExtension(en.name);
-        var mediaUrl = null;
-        if (IMAGE_EXTS.indexOf(ext) !== -1 || AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1) {
-            mediaUrl = URL.createObjectURL(blob);
-            setPreviewBlobUrl(mediaUrl);
-        }
-        if (IMAGE_EXTS.indexOf(ext) !== -1) {
-            var img = document.createElement('img');
-            img.src = mediaUrl;
-            img.alt = en.name;
-            img.style.maxWidth = '100%';
-            img.style.maxHeight = '60vh';
-            img.style.borderRadius = '8px';
-            detail.appendChild(img);
-        } else if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1) {
-            var media = document.createElement(AUDIO_EXTS.indexOf(ext) !== -1 ? 'audio' : 'video');
-            media.src = mediaUrl;
-            media.controls = true;
-            media.preload = 'auto';
-            media.className = AUDIO_EXTS.indexOf(ext) !== -1 ? 'preview-audio' : 'preview-video';
-            detail.appendChild(media);
-        } else if (blob.size <= 5 * 1024 * 1024) {
-            var textReader = new FileReader();
-            textReader.onload = function() {
-                var ta = document.createElement('textarea');
-                ta.className = 'preview-text';
-                ta.value = textReader.result;
-                ta.readOnly = true;
-                ta.spellcheck = false;
-                detail.appendChild(ta);
-            };
-            textReader.onerror = function() { zipShowError(detail, '无法读取文件内容'); };
-            textReader.readAsText(blob);
-        } else {
-            zipAppendDownload(detail, blob, en);
-        }
-    }, function(msg) {
-        st.className = 'message error';
-        st.textContent = msg || '解压失败';
-    });
-}
-
-function zipAppendDownload(detail, blob, en) {
-    var btn = document.createElement('button');
-    btn.className = 'btn';
-    btn.style.cssText = 'padding: 6px 14px; font-size: 13px;';
-    btn.textContent = '下载该文件 (' + formatSize(en.rawSize) + ')';
-    btn.addEventListener('click', function() {
-        saveBlobAs(blob, en.name.split('/').pop());
-    });
-    detail.appendChild(btn);
-}
-
-function openZipPreview(url, fileSize, content) {
-    var fullDownload = function() {
-        var loadingDiv = document.createElement('div');
-        loadingDiv.className = 'loading';
-        loadingDiv.textContent = '加载中...';
-        content.innerHTML = '';
-        content.appendChild(loadingDiv);
-        loadMediaWithRate(url, fileSize, loadingDiv, function(blob) {
-            blob.arrayBuffer().then(function(buf) {
-                listZipEntries(makeZipMemReader(buf), content, new DataView(buf, Math.max(0, buf.byteLength - ZIP_TAIL_LEN)), null);
-            }, function() { zipShowError(content, '无法读取压缩包'); });
-        }, function(status) {
-            zipShowError(content, status ? '加载失败，状态码: ' + status : '网络错误，无法加载文件');
-        });
-    };
-
-    if (!fileSize) { fullDownload(); return; }
-
-    // Probe the tail range: 206 -> range-capable remote reader; 200 with the
-    // whole body -> proxy ignored Range, reuse the body as an in-memory zip.
-    var tailStart = Math.max(0, fileSize - ZIP_TAIL_LEN);
-    zipGetRange(url, tailStart, fileSize - 1, function(buf, status) {
-        if (status === 206) {
-            listZipEntries(makeZipRemoteReader(url, fullDownload), content, new DataView(buf), fullDownload);
-        } else if (buf.byteLength >= fileSize) {
-            listZipEntries(makeZipMemReader(buf), content, new DataView(buf, tailStart), null);
-        } else {
-            fullDownload();
-        }
-    }, function() { fullDownload(); });
-}
 
 // ---- Lightweight syntax highlighting for text preview/edit ----
 var LANG_KEYWORDS = {
@@ -2119,12 +1873,6 @@ function previewFile(filePath, fileName) {
                 img.style.maxHeight = '60vh';
                 img.style.borderRadius = '8px';
                 content.appendChild(img);
-            } else if (ARCHIVE_EXTS.indexOf(ext) !== -1) {
-                blob.arrayBuffer().then(function(buf) {
-                    listZipEntries(makeZipMemReader(buf), content, new DataView(buf, Math.max(0, buf.byteLength - ZIP_TAIL_LEN)), null);
-                }, function() {
-                    zipShowError(content, '无法读取压缩包');
-                });
             } else {
                 var textReader = new FileReader();
                 textReader.onload = function() {
@@ -2146,14 +1894,9 @@ function previewFile(filePath, fileName) {
         return;
     }
 
-    if (ARCHIVE_EXTS.indexOf(ext) !== -1) {
-        openZipPreview(previewUrl, menuFileInfo.size, content);
-        return;
-    }
-
     if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
         // 流式加载：URL 直接交给媒体元素，浏览器按需 Range 拉取、边下边播，
-        // 不再等待整文件下载完成
+        // 不再等待整文件下载完成；progress 事件采样缓冲速度实时显示
         content.innerHTML = '';
         content.appendChild(loadingDiv);
         var mediaEl;
@@ -2170,21 +1913,49 @@ function previewFile(filePath, fileName) {
             mediaEl.style.maxHeight = '60vh';
             mediaEl.style.borderRadius = '8px';
         }
+        var rateTag = document.createElement('div');
+        rateTag.className = 'media-rate';
+        var rateBox = document.createElement('div');
+        rateBox.className = 'media-wrap';
+        rateBox.style.position = 'relative';
         if (mediaEl.tagName === 'IMG') {
             mediaEl.onload = function() { loadingDiv.style.display = 'none'; };
         } else {
             mediaEl.addEventListener('canplay', function() { loadingDiv.style.display = 'none'; });
+            // 采样缓冲字节增量推算实时下载速度
+            var lastBuffered = 0, lastSampleT = 0, mediaSize = menuFileInfo.size || 0;
+            mediaEl.addEventListener('progress', function() {
+                if (!mediaSize || !mediaEl.duration) return;
+                var now = Date.now();
+                var end = mediaEl.buffered.length ? mediaEl.buffered.end(mediaEl.buffered.length - 1) : 0;
+                var bufferedBytes = end / mediaEl.duration * mediaSize;
+                if (!lastSampleT) { lastSampleT = now; lastBuffered = bufferedBytes; return; }
+                var dt = (now - lastSampleT) / 1000;
+                if (dt < 0.5) return;
+                var sp = (bufferedBytes - lastBuffered) / dt;
+                lastSampleT = now;
+                lastBuffered = bufferedBytes;
+                if (end >= mediaEl.duration - 0.5 || sp <= 0) {
+                    rateTag.textContent = '';
+                    return;
+                }
+                rateTag.textContent = formatSize(Math.round(sp)) + '/s';
+            });
+            mediaEl.addEventListener('ended', function() { rateTag.textContent = ''; });
         }
         mediaEl.onerror = function() {
             loadingDiv.className = 'message error';
             loadingDiv.textContent = '加载失败，无法播放该文件';
+            rateTag.textContent = '';
         };
         if (mediaEl.tagName !== 'IMG') {
             mediaEl.controls = true;
             mediaEl.preload = 'auto';
         }
         mediaEl.src = previewUrl;
-        content.appendChild(mediaEl);
+        rateBox.appendChild(mediaEl);
+        rateBox.appendChild(rateTag);
+        content.appendChild(rateBox);
     } else {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', previewUrl, true);

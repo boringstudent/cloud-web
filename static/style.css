@@ -540,48 +540,25 @@ a:hover {
     max-width: 640px;
     margin: 10px 0;
 }
-.zip-list {
-    max-height: 40vh;
-    overflow-y: auto;
-    border: 1px solid #f0f0f0;
-    border-radius: 8px;
+.media-wrap {
+    display: inline-block;
+    max-width: 100%;
 }
-.zip-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 10px;
-    border-bottom: 1px solid #f0f0f0;
-    font-size: 14px;
-    gap: 8px;
-    cursor: pointer;
+.media-rate {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 12px;
+    line-height: 1.6;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
 }
-.zip-row:last-child {
-    border-bottom: none;
-}
-.zip-row:hover {
-    background: #f5f7fa;
-}
-.zip-row.zip-dir {
-    cursor: default;
-    color: #999;
-}
-.zip-row.zip-dir:hover {
-    background: none;
-}
-.zip-name {
-    word-break: break-all;
-}
-.zip-size {
-    color: #999;
-    font-size: 13px;
-    white-space: nowrap;
-}
-.zip-detail {
-    margin-top: 12px;
-}
-.zip-detail .preview-text {
-    height: 260px;
+.media-rate:empty {
+    display: none;
 }
 .preview-text {
     width: 100%;
