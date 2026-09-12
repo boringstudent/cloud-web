@@ -213,6 +213,24 @@ function translateApiError(msg) {
     return API_ERROR_MAP[msg] || msg;
 }
 
+// Client-side SHA-512: passwords are hashed locally before being sent to the
+// API, so plaintext never leaves the browser (HTTPS aside).
+function sha512Hex(text, cb) {
+    if (!window.crypto || !crypto.subtle) {
+        cb('当前环境不支持加密（需要 HTTPS 环境），无法登录');
+        return;
+    }
+    var data = new TextEncoder().encode(String(text));
+    crypto.subtle.digest('SHA-512', data).then(function(buf) {
+        var hex = Array.prototype.map.call(new Uint8Array(buf), function(b) {
+            return b.toString(16).padStart(2, '0');
+        }).join('');
+        cb(null, hex);
+    }).catch(function() {
+        cb('密码加密失败');
+    });
+}
+
 function apiGetJson(url, cb) {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url, true);
@@ -260,34 +278,36 @@ function apiSendJson(method, url, body, cb) {
     xhr.send(body ? JSON.stringify(body) : null);
 }
 
-// Full login flow: /api/login (plaintext over HTTPS) -> /api/redeem-key -> real key.
-// The API only accepts plaintext passwords; after a successful login the
-// server-returned password_sha512 and the real key are cached locally, so
-// the key is not requested again on subsequent visits.
+// Full login flow: /api/login (password SHA-512 hashed client-side) ->
+// /api/redeem-key -> real key. The API only accepts hashed passwords and no
+// longer returns password_sha512; the locally computed hash and the real key
+// are cached so the key is not requested again on subsequent visits.
 // persist=true stores {u, hash, role, key} in localStorage ("保持登录");
 // otherwise the auth is kept for this tab session only.
 var sessionPlain = null;
 
 function loginAndGetKey(username, password, persist, cb) {
-    apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password), function(err, data) {
-        if (err || !data || !data.success || !data.key_sha512) {
-            cb(err || '用户名或密码错误');
-            return;
-        }
-        apiGetJson(API_BASE + '/api/redeem-key?key_sha512=' + encodeURIComponent(data.key_sha512), function(err2, data2) {
-            if (err2 || !data2 || !data2.key) { cb(err2 || '兑换密钥失败'); return; }
-            ghApiKey = data2.key;
-            sessionPlain = password;
-            var hash = data.password_sha512 || '';
-            var role = data.role || 'user';
-            var auth = { v: 2, u: username, h: hash, role: role, key: ghApiKey };
-            if (persist) {
-                saveAuth(username, hash, role, ghApiKey);
-            } else {
-                sessionAuth = auth;
+    sha512Hex(password, function(err, pwHash) {
+        if (err || !pwHash) { cb(err || '密码加密失败'); return; }
+        apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(pwHash), function(err2, data) {
+            if (err2 || !data || !data.success || !data.key_sha512) {
+                cb(err2 || '用户名或密码错误');
+                return;
             }
-            updateAuthBtn();
-            cb(null, ghApiKey);
+            apiGetJson(API_BASE + '/api/redeem-key?key_sha512=' + encodeURIComponent(data.key_sha512), function(err3, data2) {
+                if (err3 || !data2 || !data2.key) { cb(err3 || '兑换密钥失败'); return; }
+                ghApiKey = data2.key;
+                sessionPlain = password;
+                var role = data.role || 'user';
+                var auth = { v: 2, u: username, h: pwHash, role: role, key: ghApiKey };
+                if (persist) {
+                    saveAuth(username, pwHash, role, ghApiKey);
+                } else {
+                    sessionAuth = auth;
+                }
+                updateAuthBtn();
+                cb(null, ghApiKey);
+            });
         });
     });
 }
@@ -471,32 +491,46 @@ function changeOwnPassword() {
     var btn = document.getElementById('cpBtn');
     btn.disabled = true;
     showAccountMessage('正在修改...', 'success');
-    apiSendJson('POST', API_BASE + '/api/change-password', {
-        username: auth.u,
-        password: current,
-        new_password: newPwd
-    }, function(err, data) {
-        if (err) {
-            showAccountMessage('修改失败: ' + err, 'error');
+    // Hash both the current and the new password locally before sending
+    sha512Hex(current, function(err, curHash) {
+        if (err || !curHash) {
+            showAccountMessage('修改失败: ' + (err || '密码加密失败'), 'error');
             btn.disabled = false;
             return;
         }
-        // refresh stored credentials with the server-returned new password hash
-        var newHash = (data && data.password_sha512) || auth.h;
-        if (sessionAuth) {
-            sessionAuth = { v: 2, u: auth.u, h: newHash, role: auth.role, key: auth.key };
-        } else {
-            saveAuth(auth.u, newHash, auth.role, auth.key);
-        }
-        sessionPlain = newPwd;
-        if (getRemember()) {
-            saveRemember(auth.u, newPwd);
-        }
-        showAccountMessage('密码修改成功！', 'success');
-        btn.disabled = false;
-        document.getElementById('cpCurrent').value = '';
-        document.getElementById('cpNew').value = '';
-        document.getElementById('cpConfirm').value = '';
+        sha512Hex(newPwd, function(err2, newHash) {
+            if (err2 || !newHash) {
+                showAccountMessage('修改失败: ' + (err2 || '密码加密失败'), 'error');
+                btn.disabled = false;
+                return;
+            }
+            apiSendJson('POST', API_BASE + '/api/change-password', {
+                username: auth.u,
+                password: curHash,
+                new_password: newHash
+            }, function(err3) {
+                if (err3) {
+                    showAccountMessage('修改失败: ' + err3, 'error');
+                    btn.disabled = false;
+                    return;
+                }
+                // refresh stored credentials with the locally computed new password hash
+                if (sessionAuth) {
+                    sessionAuth = { v: 2, u: auth.u, h: newHash, role: auth.role, key: auth.key };
+                } else {
+                    saveAuth(auth.u, newHash, auth.role, auth.key);
+                }
+                sessionPlain = newPwd;
+                if (getRemember()) {
+                    saveRemember(auth.u, newPwd);
+                }
+                showAccountMessage('密码修改成功！', 'success');
+                btn.disabled = false;
+                document.getElementById('cpCurrent').value = '';
+                document.getElementById('cpNew').value = '';
+                document.getElementById('cpConfirm').value = '';
+            });
+        });
     });
 }
 
@@ -517,43 +551,59 @@ function deleteOwnAccount() {
     var btn = document.getElementById('daBtn');
     btn.disabled = true;
     showAccountMessage('正在注销...', 'success');
-    apiSendJson('POST', API_BASE + '/api/delete-account', {
-        username: auth.u,
-        password: password
-    }, function(err) {
-        btn.disabled = false;
-        if (err) {
-            showAccountMessage('注销失败: ' + err, 'error');
+    sha512Hex(password, function(err, pwHash) {
+        if (err || !pwHash) {
+            showAccountMessage('注销失败: ' + (err || '密码加密失败'), 'error');
+            btn.disabled = false;
             return;
         }
-        ghApiKey = null;
-        sessionPlain = null;
-        clearAuth();
-        clearRemember();
-        updateAuthBtn();
-        closeAccountModal();
-        showToast('账户已注销');
-        setTimeout(hideToast, 2500);
+        apiSendJson('POST', API_BASE + '/api/delete-account', {
+            username: auth.u,
+            password: pwHash
+        }, function(err2) {
+            btn.disabled = false;
+            if (err2) {
+                showAccountMessage('注销失败: ' + err2, 'error');
+                return;
+            }
+            ghApiKey = null;
+            sessionPlain = null;
+            clearAuth();
+            clearRemember();
+            updateAuthBtn();
+            closeAccountModal();
+            showToast('账户已注销');
+            setTimeout(hideToast, 2500);
+        });
     });
 }
 
 // ---- Admin user management (role=admin only) ----
-// Admin endpoints validate the admin's plaintext password. When the session
+// Admin endpoints validate the admin's SHA-512 password hash. When the session
 // was restored from local storage the plaintext is no longer in memory, so it
-// is re-asked once and verified via /api/login.
+// is re-asked once and verified via /api/login (hashed client-side).
 function withAdminCreds(cb) {
     var a = getSavedAuth();
     if (!a || a.role !== 'admin') { cb(null); return; }
+    var emitHashed = function(pwd) {
+        sha512Hex(pwd, function(err, h) {
+            if (err || !h) { cb(null); return; }
+            cb({ admin_user: a.u, admin_pass: h });
+        });
+    };
     if (sessionPlain) {
-        cb({ admin_user: a.u, admin_pass: sessionPlain });
+        emitHashed(sessionPlain);
         return;
     }
     var pwd = prompt('请输入管理员 ' + a.u + ' 的密码以验证身份:');
     if (!pwd) { cb(null); return; }
-    apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(a.u) + '&password=' + encodeURIComponent(pwd), function(err, data) {
-        if (err || !data || !data.success) { cb(null); return; }
-        sessionPlain = pwd;
-        cb({ admin_user: a.u, admin_pass: pwd });
+    sha512Hex(pwd, function(err, h) {
+        if (err || !h) { cb(null); return; }
+        apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(a.u) + '&password=' + encodeURIComponent(h), function(err2, data) {
+            if (err2 || !data || !data.success) { cb(null); return; }
+            sessionPlain = pwd;
+            cb({ admin_user: a.u, admin_pass: h });
+        });
     });
 }
 
@@ -655,47 +705,60 @@ function adminAddUser() {
             btn.disabled = false;
             return;
         }
-        // plaintext password: the server stores it as sha512 automatically
-        var body = {
-            admin_user: creds.admin_user,
-            admin_pass: creds.admin_pass,
-            username: username,
-            password: password,
-            role: role
-        };
-        apiSendJson('POST', API_BASE + '/api/users', body, function(err) {
-            btn.disabled = false;
-            if (err) {
-                showAdminMessage('添加失败: ' + err, 'error');
+        // hash the new user's password client-side before sending
+        sha512Hex(password, function(err, pwHash) {
+            if (err || !pwHash) {
+                showAdminMessage('添加失败: ' + (err || '密码加密失败'), 'error');
+                btn.disabled = false;
                 return;
             }
-            showAdminMessage('添加成功: ' + username, 'success');
-            document.getElementById('adminNewUsername').value = '';
-            document.getElementById('adminNewPassword').value = '';
-            loadAdminUsers();
+            var body = {
+                admin_user: creds.admin_user,
+                admin_pass: creds.admin_pass,
+                username: username,
+                password: pwHash,
+                role: role
+            };
+            apiSendJson('POST', API_BASE + '/api/users', body, function(err2) {
+                btn.disabled = false;
+                if (err2) {
+                    showAdminMessage('添加失败: ' + err2, 'error');
+                    return;
+                }
+                showAdminMessage('添加成功: ' + username, 'success');
+                document.getElementById('adminNewUsername').value = '';
+                document.getElementById('adminNewPassword').value = '';
+                loadAdminUsers();
+            });
         });
     });
 }
 
 function adminResetPassword(username) {
-    var password = prompt('为用户 ' + username + ' 设置新密码（明文，服务端将加密存储）:');
+    var password = prompt('为用户 ' + username + ' 设置新密码（前端加密后传输）:');
     if (!password) return;
     withAdminCreds(function(creds) {
         if (!creds) {
             showAdminMessage('需要管理员权限或身份验证失败', 'error');
             return;
         }
-        var body = {
-            admin_user: creds.admin_user,
-            admin_pass: creds.admin_pass,
-            password: password
-        };
-        apiSendJson('PUT', API_BASE + '/api/users/' + encodeURIComponent(username), body, function(err) {
-            if (err) {
-                showAdminMessage('修改失败: ' + err, 'error');
+        sha512Hex(password, function(err, pwHash) {
+            if (err || !pwHash) {
+                showAdminMessage('修改失败: ' + (err || '密码加密失败'), 'error');
                 return;
             }
-            showAdminMessage('已重置 ' + username + ' 的密码', 'success');
+            var body = {
+                admin_user: creds.admin_user,
+                admin_pass: creds.admin_pass,
+                password: pwHash
+            };
+            apiSendJson('PUT', API_BASE + '/api/users/' + encodeURIComponent(username), body, function(err2) {
+                if (err2) {
+                    showAdminMessage('修改失败: ' + err2, 'error');
+                    return;
+                }
+                showAdminMessage('已重置 ' + username + ' 的密码', 'success');
+            });
         });
     });
 }
