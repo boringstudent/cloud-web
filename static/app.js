@@ -2621,8 +2621,12 @@ function runUploadTask(task, done) {
                     if (isRefConflict) {
                         conflicts++;
                         st.conflictCount++;
-                        if (conflicts <= 6) {
-                            showMessage('提交冲突，等待其他分片完成后重试 (' + conflicts + '/6): ' + task.label, 'success');
+                        // frequent conflicts mean too much parallel pressure: back off
+                        if (st.adaptive && st.limit > UPLOAD_LIMIT_MIN && st.conflictCount % 2 === 0) {
+                            st.limit--;
+                        }
+                        if (conflicts <= 10) {
+                            showMessage('提交冲突，等待其他分片完成后重试 (' + conflicts + '/10): ' + task.label, 'success');
                             setTimeout(tryOnce, 1500 * conflicts + Math.floor(Math.random() * 1000));
                             return;
                         }
