@@ -120,12 +120,17 @@ function setPreviewBlobUrl(url) {
 }
 
 var previewAbort = null; // 图片流式预览的 AbortController
+var previewProbe = null; // 音/视频预览的测速探测请求
 
-// 关闭/切换预览时停止媒体继续缓冲、中断进行中的流式读取，避免后台浪费带宽
+// 关闭/切换预览时停止媒体继续缓冲、中断进行中的流式读取与测速探测，避免后台浪费带宽
 function stopPreviewMedia() {
     if (previewAbort) {
         try { previewAbort.abort(); } catch (e) {}
         previewAbort = null;
+    }
+    if (previewProbe) {
+        try { previewProbe.abort(); } catch (e) {}
+        previewProbe = null;
     }
     var content = document.getElementById('previewContent');
     if (!content) return;
@@ -1593,7 +1598,8 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
                     previewAbort = null;
                     img.src = u;
                     loadingDiv.style.display = 'none';
-                    rateTag.textContent = '';
+                    // 完成后保留最终速度 3s 再消失，避免一闪而过
+                    setTimeout(function() { rateTag.textContent = ''; }, 3000);
                     return;
                 }
                 chunks.push(r.value);
@@ -1603,10 +1609,11 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
                     var sp = (received - lastLoaded) / ((now - lastTime) / 1000);
                     lastLoaded = received;
                     lastTime = now;
-                    var parts = [];
-                    if (sp > 1024) parts.push(formatSize(Math.round(sp)) + '/s');
-                    if (total) parts.push(Math.min(99, Math.round(received / total * 100)) + '%');
-                    rateTag.textContent = parts.join(' · ');
+                    var speedPart = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+                    var pctPart = total ? Math.min(99, Math.round(received / total * 100)) + '%' : '';
+                    rateTag.textContent = [speedPart, pctPart].filter(function(s) { return s; }).join(' · ');
+                    // 非渐进式图片在收完前无法渲染，加载文案同步显示进度避免无反馈
+                    loadingDiv.textContent = '加载中' + (pctPart ? ' ' + pctPart : '...') + (speedPart ? ' · ' + speedPart : '');
                 }
                 if (now - lastPaint >= 400) {
                     lastPaint = now;
@@ -1624,6 +1631,52 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
         onFail(0);
     });
     return true;
+}
+
+// 音/视频测速探测：拉取文件头部最多 1MB，按实际收到字节计算真实下载速度。
+// 媒体元素自身的缓冲增长受浏览器懒加载/暂停预读策略影响，不代表真实带宽，故单独探测。
+// onSpeed(speedText) 实时回调；请求存入 previewProbe 以便关闭预览时中止。
+function probeMediaSpeed(url, onSpeed) {
+    var xhr = new XMLHttpRequest();
+    previewProbe = xhr;
+    xhr.open('GET', url, true);
+    var total = menuFileInfo.size || 0;
+    if (total > 0) {
+        xhr.setRequestHeader('Range', 'bytes=0-' + (Math.min(total, 1048576) - 1));
+    }
+    xhr.responseType = 'arraybuffer';
+    var startTime = Date.now();
+    var lastLoaded = 0;
+    var lastTime = startTime;
+    xhr.onprogress = function(e) {
+        var now = Date.now();
+        if (now - lastTime >= 300) {
+            var sp = (e.loaded - lastLoaded) / ((now - lastTime) / 1000);
+            lastLoaded = e.loaded;
+            lastTime = now;
+            if (sp > 1024) onSpeed(formatSize(Math.round(sp)) + '/s');
+        }
+        // 代理忽略 Range 时（200 全量响应）收到 1MB 即中止，避免拉完整文件
+        if (e.loaded > 1048576) {
+            var el = (now - startTime) / 1000;
+            var spAll = e.loaded / el;
+            if (spAll > 1024) onSpeed(formatSize(Math.round(spAll)) + '/s');
+            xhr.abort();
+        }
+    };
+    var finish = function() {
+        if (previewProbe === xhr) previewProbe = null;
+        if (xhr.status && xhr.status !== 200 && xhr.status !== 206) return;
+        if (!xhr.response) return;
+        // 全程平均速度兜底：小文件可能连一次采样窗口都没攒够
+        var el = (Date.now() - startTime) / 1000;
+        var sp = xhr.response.byteLength / el;
+        if (el > 0.05 && sp > 1024) onSpeed(formatSize(Math.round(sp)) + '/s');
+    };
+    xhr.onload = finish;
+    xhr.onerror = function() { if (previewProbe === xhr) previewProbe = null; };
+    xhr.onabort = function() { if (previewProbe === xhr) previewProbe = null; };
+    xhr.send();
 }
 
 function downloadMergedFile(parts, fileName) {
@@ -2062,8 +2115,24 @@ function previewFile(filePath, fileName) {
             if (!streamed) mediaEl.src = previewUrl;
         } else {
             mediaEl.addEventListener('canplay', function() { loadingDiv.style.display = 'none'; });
-            // 采样缓冲字节增量推算实时下载速度；duration 不可用时回退 seekable 估算
-            var lastBuffered = 0, lastSampleT = 0, mediaSize = menuFileInfo.size || 0;
+            mediaEl.onerror = showMediaError;
+            mediaEl.controls = true;
+            mediaEl.preload = 'auto';
+            mediaEl.src = previewUrl;
+
+            // 角落标签 = 真实测速 + 缓冲百分比
+            var speedText = '';
+            var bufferedText = '';
+            var updateTag = function() {
+                rateTag.textContent = [speedText, bufferedText].filter(function(s) { return s; }).join(' · ');
+            };
+            probeMediaSpeed(previewUrl, function(s) {
+                speedText = s;
+                updateTag();
+            });
+
+            // 定时采样缓冲进度：progress 事件在小文件一次缓冲完、浏览器暂停预读时
+            // 不会持续触发，无法凑出两次采样，改由定时器驱动
             var getDuration = function() {
                 var d = mediaEl.duration;
                 if (!isFinite(d) || d <= 0) {
@@ -2073,32 +2142,23 @@ function previewFile(filePath, fileName) {
                 }
                 return (isFinite(d) && d > 0) ? d : 0;
             };
-            mediaEl.addEventListener('progress', function() {
+            var bufTimer = setInterval(function() {
                 var dur = getDuration();
-                if (!mediaSize || !dur) return;
-                var now = Date.now();
+                if (!dur) return;
                 var end = mediaEl.buffered.length ? mediaEl.buffered.end(mediaEl.buffered.length - 1) : 0;
-                var bufferedBytes = end / dur * mediaSize;
-                if (!lastSampleT) { lastSampleT = now; lastBuffered = bufferedBytes; return; }
-                var dt = (now - lastSampleT) / 1000;
-                if (dt < 0.5) return;
-                var sp = (bufferedBytes - lastBuffered) / dt;
-                lastSampleT = now;
-                lastBuffered = bufferedBytes;
                 if (end >= dur - 0.5) {
-                    rateTag.textContent = '';
+                    clearInterval(bufTimer);
+                    // 缓冲完成：保留最终速度 3s 再消失，避免一闪而过
+                    setTimeout(function() { rateTag.textContent = ''; }, 3000);
                     return;
                 }
-                var parts = [];
-                if (sp > 1024) parts.push(formatSize(Math.round(sp)) + '/s');
-                parts.push('已缓冲 ' + Math.round(end / dur * 100) + '%');
-                rateTag.textContent = parts.join(' · ');
-            });
-            mediaEl.addEventListener('ended', function() { rateTag.textContent = ''; });
-            mediaEl.onerror = showMediaError;
-            mediaEl.controls = true;
-            mediaEl.preload = 'auto';
-            mediaEl.src = previewUrl;
+                bufferedText = '已缓冲 ' + Math.round(end / dur * 100) + '%';
+                updateTag();
+            }, 500);
+            var clearBufTimer = function() { clearInterval(bufTimer); };
+            mediaEl.addEventListener('ended', function() { clearBufTimer(); setTimeout(function() { rateTag.textContent = ''; }, 3000); });
+            mediaEl.addEventListener('emptied', clearBufTimer); // stopPreviewMedia 清 src 时触发
+            mediaEl.addEventListener('error', clearBufTimer);
         }
         rateBox.appendChild(mediaEl);
         rateBox.appendChild(rateTag);
@@ -3787,6 +3847,11 @@ document.addEventListener('DOMContentLoaded', function() {
     updateBreadcrumbs();
     updateAuthBtn();
     initPwdEyes();
+
+    // 点击服务状态角标立即重新检测
+    document.getElementById('svcStatus').addEventListener('click', function() {
+        checkSvcStatus();
+    });
 
     // config and key fetches are independent: run in parallel for faster first load
     var cfgDone = false;

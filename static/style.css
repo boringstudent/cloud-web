@@ -779,7 +779,7 @@ h1 {
     font-size: 13px;
     color: #999;
     box-shadow: 0 0 10px rgba(0,0,0,0.1);
-    cursor: default;
+    cursor: pointer;
     user-select: none;
 }
 .svc-status.ok #svcStatusText {
