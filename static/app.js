@@ -377,18 +377,24 @@ function fetchFolderSizes() {
 
 function updateFolderSizes() {
     if (!fileTreeCache) return;
+    // Single pass over the tree: accumulate each blob's size into all ancestor dirs
+    var dirSizes = {};
+    fileTreeCache.forEach(function(item) {
+        if (item.type !== 'blob' || !item.path) return;
+        var size = item.size || 0;
+        var p = item.path;
+        var idx = p.lastIndexOf('/');
+        while (idx > 0) {
+            p = p.substring(0, idx);
+            dirSizes[p] = (dirSizes[p] || 0) + size;
+            idx = p.lastIndexOf('/');
+        }
+    });
     var sizeSpans = document.querySelectorAll('.dir-size');
     sizeSpans.forEach(function(span) {
         var dirPath = span.getAttribute('data-path');
         if (!dirPath) return;
-        var totalSize = 0;
-        var prefix = dirPath + '/';
-        fileTreeCache.forEach(function(item) {
-            if (item.type === 'blob' && item.path && item.path.indexOf(prefix) === 0) {
-                totalSize += (item.size || 0);
-            }
-        });
-        var text = formatSize(totalSize);
+        var text = formatSize(dirSizes[dirPath] || 0);
         if (span.textContent !== text) {
             span.textContent = text;
         }
@@ -440,7 +446,7 @@ function showProperties(filePath, fileName, fileType) {
 
 function downloadFolder(filePath, fileName) {
     var url = ghUrl('https://github.com/' + REPO_OWNER + '/' + REPO_NAME + '/archive/refs/heads/' + DEFAULT_BRANCH + '.zip');
-    window.open(url, '_blank');
+    window.open(url, '_blank', 'noopener');
 }
 
 var deleteFilePath = '';
@@ -609,7 +615,7 @@ function hideToast() {
 }
 
 // Parallel chunk downloading (limited concurrency) for faster preview/download
-var MERGE_CONCURRENCY = 4;
+var MERGE_CONCURRENCY = 6;
 
 function fetchMergedBlob(parts, onDone, onFail) {
     var buffers = new Array(parts.length);
@@ -1410,6 +1416,7 @@ function createEntryElement(model) {
         } else {
             entry.href = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(model.path));
             entry.target = '_blank';
+            entry.rel = 'noopener noreferrer';
         }
         nameSpan.textContent = model.name;
         sizeSpan.textContent = model.sizeText;
@@ -1709,10 +1716,8 @@ function uploadFile() {
             try {
                 var response = JSON.parse(xhr.responseText);
                 if (response.success && response.key) {
-                    uploadTasks = buildUploadTasks();
-                    uploadedParts = [];
                     chunkSizeLevel = 0;
-                    uploadNextFile(response.key, 0);
+                    startUpload(response.key);
                 } else {
                     showMessage('获取授权失败', 'error');
                     uploadBtn.disabled = false;
@@ -1733,86 +1738,242 @@ function uploadFile() {
     xhr.send();
 }
 
-function uploadNextFile(key, index) {
-    var total = uploadTasks.length;
-    if (index >= total) {
-        fileTreeCache = null;
-        invalidateHttpCache();
-        showMessage('全部上传成功！', 'success');
-        setTimeout(function() {
-            closeUploadModal();
-            document.getElementById('uploadBtn').disabled = false;
-            loadFileList();
-        }, 1500);
-        return;
-    }
+// ---- Parallel chunked upload with per-chunk retry and live speed ----
+var UPLOAD_CONCURRENCY = 3;
+var UPLOAD_MAX_ATTEMPTS = 4;
+var uploadState = null;
 
-    var item = uploadTasks[index];
-    var progressContainer = document.querySelector('.progress-container');
-    progressContainer.style.display = 'block';
-    showMessage('正在上传 (' + (index + 1) + '/' + total + '): ' + item.label, 'success');
-
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var base64Content = e.target.result.split(',')[1];
-        var currentPath = getCurrentPath();
-        var filePath = currentPath ? currentPath + '/' + item.relativePath : item.relativePath;
-
-        putFileToGitHub(key, filePath, base64Content, null,
-            function(newSha) {
-                if (PART_SUFFIX.test(item.relativePath) && newSha) {
-                    uploadedParts.push({ path: filePath, sha: newSha, base: item.base });
-                }
-                updateUploadProgress(index + 1, total, 0);
-                uploadNextFile(key, index + 1);
-            },
-            function(status, responseText) {
-                var errMsg = status === 0 ? '网络连接中断，可能是文件过大或网络不稳定' : ('状态码: ' + status);
-                try {
-                    var error = JSON.parse(responseText);
-                    if (error.message) errMsg = error.message;
-                } catch (e) {}
-
-                var base = item.base;
-                var j = index;
-                while (j > 0 && uploadTasks[j - 1].base === base) j--;
-                var doneBases = {};
-                for (var k = 0; k < j; k++) doneBases[uploadTasks[k].base] = true;
-                var staleParts = uploadedParts.filter(function(p) { return !doneBases[p.base]; });
-                uploadedParts = uploadedParts.filter(function(p) { return doneBases[p.base]; });
-
-                if (/too large/i.test(responseText || '') && chunkSizeLevel < CHUNK_SIZE_LEVELS.length - 1) {
-                    chunkSizeLevel++;
-                    showMessage('分片过大，已自动减小分片大小，正在重新上传...', 'success');
-                    deletePartsQuietly(key, staleParts, 0, function() {
-                        fileTreeCache = null;
-                        uploadTasks = buildUploadTasks().filter(function(t) { return !doneBases[t.base]; });
-                        uploadNextFile(key, 0);
-                    });
-                    return;
-                }
-
-                var finalMsg = '上传失败 (' + item.relativePath + '): ' + errMsg;
-                if (staleParts.length > 0) {
-                    uploadedParts = staleParts;
-                    cleanupUploadedParts(key, finalMsg);
-                } else {
-                    showMessage(finalMsg, 'error');
-                    document.getElementById('uploadBtn').disabled = false;
-                }
-            },
-            function(fraction) {
-                updateUploadProgress(index, total, fraction);
-            }
-        );
+function startUpload(key, doneBases) {
+    uploadTasks = buildUploadTasks().filter(function(t) {
+        return !(doneBases && doneBases[t.base]);
+    });
+    uploadedParts = uploadedParts.filter(function(p) {
+        return !doneBases || doneBases[p.base];
+    });
+    uploadState = {
+        key: key,
+        nextIndex: 0,
+        active: 0,
+        doneCount: 0,
+        fractionSum: 0,
+        bytesDone: 0,
+        lastSampleBytes: 0,
+        lastSampleTime: Date.now(),
+        speedText: '',
+        baseTotals: {},
+        baseDones: {},
+        doneBases: doneBases || {},
+        downgrading: false,
+        failedMsg: null,
+        speedTimer: null
     };
-    reader.readAsDataURL(item.blob);
+    uploadTasks.forEach(function(t) {
+        uploadState.baseTotals[t.base] = (uploadState.baseTotals[t.base] || 0) + 1;
+    });
+    document.querySelector('.progress-container').style.display = 'block';
+    uploadState.speedTimer = setInterval(sampleUploadSpeed, 1000);
+    showMessage('正在上传 (0/' + uploadTasks.length + ')', 'success');
+    updateUploadProgressUI();
+    var starters = Math.min(UPLOAD_CONCURRENCY, uploadTasks.length);
+    for (var i = 0; i < starters; i++) {
+        pumpUpload();
+    }
+    if (!uploadTasks.length) {
+        checkUploadSettled();
+    }
 }
 
-function updateUploadProgress(index, total, fraction) {
-    var percent = Math.round(((index + fraction) / total) * 100);
+function pumpUpload() {
+    var st = uploadState;
+    if (!st || st.failedMsg || st.downgrading || st.nextIndex >= uploadTasks.length) {
+        checkUploadSettled();
+        return;
+    }
+    var task = uploadTasks[st.nextIndex++];
+    st.active++;
+    runUploadTask(task, function(ok) {
+        st.active--;
+        if (ok) {
+            st.doneCount++;
+            st.baseDones[task.base] = (st.baseDones[task.base] || 0) + 1;
+            if (st.baseDones[task.base] === st.baseTotals[task.base]) {
+                st.doneBases[task.base] = true;
+            }
+            showMessage('正在上传 (' + st.doneCount + '/' + uploadTasks.length + ')', 'success');
+        }
+        updateUploadProgressUI();
+        pumpUpload();
+    });
+}
+
+function checkUploadSettled() {
+    var st = uploadState;
+    if (!st || st.active > 0) return;
+    if (st.failedMsg) {
+        failUpload(st.failedMsg);
+        return;
+    }
+    if (st.downgrading) {
+        var key = st.key;
+        var doneBases = st.doneBases;
+        var staleParts = uploadedParts.filter(function(p) { return !doneBases[p.base]; });
+        showMessage('分片过大，已自动减小分片大小，正在重新上传...', 'success');
+        stopUploadTimer();
+        uploadState = null;
+        deletePartsQuietly(key, staleParts, 0, function() {
+            fileTreeCache = null;
+            startUpload(key, doneBases);
+        });
+        return;
+    }
+    if (st.nextIndex >= uploadTasks.length) {
+        finishUpload();
+    }
+}
+
+function runUploadTask(task, done) {
+    var st = uploadState;
+    var attempt = 0;
+
+    var tryOnce = function() {
+        if (!uploadState) {
+            done(false);
+            return;
+        }
+        attempt++;
+        task.loadedBytes = 0;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var base64Content = e.target.result.split(',')[1];
+            var currentPath = getCurrentPath();
+            var filePath = currentPath ? currentPath + '/' + task.relativePath : task.relativePath;
+
+            putFileToGitHub(st.key, filePath, base64Content, null,
+                function(newSha) {
+                    if (PART_SUFFIX.test(task.relativePath) && newSha) {
+                        uploadedParts.push({ path: filePath, sha: newSha, base: task.base });
+                    }
+                    st.fractionSum -= (task.fraction || 0);
+                    task.fraction = 0;
+                    st.bytesDone += task.blob.size - (task.loadedBytes || 0);
+                    done(true);
+                },
+                function(status, responseText) {
+                    st.fractionSum -= (task.fraction || 0);
+                    task.fraction = 0;
+                    st.bytesDone -= (task.loadedBytes || 0);
+                    task.loadedBytes = 0;
+
+                    if (/too large/i.test(responseText || '') && chunkSizeLevel < CHUNK_SIZE_LEVELS.length - 1) {
+                        if (!st.downgrading) {
+                            st.downgrading = true;
+                            chunkSizeLevel++;
+                            showMessage('分片过大，已自动减小分片大小，等待进行中的任务完成后重传...', 'success');
+                        }
+                        done(false);
+                        return;
+                    }
+
+                    if (attempt < UPLOAD_MAX_ATTEMPTS) {
+                        showMessage('分片上传失败(状态码 ' + status + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
+                        setTimeout(tryOnce, 1000 * attempt);
+                        return;
+                    }
+
+                    var errMsg = status === 0 ? '网络连接中断，可能是文件过大或网络不稳定' : ('状态码: ' + status);
+                    try {
+                        var error = JSON.parse(responseText);
+                        if (error.message) errMsg = error.message;
+                    } catch (e2) {}
+                    if (!st.failedMsg) {
+                        st.failedMsg = '上传失败 (' + task.relativePath + '): ' + errMsg;
+                    }
+                    done(false);
+                },
+                function(fraction) {
+                    st.fractionSum += fraction - (task.fraction || 0);
+                    task.fraction = fraction;
+                    var loaded = Math.round(task.blob.size * fraction);
+                    st.bytesDone += loaded - (task.loadedBytes || 0);
+                    task.loadedBytes = loaded;
+                    updateUploadProgressUI();
+                }
+            );
+        };
+        reader.onerror = function() {
+            if (attempt < UPLOAD_MAX_ATTEMPTS) {
+                setTimeout(tryOnce, 1000 * attempt);
+            } else {
+                if (!st.failedMsg) {
+                    st.failedMsg = '读取文件失败: ' + task.label;
+                }
+                done(false);
+            }
+        };
+        reader.readAsDataURL(task.blob);
+    };
+    tryOnce();
+}
+
+function stopUploadTimer() {
+    if (uploadState && uploadState.speedTimer) {
+        clearInterval(uploadState.speedTimer);
+        uploadState.speedTimer = null;
+    }
+}
+
+function finishUpload() {
+    stopUploadTimer();
+    uploadState = null;
+    fileTreeCache = null;
+    invalidateHttpCache();
+    updateUploadProgressText(100, '');
+    showMessage('全部上传成功！', 'success');
+    setTimeout(function() {
+        closeUploadModal();
+        document.getElementById('uploadBtn').disabled = false;
+        loadFileList();
+    }, 1500);
+}
+
+function failUpload(finalMsg) {
+    var st = uploadState;
+    stopUploadTimer();
+    uploadState = null;
+    var staleParts = uploadedParts.filter(function(p) { return !st.doneBases[p.base]; });
+    if (staleParts.length > 0) {
+        uploadedParts = staleParts;
+        cleanupUploadedParts(st.key, finalMsg);
+    } else {
+        showMessage(finalMsg, 'error');
+        document.getElementById('uploadBtn').disabled = false;
+    }
+}
+
+function sampleUploadSpeed() {
+    var st = uploadState;
+    if (!st) return;
+    var now = Date.now();
+    var dt = (now - st.lastSampleTime) / 1000;
+    if (dt <= 0) return;
+    var speed = (st.bytesDone - st.lastSampleBytes) / dt;
+    st.lastSampleBytes = st.bytesDone;
+    st.lastSampleTime = now;
+    st.speedText = speed > 1024 ? formatSize(Math.round(speed)) + '/s' : '';
+    updateUploadProgressUI();
+}
+
+function updateUploadProgressUI() {
+    var st = uploadState;
+    if (!st) return;
+    var total = uploadTasks.length;
+    var percent = total ? Math.min(100, Math.round(((st.doneCount + st.fractionSum) / total) * 100)) : 100;
+    updateUploadProgressText(percent, st.speedText);
+}
+
+function updateUploadProgressText(percent, speedText) {
     document.getElementById('progressFill').style.width = percent + '%';
-    document.getElementById('progressText').textContent = percent + '%';
+    document.getElementById('progressText').textContent = percent + '%' + (speedText ? ' · ' + speedText : '');
 }
 
 function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress, retries) {
