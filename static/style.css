@@ -276,6 +276,29 @@ a:hover {
 .form-group input[type="file"] {
     padding: 5px;
 }
+.pwd-wrap {
+    position: relative;
+}
+.form-group .pwd-wrap input {
+    padding-right: 38px;
+}
+.pwd-eye {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    padding: 2px;
+    cursor: pointer;
+    color: #999;
+    display: flex;
+    align-items: center;
+    line-height: 0;
+}
+.pwd-eye:hover {
+    color: #333;
+}
 .progress-container {
     margin: 15px 0;
 }
