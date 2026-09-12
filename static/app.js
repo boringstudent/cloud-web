@@ -104,14 +104,20 @@ function cachedGet(url, auth, cb) {
     xhr.send();
 }
 
-function invalidateHttpCache() {
-    bypassHttpCache();
-}
-
 var menuFileInfo = {};
 var previewFileInfo = {};
+var previewBlobUrl = null;
 var fileTreeCache = null;
 var menuOpenedAt = 0;
+
+// Media previews create ObjectURLs from Blobs; track and revoke them when the
+// modal closes or a new preview starts, so repeated previews don't leak memory.
+function setPreviewBlobUrl(url) {
+    if (previewBlobUrl) {
+        URL.revokeObjectURL(previewBlobUrl);
+    }
+    previewBlobUrl = url;
+}
 
 var CHUNK_SIZE_LEVELS = [
     Math.floor((47185920 - 4096) * 3 / 4),
@@ -384,30 +390,24 @@ function closeLoginModal() {
     document.getElementById('loginModal').classList.remove('show');
 }
 
-function showLoginMessage(text, type) {
-    var msg = document.getElementById('loginMessage');
-    msg.className = 'message ' + type;
-    msg.textContent = text;
-}
-
 function doLogin() {
     var username = document.getElementById('loginUsername').value;
     var password = document.getElementById('loginPassword').value;
-    var keepLogin = document.getElementById('loginKeepLogged').checked;
     var rememberPwd = document.getElementById('loginRememberPwd').checked;
     var loginBtn = document.getElementById('loginBtn');
 
     if (!username || !password) {
-        showLoginMessage('请输入用户名和密码', 'error');
+        setMsg('loginMessage', '请输入用户名和密码', 'error');
         return;
     }
 
     loginBtn.disabled = true;
-    showLoginMessage('正在登录...', 'success');
+    setMsg('loginMessage', '正在登录...', 'success');
 
-    loginAndGetKey(username, password, keepLogin, function(err) {
+    // Sessions are always persisted ("保持登录" is the default, no UI toggle)
+    loginAndGetKey(username, password, true, function(err) {
         if (err) {
-            showLoginMessage('登录失败: ' + err, 'error');
+            setMsg('loginMessage', '登录失败: ' + err, 'error');
             loginBtn.disabled = false;
             return;
         }
@@ -416,7 +416,7 @@ function doLogin() {
         } else {
             clearRemember();
         }
-        showLoginMessage('登录成功！', 'success');
+        setMsg('loginMessage', '登录成功！', 'success');
         setTimeout(function() {
             closeLoginModal();
             document.getElementById('loginBtn').disabled = false;
@@ -431,10 +431,8 @@ function logout() {
     updateAuthBtn();
     document.getElementById('deleteUsername').value = '';
     document.getElementById('deletePassword').value = '';
-    document.getElementById('deleteRememberMe').checked = false;
     document.getElementById('loginUsername').value = '';
     document.getElementById('loginPassword').value = '';
-    document.getElementById('loginKeepLogged').checked = false;
 }
 
 // ---- Self-service account (change password / delete account) ----
@@ -452,12 +450,6 @@ function closeAccountModal() {
     document.getElementById('accountModal').classList.remove('show');
 }
 
-function showAccountMessage(text, type) {
-    var msg = document.getElementById('accountMessage');
-    msg.className = 'message ' + type;
-    msg.textContent = text;
-}
-
 function validateNewPassword(p) {
     if (p.length <= 8) return '新密码长度必须大于 8 位';
     if (!/[a-z]/.test(p)) return '新密码必须包含小写字母 (a-z)';
@@ -469,38 +461,38 @@ function validateNewPassword(p) {
 function changeOwnPassword() {
     var auth = getSavedAuth();
     if (!auth) {
-        showAccountMessage('请先登录', 'error');
+        setMsg('accountMessage', '请先登录', 'error');
         return;
     }
     var current = document.getElementById('cpCurrent').value;
     var newPwd = document.getElementById('cpNew').value;
     var confirmPwd = document.getElementById('cpConfirm').value;
     if (!current || !newPwd) {
-        showAccountMessage('请输入当前密码和新密码', 'error');
+        setMsg('accountMessage', '请输入当前密码和新密码', 'error');
         return;
     }
     if (newPwd !== confirmPwd) {
-        showAccountMessage('两次输入的新密码不一致', 'error');
+        setMsg('accountMessage', '两次输入的新密码不一致', 'error');
         return;
     }
     var ruleErr = validateNewPassword(newPwd);
     if (ruleErr) {
-        showAccountMessage(ruleErr, 'error');
+        setMsg('accountMessage', ruleErr, 'error');
         return;
     }
     var btn = document.getElementById('cpBtn');
     btn.disabled = true;
-    showAccountMessage('正在修改...', 'success');
+    setMsg('accountMessage', '正在修改...', 'success');
     // Hash both the current and the new password locally before sending
     sha512Hex(current, function(err, curHash) {
         if (err || !curHash) {
-            showAccountMessage('修改失败: ' + (err || '密码加密失败'), 'error');
+            setMsg('accountMessage', '修改失败: ' + (err || '密码加密失败'), 'error');
             btn.disabled = false;
             return;
         }
         sha512Hex(newPwd, function(err2, newHash) {
             if (err2 || !newHash) {
-                showAccountMessage('修改失败: ' + (err2 || '密码加密失败'), 'error');
+                setMsg('accountMessage', '修改失败: ' + (err2 || '密码加密失败'), 'error');
                 btn.disabled = false;
                 return;
             }
@@ -510,7 +502,7 @@ function changeOwnPassword() {
                 new_password: newHash
             }, function(err3) {
                 if (err3) {
-                    showAccountMessage('修改失败: ' + err3, 'error');
+                    setMsg('accountMessage', '修改失败: ' + err3, 'error');
                     btn.disabled = false;
                     return;
                 }
@@ -524,7 +516,7 @@ function changeOwnPassword() {
                 if (getRemember()) {
                     saveRemember(auth.u, newPwd);
                 }
-                showAccountMessage('密码修改成功！', 'success');
+                setMsg('accountMessage', '密码修改成功！', 'success');
                 btn.disabled = false;
                 document.getElementById('cpCurrent').value = '';
                 document.getElementById('cpNew').value = '';
@@ -537,12 +529,12 @@ function changeOwnPassword() {
 function deleteOwnAccount() {
     var auth = getSavedAuth();
     if (!auth) {
-        showAccountMessage('请先登录', 'error');
+        setMsg('accountMessage', '请先登录', 'error');
         return;
     }
     var password = document.getElementById('daPassword').value;
     if (!password) {
-        showAccountMessage('请输入密码以确认注销', 'error');
+        setMsg('accountMessage', '请输入密码以确认注销', 'error');
         return;
     }
     if (!confirm('确定要永久注销账户 ' + auth.u + ' 吗？此操作不可撤销！')) {
@@ -550,10 +542,10 @@ function deleteOwnAccount() {
     }
     var btn = document.getElementById('daBtn');
     btn.disabled = true;
-    showAccountMessage('正在注销...', 'success');
+    setMsg('accountMessage', '正在注销...', 'success');
     sha512Hex(password, function(err, pwHash) {
         if (err || !pwHash) {
-            showAccountMessage('注销失败: ' + (err || '密码加密失败'), 'error');
+            setMsg('accountMessage', '注销失败: ' + (err || '密码加密失败'), 'error');
             btn.disabled = false;
             return;
         }
@@ -563,7 +555,7 @@ function deleteOwnAccount() {
         }, function(err2) {
             btn.disabled = false;
             if (err2) {
-                showAccountMessage('注销失败: ' + err2, 'error');
+                setMsg('accountMessage', '注销失败: ' + err2, 'error');
                 return;
             }
             ghApiKey = null;
@@ -619,12 +611,6 @@ function closeAdminModal() {
     document.getElementById('adminModal').classList.remove('show');
 }
 
-function showAdminMessage(text, type) {
-    var msg = document.getElementById('adminMessage');
-    msg.className = 'message ' + type;
-    msg.textContent = text;
-}
-
 // 用户列表读取 cloud-user 仓库的 user.json，查看列表无需管理员凭据；写操作仍走鉴权 API。
 // 整条链路不使用任何缓存：不走 ETag/304，请求附加时间戳并带 Cache-Control: no-cache，
 // 每次拿到的都是仓库实时内容；无令牌时回退 raw + 时间戳。
@@ -645,7 +631,12 @@ function loadAdminUsers() {
         }
         if (err || !data || typeof data !== 'object') {
             adminUsersData = null;
-            document.getElementById('adminUserList').innerHTML = '<div class="message error">加载失败: ' + (err || '响应异常') + '</div>';
+            var errDiv = document.createElement('div');
+            errDiv.className = 'message error';
+            errDiv.textContent = '加载失败: ' + (err || '响应异常');
+            var listEl = document.getElementById('adminUserList');
+            listEl.innerHTML = '';
+            listEl.appendChild(errDiv);
             return;
         }
         adminUsersData = data;
@@ -714,24 +705,25 @@ function renderAdminUserList() {
     names.forEach(function(name) {
         var role = adminUsersData[name].role || 'user';
         var row = document.createElement('div');
-        row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 4px; border-bottom: 1px solid #f0f0f0; font-size: 14px; gap: 8px;';
+        row.className = 'admin-user-row';
 
         var info = document.createElement('span');
-        info.style.cssText = 'min-width: 0; word-break: break-all; color: #333;';
+        info.className = 'admin-user-info';
         info.textContent = name + ' ';
         var roleTag = document.createElement('span');
-        roleTag.style.cssText = 'font-size: 12px; padding: 1px 8px; border-radius: 8px; color: white; background: ' + (role === 'admin' ? '#6c5ce7' : '#95a5a6') + ';';
+        roleTag.className = 'admin-role-tag';
+        roleTag.style.background = role === 'admin' ? '#6c5ce7' : '#95a5a6';
         roleTag.textContent = role;
         info.appendChild(roleTag);
         row.appendChild(info);
 
         var ops = document.createElement('span');
-        ops.style.cssText = 'display: flex; gap: 6px; flex-shrink: 0;';
+        ops.className = 'admin-user-ops';
 
         var mkBtn = function(text, bg, fn) {
             var b = document.createElement('button');
             b.className = 'btn';
-            b.style.cssText = 'padding: 4px 10px; font-size: 12px; background: ' + bg + ';';
+            b.style.background = bg;
             b.textContent = text;
             b.addEventListener('click', fn);
             return b;
@@ -754,22 +746,22 @@ function adminAddUser() {
     var password = document.getElementById('adminNewPassword').value;
     var role = document.getElementById('adminNewRole').value;
     if (!username || !password) {
-        showAdminMessage('请输入用户名和密码', 'error');
+        setMsg('adminMessage', '请输入用户名和密码', 'error');
         return;
     }
     var btn = document.getElementById('adminAddBtn');
     btn.disabled = true;
-    showAdminMessage('正在添加...', 'success');
+    setMsg('adminMessage', '正在添加...', 'success');
     withAdminCreds(function(creds) {
         if (!creds) {
-            showAdminMessage('需要管理员权限或身份验证失败', 'error');
+            setMsg('adminMessage', '需要管理员权限或身份验证失败', 'error');
             btn.disabled = false;
             return;
         }
         // hash the new user's password client-side before sending
         sha512Hex(password, function(err, pwHash) {
             if (err || !pwHash) {
-                showAdminMessage('添加失败: ' + (err || '密码加密失败'), 'error');
+                setMsg('adminMessage', '添加失败: ' + (err || '密码加密失败'), 'error');
                 btn.disabled = false;
                 return;
             }
@@ -783,10 +775,10 @@ function adminAddUser() {
             apiSendJson('POST', API_BASE + '/api/users', body, function(err2) {
                 btn.disabled = false;
                 if (err2) {
-                    showAdminMessage('添加失败: ' + err2, 'error');
+                    setMsg('adminMessage', '添加失败: ' + err2, 'error');
                     return;
                 }
-                showAdminMessage('添加成功: ' + username, 'success');
+                setMsg('adminMessage', '添加成功: ' + username, 'success');
                 document.getElementById('adminNewUsername').value = '';
                 document.getElementById('adminNewPassword').value = '';
                 loadAdminUsers();
@@ -800,13 +792,13 @@ function adminResetPassword(username) {
     if (!password) return;
     withAdminCreds(function(creds) {
         if (!creds) {
-            showAdminMessage('需要管理员权限或身份验证失败', 'error');
+            setMsg('adminMessage', '需要管理员权限或身份验证失败', 'error');
             return;
         }
-        showAdminMessage('正在修改 ' + username + ' 的密码...', 'success');
+        setMsg('adminMessage', '正在修改 ' + username + ' 的密码...', 'success');
         sha512Hex(password, function(err, pwHash) {
             if (err || !pwHash) {
-                showAdminMessage('修改失败: ' + (err || '密码加密失败'), 'error');
+                setMsg('adminMessage', '修改失败: ' + (err || '密码加密失败'), 'error');
                 return;
             }
             var body = {
@@ -816,10 +808,10 @@ function adminResetPassword(username) {
             };
             apiSendJson('PUT', API_BASE + '/api/users/' + encodeURIComponent(username), body, function(err2) {
                 if (err2) {
-                    showAdminMessage('修改失败: ' + err2, 'error');
+                    setMsg('adminMessage', '修改失败: ' + err2, 'error');
                     return;
                 }
-                showAdminMessage('已重置 ' + username + ' 的密码', 'success');
+                setMsg('adminMessage', '已重置 ' + username + ' 的密码', 'success');
                 loadAdminUsers();
             });
         });
@@ -829,10 +821,10 @@ function adminResetPassword(username) {
 function adminChangeRole(username, newRole) {
     withAdminCreds(function(creds) {
         if (!creds) {
-            showAdminMessage('需要管理员权限或身份验证失败', 'error');
+            setMsg('adminMessage', '需要管理员权限或身份验证失败', 'error');
             return;
         }
-        showAdminMessage('正在修改 ' + username + ' 的角色...', 'success');
+        setMsg('adminMessage', '正在修改 ' + username + ' 的角色...', 'success');
         var body = {
             admin_user: creds.admin_user,
             admin_pass: creds.admin_pass,
@@ -840,10 +832,10 @@ function adminChangeRole(username, newRole) {
         };
         apiSendJson('PUT', API_BASE + '/api/users/' + encodeURIComponent(username), body, function(err) {
             if (err) {
-                showAdminMessage('修改失败: ' + err, 'error');
+                setMsg('adminMessage', '修改失败: ' + err, 'error');
                 return;
             }
-            showAdminMessage('已将 ' + username + ' 调整为 ' + newRole, 'success');
+            setMsg('adminMessage', '已将 ' + username + ' 调整为 ' + newRole, 'success');
             loadAdminUsers();
         });
     });
@@ -853,19 +845,19 @@ function adminDeleteUser(username) {
     if (!confirm('确定要删除用户 ' + username + ' 吗？此操作不可撤销。')) return;
     withAdminCreds(function(creds) {
         if (!creds) {
-            showAdminMessage('需要管理员权限或身份验证失败', 'error');
+            setMsg('adminMessage', '需要管理员权限或身份验证失败', 'error');
             return;
         }
-        showAdminMessage('正在删除用户 ' + username + '...', 'success');
+        setMsg('adminMessage', '正在删除用户 ' + username + '...', 'success');
         apiSendJson('DELETE', API_BASE + '/api/users/' + encodeURIComponent(username), {
             admin_user: creds.admin_user,
             admin_pass: creds.admin_pass
         }, function(err) {
             if (err) {
-                showAdminMessage('删除失败: ' + err, 'error');
+                setMsg('adminMessage', '删除失败: ' + err, 'error');
                 return;
             }
-            showAdminMessage('已删除用户: ' + username, 'success');
+            setMsg('adminMessage', '已删除用户: ' + username, 'success');
             loadAdminUsers();
         });
     });
@@ -900,7 +892,7 @@ document.addEventListener('visibilitychange', function() {
 function openUploadModal() {
     if (!getSavedAuth()) {
         openLoginModal();
-        showLoginMessage('请先登录后再上传文件', 'error');
+        setMsg('loginMessage', '请先登录后再上传文件', 'error');
         return;
     }
     document.getElementById('uploadModal').classList.add('show');
@@ -923,17 +915,13 @@ function closeUploadModal() {
     document.getElementById('folderInput').value = '';
 }
 
-function showMessage(text, type) {
-    var msg = document.getElementById('uploadMessage');
-    msg.className = 'message ' + type;
-    msg.textContent = text;
-}
+var SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
 
 function formatSize(size) {
     if (size === undefined || size === null) return '0B';
-    for (var unit of ['B', 'KB', 'MB', 'GB', 'TB']) {
+    for (var i = 0; i < SIZE_UNITS.length; i++) {
         if (size < 1024.0) {
-            return size.toFixed(1) + unit;
+            return size.toFixed(1) + SIZE_UNITS[i];
         }
         size /= 1024.0;
     }
@@ -1089,12 +1077,6 @@ function closeDeleteModal() {
     document.getElementById('deletePassword').value = '';
 }
 
-function showDeleteMessage(text, type) {
-    var msg = document.getElementById('deleteMessage');
-    msg.className = 'message ' + type;
-    msg.textContent = text;
-}
-
 function bindEntryEvents(entry) {
     entry.addEventListener('contextmenu', function(e) {
         e.preventDefault();
@@ -1235,6 +1217,12 @@ function downloadFile(filePath, fileName) {
         setTimeout(hideToast, 2500);
     };
     xhr.send();
+}
+
+function setMsg(id, text, type) {
+    var msg = document.getElementById(id);
+    msg.className = 'message ' + type;
+    msg.textContent = text;
 }
 
 function showToast(text) {
@@ -1403,9 +1391,17 @@ function detectLang(ext) {
     return null;
 }
 
+// Keyword lookup tables are built once per language and reused on every
+// keystroke of the overlay editor.
+var LANG_KW_CACHE = {};
+
 function highlightCode(code, lang) {
-    var kw = {};
-    (LANG_KEYWORDS[lang] || '').split(' ').forEach(function(w) { kw[w] = true; });
+    var kw = LANG_KW_CACHE[lang];
+    if (!kw) {
+        kw = {};
+        (LANG_KEYWORDS[lang] || '').split(' ').forEach(function(w) { kw[w] = true; });
+        LANG_KW_CACHE[lang] = kw;
+    }
     var re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|#[^\n]*)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
     var out = '';
     var last = 0;
@@ -1425,11 +1421,31 @@ function highlightCode(code, lang) {
 }
 
 // ---- Lightweight Markdown rendering ----
+// escapeHtml() does not escape quotes, so values interpolated into HTML
+// attributes must be sanitized separately. URLs are additionally restricted
+// to safe schemes (javascript:/data:/vbscript: are rejected).
+function safeUrl(url) {
+    var u = String(url).replace(/[\s"'`\\]/g, '');
+    var low = u.toLowerCase();
+    if (low.indexOf('javascript:') === 0 || low.indexOf('data:') === 0 || low.indexOf('vbscript:') === 0) {
+        return '#';
+    }
+    return u;
+}
+
+function safeAttr(text) {
+    return String(text).replace(/["'`\\]/g, '');
+}
+
 function mdInline(text) {
     var s = escapeHtml(text);
     s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img alt="$1" src="$2" style="max-width: 100%; border-radius: 6px;">');
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function(m, alt, url) {
+        return '<img alt="' + safeAttr(alt) + '" src="' + safeUrl(url) + '" style="max-width: 100%; border-radius: 6px;">';
+    });
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function(m, label, url) {
+        return '<a href="' + safeUrl(url) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+    });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
@@ -1679,29 +1695,33 @@ function previewFile(filePath, fileName) {
     document.getElementById('previewActions').style.display = 'none';
     document.getElementById('previewMessage').className = 'message';
     document.getElementById('previewMessage').textContent = '';
+    setPreviewBlobUrl(null);
 
     if (menuFileInfo.chunked) {
         fetchMergedBlob(menuFileInfo.parts, function(blob) {
-            if (AUDIO_EXTS.indexOf(ext) !== -1) {
+            var mediaUrl = null;
+            if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
+                mediaUrl = URL.createObjectURL(blob);
+                setPreviewBlobUrl(mediaUrl);
                 content.innerHTML = '';
+            }
+            if (AUDIO_EXTS.indexOf(ext) !== -1) {
                 var audio = document.createElement('audio');
-                audio.src = URL.createObjectURL(blob);
+                audio.src = mediaUrl;
                 audio.controls = true;
                 audio.preload = 'auto';
                 audio.className = 'preview-audio';
                 content.appendChild(audio);
             } else if (VIDEO_EXTS.indexOf(ext) !== -1) {
-                content.innerHTML = '';
                 var video = document.createElement('video');
-                video.src = URL.createObjectURL(blob);
+                video.src = mediaUrl;
                 video.controls = true;
                 video.preload = 'auto';
                 video.className = 'preview-video';
                 content.appendChild(video);
             } else if (IMAGE_EXTS.indexOf(ext) !== -1) {
-                content.innerHTML = '';
                 var img = document.createElement('img');
-                img.src = URL.createObjectURL(blob);
+                img.src = mediaUrl;
                 img.alt = fileName;
                 img.style.maxWidth = '100%';
                 img.style.maxHeight = '60vh';
@@ -1732,6 +1752,7 @@ function previewFile(filePath, fileName) {
         loadMediaWithRate(previewUrl, menuFileInfo.size, loadingDiv, function(blob) {
             content.innerHTML = '';
             var mediaUrl = URL.createObjectURL(blob);
+            setPreviewBlobUrl(mediaUrl);
             if (AUDIO_EXTS.indexOf(ext) !== -1) {
                 var audio = document.createElement('audio');
                 audio.src = mediaUrl;
@@ -1808,6 +1829,7 @@ function editFile(filePath, fileName) {
     document.getElementById('previewActions').style.display = 'none';
     document.getElementById('previewMessage').className = 'message';
     document.getElementById('previewMessage').textContent = '';
+    setPreviewBlobUrl(null);
 
     var xhr = new XMLHttpRequest();
     xhr.open('GET', previewUrl, true);
@@ -1835,12 +1857,7 @@ function editFile(filePath, fileName) {
 
 function closePreviewModal() {
     document.getElementById('previewModal').classList.remove('show');
-}
-
-function showPreviewMessage(text, type) {
-    var msg = document.getElementById('previewMessage');
-    msg.className = 'message ' + type;
-    msg.textContent = text;
+    setPreviewBlobUrl(null);
 }
 
 function savePreviewFile() {
@@ -1851,10 +1868,10 @@ function savePreviewFile() {
     var saveBtn = document.getElementById('savePreviewBtn');
 
     saveBtn.disabled = true;
-    showPreviewMessage('正在获取授权...', 'success');
+    setMsg('previewMessage', '正在获取授权...', 'success');
 
     var fail = function(text) {
-        showPreviewMessage(text, 'error');
+        setMsg('previewMessage', text, 'error');
         saveBtn.disabled = false;
     };
 
@@ -1911,8 +1928,8 @@ function updateFileOnGitHub(key, filePath, newContent) {
                 updateXhr.onload = function() {
                     if (updateXhr.status === 200 || updateXhr.status === 201) {
                         fileTreeCache = null;
-                        invalidateHttpCache();
-                        showPreviewMessage('保存成功！', 'success');
+                        bypassHttpCache();
+                        setMsg('previewMessage', '保存成功！', 'success');
                         setTimeout(function() {
                             closePreviewModal();
                             loadFileList();
@@ -1920,31 +1937,31 @@ function updateFileOnGitHub(key, filePath, newContent) {
                     } else {
                         try {
                             var error = JSON.parse(updateXhr.responseText);
-                            showPreviewMessage('保存失败: ' + (error.message || '未知错误'), 'error');
+                            setMsg('previewMessage', '保存失败: ' + (error.message || '未知错误'), 'error');
                         } catch (e) {
-                            showPreviewMessage('保存失败，状态码: ' + updateXhr.status, 'error');
+                            setMsg('previewMessage', '保存失败，状态码: ' + updateXhr.status, 'error');
                         }
                         document.getElementById('savePreviewBtn').disabled = false;
                     }
                 };
 
                 updateXhr.onerror = function() {
-                    showPreviewMessage('网络错误，保存失败', 'error');
+                    setMsg('previewMessage', '网络错误，保存失败', 'error');
                     document.getElementById('savePreviewBtn').disabled = false;
                 };
 
                 updateXhr.send(JSON.stringify(data));
             } catch (e) {
-                showPreviewMessage('获取文件信息失败', 'error');
+                setMsg('previewMessage', '获取文件信息失败', 'error');
                 document.getElementById('savePreviewBtn').disabled = false;
             }
         } else {
-            showPreviewMessage('获取文件信息失败，状态码: ' + shaXhr.status, 'error');
+            setMsg('previewMessage', '获取文件信息失败，状态码: ' + shaXhr.status, 'error');
             document.getElementById('savePreviewBtn').disabled = false;
         }
     };
     shaXhr.onerror = function() {
-        showPreviewMessage('网络错误，无法获取文件信息', 'error');
+        setMsg('previewMessage', '网络错误，无法获取文件信息', 'error');
         document.getElementById('savePreviewBtn').disabled = false;
     };
     shaXhr.send();
@@ -1953,7 +1970,7 @@ function updateFileOnGitHub(key, filePath, newContent) {
 function confirmDelete() {
     var deleteBtn = document.getElementById('deleteBtn');
     deleteBtn.disabled = true;
-    showDeleteMessage('正在获取授权...', 'success');
+    setMsg('deleteMessage', '正在获取授权...', 'success');
 
     var runDelete = function(key) {
         if (deleteFileType === 'dir') {
@@ -1966,7 +1983,7 @@ function confirmDelete() {
     };
 
     var fail = function(text) {
-        showDeleteMessage(text, 'error');
+        setMsg('deleteMessage', text, 'error');
         deleteBtn.disabled = false;
     };
 
@@ -1987,7 +2004,7 @@ function confirmDelete() {
         fail('请输入用户名和密码');
         return;
     }
-    loginAndGetKey(username, password, document.getElementById('deleteRememberMe').checked, function(err, key) {
+    loginAndGetKey(username, password, true, function(err, key) {
         if (err) {
             fail('获取授权失败: ' + err);
             return;
@@ -1996,55 +2013,56 @@ function confirmDelete() {
     });
 }
 
-function deleteFile(key, filePath, sha) {
-    showDeleteMessage('正在删除...', 'success');
-
-    var data = {
+// Shared contents-API DELETE helper. cb(status, responseText); status 0 = network error.
+function ghDeleteFile(key, filePath, sha, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath)), true);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + key);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.onload = function() { cb(xhr.status, xhr.responseText); };
+    xhr.onerror = function() { cb(0, ''); };
+    xhr.send(JSON.stringify({
         message: 'Delete file: ' + filePath,
         sha: sha
-    };
+    }));
+}
 
-    var deleteXhr = new XMLHttpRequest();
-    var deleteUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
-    deleteXhr.open('DELETE', deleteUrl, true);
-    deleteXhr.setRequestHeader('Authorization', 'Bearer ' + key);
-    deleteXhr.setRequestHeader('Content-Type', 'application/json');
+function deleteFile(key, filePath, sha) {
+    setMsg('deleteMessage', '正在删除...', 'success');
 
-    deleteXhr.onload = function() {
-        if (deleteXhr.status === 200 || deleteXhr.status === 201) {
+    ghDeleteFile(key, filePath, sha, function(status, responseText) {
+        if (status === 0) {
+            setMsg('deleteMessage', '网络错误，删除失败', 'error');
+            document.getElementById('deleteBtn').disabled = false;
+            return;
+        }
+        if (status === 200 || status === 201) {
             fileTreeCache = null;
-            invalidateHttpCache();
-            showDeleteMessage('删除成功！', 'success');
+            bypassHttpCache();
+            setMsg('deleteMessage', '删除成功！', 'success');
             setTimeout(function() {
                 closeDeleteModal();
                 loadFileList();
             }, 1500);
         } else {
             try {
-                var error = JSON.parse(deleteXhr.responseText);
-                showDeleteMessage('删除失败: ' + (error.message || '未知错误'), 'error');
+                var error = JSON.parse(responseText);
+                setMsg('deleteMessage', '删除失败: ' + (error.message || '未知错误'), 'error');
             } catch (e) {
-                showDeleteMessage('删除失败，状态码: ' + deleteXhr.status, 'error');
+                setMsg('deleteMessage', '删除失败，状态码: ' + status, 'error');
             }
             document.getElementById('deleteBtn').disabled = false;
         }
-    };
-
-    deleteXhr.onerror = function() {
-        showDeleteMessage('网络错误，删除失败', 'error');
-        document.getElementById('deleteBtn').disabled = false;
-    };
-
-    deleteXhr.send(JSON.stringify(data));
+    });
 }
 
 function deleteFolderError() {
-    showDeleteMessage('获取文件夹内容失败', 'error');
+    setMsg('deleteMessage', '获取文件夹内容失败', 'error');
     document.getElementById('deleteBtn').disabled = false;
 }
 
 function deleteFolder(key, folderPath) {
-    showDeleteMessage('正在获取文件夹内容...', 'success');
+    setMsg('deleteMessage', '正在获取文件夹内容...', 'success');
 
     fetchFileTree(function() {
         var prefix = folderPath + '/';
@@ -2055,7 +2073,7 @@ function deleteFolder(key, folderPath) {
             }
         });
         if (!files.length) {
-            showDeleteMessage('文件夹为空或不存在', 'error');
+            setMsg('deleteMessage', '文件夹为空或不存在', 'error');
             document.getElementById('deleteBtn').disabled = false;
             return;
         }
@@ -2078,12 +2096,12 @@ function deleteFolderFiles(key, files) {
         failed: false,
         errMsg: ''
     };
-    showDeleteMessage('正在删除 (0/' + files.length + ')', 'success');
+    setMsg('deleteMessage', '正在删除 (0/' + files.length + ')', 'success');
 
     function settle() {
         if (state.active > 0) return;
         if (state.failed) {
-            showDeleteMessage('删除失败: ' + state.errMsg + '（已删除 ' + state.done + '/' + files.length + '）', 'error');
+            setMsg('deleteMessage', '删除失败: ' + state.errMsg + '（已删除 ' + state.done + '/' + files.length + '）', 'error');
             document.getElementById('deleteBtn').disabled = false;
             return;
         }
@@ -2098,53 +2116,45 @@ function deleteFolderFiles(key, files) {
             state.active++;
             (function(file) {
                 var attempt = function() {
-                    var data = {
-                        message: 'Delete file: ' + file.path,
-                        sha: file.sha
-                    };
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(file.path)), true);
-                    xhr.setRequestHeader('Authorization', 'Bearer ' + key);
-                    xhr.setRequestHeader('Content-Type', 'application/json');
-                    xhr.onload = function() {
+                    ghDeleteFile(key, file.path, file.sha, function(status, responseText) {
+                        if (status === 0) {
+                            state.active--;
+                            state.failed = true;
+                            state.errMsg = '网络错误';
+                            settle();
+                            return;
+                        }
                         // Ref conflict from parallel commits: retry this file with
                         // jittered backoff instead of failing the whole batch.
-                        var isRefConflict = xhr.status === 409 || /is at [0-9a-f]{40} but expected/i.test(xhr.responseText || '');
+                        var isRefConflict = status === 409 || /is at [0-9a-f]{40} but expected/i.test(responseText || '');
                         if (isRefConflict) {
                             file._conflicts = (file._conflicts || 0) + 1;
                             if (file._conflicts <= 8) {
-                                showDeleteMessage('提交冲突，重试 (' + file._conflicts + '/8): ' + file.path, 'success');
+                                setMsg('deleteMessage', '提交冲突，重试 (' + file._conflicts + '/8): ' + file.path, 'success');
                                 setTimeout(attempt, 1200 * file._conflicts + Math.floor(Math.random() * 800));
                                 return;
                             }
                         }
                         state.active--;
-                        if (xhr.status === 200 || xhr.status === 201) {
+                        if (status === 200 || status === 201) {
                             state.done++;
-                            showDeleteMessage('正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
-                        } else if (xhr.status === 404) {
+                            setMsg('deleteMessage', '正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
+                        } else if (status === 404) {
                             // already gone (e.g. removed by an earlier attempt): count as done
                             state.done++;
-                            showDeleteMessage('已不存在，跳过 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
+                            setMsg('deleteMessage', '已不存在，跳过 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
                         } else {
                             state.failed = true;
                             try {
-                                var error = JSON.parse(xhr.responseText);
-                                state.errMsg = error.message || ('状态码 ' + xhr.status);
+                                var error = JSON.parse(responseText);
+                                state.errMsg = error.message || ('状态码 ' + status);
                             } catch (e) {
-                                state.errMsg = '状态码 ' + xhr.status;
+                                state.errMsg = '状态码 ' + status;
                             }
                         }
                         pump();
                         settle();
-                    };
-                    xhr.onerror = function() {
-                        state.active--;
-                        state.failed = true;
-                        state.errMsg = '网络错误';
-                        settle();
-                    };
-                    xhr.send(JSON.stringify(data));
+                    });
                 };
                 attempt();
             })(f);
@@ -2155,8 +2165,8 @@ function deleteFolderFiles(key, files) {
 
 function deleteAllDone() {
     fileTreeCache = null;
-    invalidateHttpCache();
-    showDeleteMessage('删除成功！', 'success');
+    bypassHttpCache();
+    setMsg('deleteMessage', '删除成功！', 'success');
     setTimeout(function() {
         closeDeleteModal();
         clearSelection();
@@ -2656,11 +2666,13 @@ function renderFileList(items) {
 
     if (!hasRenderedList) {
         container.innerHTML = '';
+        var frag = document.createDocumentFragment();
         models.forEach(function(m) {
             var el = createEntryElement(m);
-            container.appendChild(el);
+            frag.appendChild(el);
             entryMap[m.key] = { el: el, model: m, sizeText: m.sizeText };
         });
+        container.appendChild(frag);
         listChanged = true;
     } else {
         // removals (animated, only the affected entries)
@@ -2926,12 +2938,12 @@ function uploadFile() {
     var uploadBtn = document.getElementById('uploadBtn');
 
     if (!auth) {
-        showMessage('请先登录后再上传文件', 'error');
+        setMsg('uploadMessage', '请先登录后再上传文件', 'error');
         return;
     }
 
     if (!pendingFiles.length) {
-        showMessage('请选择要上传的文件', 'error');
+        setMsg('uploadMessage', '请选择要上传的文件', 'error');
         return;
     }
 
@@ -2941,11 +2953,11 @@ function uploadFile() {
     }
 
     uploadBtn.disabled = true;
-    showMessage('正在获取授权...', 'success');
+    setMsg('uploadMessage', '正在获取授权...', 'success');
 
     ensureGhKey(function(key) {
         if (!key) {
-            showMessage('获取授权失败，请重新登录', 'error');
+            setMsg('uploadMessage', '获取授权失败，请重新登录', 'error');
             uploadBtn.disabled = false;
             return;
         }
@@ -3013,7 +3025,7 @@ function startUpload(key, doneBases) {
     });
     document.querySelector('.progress-container').style.display = 'block';
     uploadState.speedTimer = setInterval(sampleUploadSpeed, 1000);
-    showMessage('正在上传 (0/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
+    setMsg('uploadMessage', '正在上传 (0/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
     updateUploadProgressUI();
     renderChunkPanel();
     fillUploads();
@@ -3080,7 +3092,7 @@ function fillUploads() {
                             }
                         }
                     }
-                    showMessage('正在上传 (' + st2.doneCount + '/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
+                    setMsg('uploadMessage', '正在上传 (' + st2.doneCount + '/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
                 }
                 updateUploadProgressUI();
                 fillUploads();
@@ -3101,7 +3113,7 @@ function checkUploadSettled() {
         var key = st.key;
         var doneBases = st.doneBases;
         var staleParts = uploadedParts.filter(function(p) { return !doneBases[p.base]; });
-        showMessage('分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），正在重新上传...', 'success');
+        setMsg('uploadMessage', '分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），正在重新上传...', 'success');
         stopUploadTimer();
         uploadState = null;
         deletePartsQuietly(key, staleParts, 0, function() {
@@ -3154,7 +3166,7 @@ function runUploadTask(task, done) {
                         if (!st.downgrading) {
                             st.downgrading = true;
                             chunkSizeLevel++;
-                            showMessage('分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），等待进行中的任务完成后重传...', 'success');
+                            setMsg('uploadMessage', '分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），等待进行中的任务完成后重传...', 'success');
                         }
                         done(false);
                         return;
@@ -3172,7 +3184,7 @@ function runUploadTask(task, done) {
                             st.limit--;
                         }
                         if (conflicts <= 10) {
-                            showMessage('提交冲突，等待其他分片完成后重试 (' + conflicts + '/10): ' + task.label, 'success');
+                            setMsg('uploadMessage', '提交冲突，等待其他分片完成后重试 (' + conflicts + '/10): ' + task.label, 'success');
                             setTimeout(tryOnce, 1500 * conflicts + Math.floor(Math.random() * 1000));
                             return;
                         }
@@ -3183,7 +3195,7 @@ function runUploadTask(task, done) {
                         if (st.adaptive && st.limit > UPLOAD_LIMIT_MIN) {
                             st.limit--;
                         }
-                        showMessage('分片上传失败(状态码 ' + status + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
+                        setMsg('uploadMessage', '分片上传失败(状态码 ' + status + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
                         setTimeout(tryOnce, 1000 * attempt);
                         return;
                     }
@@ -3235,9 +3247,9 @@ function finishUpload() {
     uploadState = null;
     renderChunkPanel();
     fileTreeCache = null;
-    invalidateHttpCache();
+    bypassHttpCache();
     updateUploadProgressText(100, '');
-    showMessage('全部上传成功！', 'success');
+    setMsg('uploadMessage', '全部上传成功！', 'success');
     setTimeout(function() {
         closeUploadModal();
         document.getElementById('uploadBtn').disabled = false;
@@ -3255,7 +3267,7 @@ function failUpload(finalMsg) {
         uploadedParts = staleParts;
         cleanupUploadedParts(st.key, finalMsg);
     } else {
-        showMessage(finalMsg, 'error');
+        setMsg('uploadMessage', finalMsg, 'error');
         document.getElementById('uploadBtn').disabled = false;
     }
 }
@@ -3419,11 +3431,11 @@ function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, 
 }
 
 function cleanupUploadedParts(key, finalMsg) {
-    showMessage('上传失败，正在清理已上传的分片...', 'error');
+    setMsg('uploadMessage', '上传失败，正在清理已上传的分片...', 'error');
     deletePartsQuietly(key, uploadedParts, 0, function() {
         fileTreeCache = null;
         uploadedParts = [];
-        showMessage(finalMsg + '（残留分片已清理）', 'error');
+        setMsg('uploadMessage', finalMsg + '（残留分片已清理）', 'error');
         document.getElementById('uploadBtn').disabled = false;
     });
 }
@@ -3433,21 +3445,9 @@ function deletePartsQuietly(key, parts, index, done) {
         done();
         return;
     }
-    var data = {
-        message: 'Delete file: ' + parts[index].path,
-        sha: parts[index].sha
-    };
-    var xhr = new XMLHttpRequest();
-    xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(parts[index].path)), true);
-    xhr.setRequestHeader('Authorization', 'Bearer ' + key);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.onload = function() {
+    ghDeleteFile(key, parts[index].path, parts[index].sha, function() {
         deletePartsQuietly(key, parts, index + 1, done);
-    };
-    xhr.onerror = function() {
-        deletePartsQuietly(key, parts, index + 1, done);
-    };
-    xhr.send(JSON.stringify(data));
+    });
 }
 
 document.addEventListener('DOMContentLoaded', function() {

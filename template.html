@@ -46,15 +46,9 @@
                     <label>密码</label>
                     <input type="password" id="loginPassword" placeholder="请输入密码">
                 </div>
-                <div class="form-group" style="display: flex; align-items: center; gap: 16px; margin-bottom: 5px;">
-                    <span style="display: flex; align-items: center; gap: 6px;">
-                        <input type="checkbox" id="loginKeepLogged" style="width: auto; margin: 0;">
-                        <label for="loginKeepLogged" style="margin: 0;">保持登录</label>
-                    </span>
-                    <span style="display: flex; align-items: center; gap: 6px;">
-                        <input type="checkbox" id="loginRememberPwd" style="width: auto; margin: 0;">
-                        <label for="loginRememberPwd" style="margin: 0;">记住密码</label>
-                    </span>
+                <div class="form-group checkbox-row">
+                    <input type="checkbox" id="loginRememberPwd" checked>
+                    <label for="loginRememberPwd">记住密码</label>
                 </div>
                 <button class="btn" onclick="doLogin()" id="loginBtn" style="width: 100%;">登录</button>
                 <div id="loginMessage" class="message"></div>
@@ -65,18 +59,16 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeUploadModal()">&times;</span>
                 <h2>上传文件</h2>
-                <div id="dropZone" style="border: 2px dashed #2c82c9; border-radius: 8px; padding: 30px 15px; text-align: center; color: #666; cursor: pointer; transition: background 0.3s; line-height: 1.8;">
-                    拖拽文件或文件夹到此处<br>或点击选择文件
-                </div>
+                <div id="dropZone" class="drop-zone">拖拽文件或文件夹到此处<br>或点击选择文件</div>
                 <input type="file" id="fileInput" multiple style="display: none;">
                 <input type="file" id="folderInput" webkitdirectory style="display: none;">
-                <div style="display: flex; gap: 10px; margin-top: 10px;">
-                    <button class="btn" id="pickFileBtn" style="flex: 1;">选择文件</button>
-                    <button class="btn" id="pickFolderBtn" style="flex: 1;">选择文件夹</button>
+                <div class="btn-row">
+                    <button class="btn" id="pickFileBtn">选择文件</button>
+                    <button class="btn" id="pickFolderBtn">选择文件夹</button>
                 </div>
-                <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center;">
-                    <label for="concurrencySelect" style="color: #666; font-size: 13px; white-space: nowrap;">上传并行数</label>
-                    <select id="concurrencySelect" style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; background: white;">
+                <div class="btn-row concurrency-row">
+                    <label for="concurrencySelect">上传并行数</label>
+                    <select id="concurrencySelect">
                         <option value="auto">自适应</option>
                         <option value="1">1</option>
                         <option value="2">2</option>
@@ -84,20 +76,20 @@
                         <option value="5">5</option>
                         <option value="custom">自定义</option>
                     </select>
-                    <input type="number" id="concurrencyCustom" min="1" max="10" value="4" style="display: none; width: 70px; padding: 8px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px;">
+                    <input type="number" id="concurrencyCustom" min="1" max="10" value="4" style="display: none;">
                 </div>
-                <div id="selectedFiles" style="margin-top: 10px; font-size: 13px; color: #666; max-height: 80px; overflow-y: auto; word-break: break-all;"></div>
+                <div id="selectedFiles"></div>
                 <div class="progress-container" style="display: none;">
                     <div class="progress-bar">
                         <div class="progress-fill" id="progressFill"></div>
                     </div>
                     <div class="progress-text" id="progressText">0%</div>
                 </div>
-                <div id="chunkPanel" style="display: none; margin-top: 10px; font-size: 13px; color: #666;">
-                    <div id="chunkPanelToggle" style="cursor: pointer; user-select: none; padding: 6px 8px; background: rgba(44,130,201,0.08); border-radius: 8px;">
+                <div id="chunkPanel" style="display: none;">
+                    <div id="chunkPanelToggle">
                         <span id="chunkPanelArrow">▸</span> 分片详情 <span id="chunkPanelSummary"></span>
                     </div>
-                    <div id="chunkList" style="display: none; max-height: 150px; overflow-y: auto; margin-top: 6px; border: 1px solid #eee; border-radius: 8px;"></div>
+                    <div id="chunkList" style="display: none;"></div>
                 </div>
                 <button class="btn" onclick="uploadFile()" id="uploadBtn" style="width: 100%; margin-top: 15px;">开始上传</button>
                 <div id="uploadMessage" class="message"></div>
@@ -108,7 +100,7 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeDeleteModal()">&times;</span>
                 <h2>删除文件</h2>
-                <p style="color: #666; margin-bottom: 15px;" id="deleteConfirmText"></p>
+                <p id="deleteConfirmText"></p>
                 <div id="deleteAuthFields">
                     <div class="form-group">
                         <label>用户名</label>
@@ -117,10 +109,6 @@
                     <div class="form-group">
                         <label>密码</label>
                         <input type="password" id="deletePassword" placeholder="请输入密码">
-                    </div>
-                    <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-                        <input type="checkbox" id="deleteRememberMe" style="width: auto; margin: 0;">
-                        <label for="deleteRememberMe" style="margin: 0;">保持登录</label>
                     </div>
                 </div>
                 <button class="btn" onclick="confirmDelete()" id="deleteBtn" style="width: 100%;">确认删除</button>
@@ -152,7 +140,7 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeAccountModal()">&times;</span>
                 <h2>我的账户</h2>
-                <h3 style="color: #333; margin: 10px 0;">修改密码</h3>
+                <h3 class="modal-section">修改密码</h3>
                 <div class="form-group">
                     <label>当前密码</label>
                     <input type="password" id="cpCurrent" placeholder="请输入当前密码">
@@ -166,7 +154,7 @@
                     <input type="password" id="cpConfirm" placeholder="再次输入新密码">
                 </div>
                 <button class="btn" onclick="changeOwnPassword()" id="cpBtn" style="width: 100%;">修改密码</button>
-                <h3 style="color: #dc3545; margin: 18px 0 10px;">注销账户</h3>
+                <h3 class="modal-section modal-section-danger">注销账户</h3>
                 <div class="form-group">
                     <label>输入密码确认注销</label>
                     <input type="password" id="daPassword" placeholder="注销后账户将被永久删除">
@@ -183,11 +171,11 @@
                 <div class="form-group">
                     <input type="text" id="adminSearchInput" placeholder="搜索用户名" oninput="renderAdminUserList()">
                 </div>
-                <div id="adminListToggle" onclick="toggleAdminUserList()" style="cursor: pointer; font-weight: bold; color: #333; margin: 5px 0; user-select: none;">用户列表 <span id="adminListArrow">▾</span></div>
-                <div id="adminUserList" style="max-height: 40vh; overflow-y: auto; margin-bottom: 15px;">
+                <div id="adminListToggle" class="admin-list-toggle" onclick="toggleAdminUserList()">用户列表 <span id="adminListArrow">▾</span></div>
+                <div id="adminUserList" class="admin-user-list">
                     <div class="loading">加载中...</div>
                 </div>
-                <h3 style="color: #333; margin: 10px 0;">添加用户</h3>
+                <h3 class="modal-section">添加用户</h3>
                 <div class="form-group">
                     <label>用户名</label>
                     <input type="text" id="adminNewUsername" placeholder="新用户名">
