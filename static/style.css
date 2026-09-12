@@ -544,6 +544,12 @@ a:hover {
     display: inline-block;
     max-width: 100%;
 }
+/* 音频播放器定长：inline-block 收缩布局会让音频原生控制条被压窄（音量按钮消失）
+   且宽度随元数据加载变化，改为占满容器宽度 */
+.media-wrap-audio {
+    display: block;
+    width: 100%;
+}
 .media-rate {
     position: absolute;
     top: 8px;
