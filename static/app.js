@@ -606,14 +606,39 @@ function handleMenuAction(action) {
     }
 }
 
-function downloadFile(filePath, fileName) {
-    var url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
+function saveBlobAs(blob, fileName) {
+    var url = URL.createObjectURL(blob);
     var link = document.createElement('a');
     link.href = url;
     link.download = fileName;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
+}
+
+// Fetch as Blob first: the download attribute is ignored cross-origin,
+// which made previewable files (jpg/mp4/...) open in the tab instead of saving.
+function downloadFile(filePath, fileName) {
+    var url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
+    showToast('正在下载: ' + fileName);
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'blob';
+    xhr.onload = function() {
+        if (xhr.status === 200) {
+            hideToast();
+            saveBlobAs(xhr.response, fileName);
+        } else {
+            showToast('下载失败(状态码 ' + xhr.status + '): ' + fileName);
+            setTimeout(hideToast, 2500);
+        }
+    };
+    xhr.onerror = function() {
+        showToast('网络错误，下载失败: ' + fileName);
+        setTimeout(hideToast, 2500);
+    };
+    xhr.send();
 }
 
 function showToast(text) {
@@ -678,14 +703,7 @@ function fetchMergedBlob(parts, onDone, onFail) {
 
 function downloadMergedFile(parts, fileName) {
     fetchMergedBlob(parts, function(blob) {
-        var url = URL.createObjectURL(blob);
-        var link = document.createElement('a');
-        link.href = url;
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
+        saveBlobAs(blob, fileName);
     }, function() {
         showToast('下载失败，请重试');
         setTimeout(hideToast, 2000);
@@ -1522,6 +1540,31 @@ function updateBatchBar() {
 function clearSelection() {
     Object.keys(selectedKeys).forEach(function(k) {
         delete selectedKeys[k];
+        applySelectionVisual(k);
+    });
+    updateBatchBar();
+}
+
+function selectAllFiles() {
+    entryOrder.forEach(function(k) {
+        var rec = entryMap[k];
+        if (rec && rec.model.kind === 'file' && !selectedKeys[k]) {
+            selectedKeys[k] = rec.model;
+            applySelectionVisual(k);
+        }
+    });
+    updateBatchBar();
+}
+
+function invertSelection() {
+    entryOrder.forEach(function(k) {
+        var rec = entryMap[k];
+        if (!rec || rec.model.kind !== 'file') return;
+        if (selectedKeys[k]) {
+            delete selectedKeys[k];
+        } else {
+            selectedKeys[k] = rec.model;
+        }
         applySelectionVisual(k);
     });
     updateBatchBar();
@@ -2365,6 +2408,8 @@ document.addEventListener('DOMContentLoaded', function() {
         list.style.display = open ? 'none' : 'block';
         document.getElementById('chunkPanelArrow').textContent = open ? '▸' : '▾';
     });
+    document.getElementById('batchSelectAllBtn').addEventListener('click', selectAllFiles);
+    document.getElementById('batchInvertBtn').addEventListener('click', invertSelection);
     document.getElementById('batchDownloadBtn').addEventListener('click', batchDownload);
     document.getElementById('batchDeleteBtn').addEventListener('click', openBatchDeleteModal);
     document.getElementById('batchCancelBtn').addEventListener('click', clearSelection);
