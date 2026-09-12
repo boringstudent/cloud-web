@@ -110,11 +110,3 @@ CLOUD=owner/repo BRANCH=main python build.py
 ### 部署
 
 推送到 `main` 分支后，GitHub Actions 自动执行 `python build.py`（读取 `secrets.CLOUD` / `secrets.BRANCH`）并将 `build/` 发布到 GitHub Pages。
-
-## 已知限制
-
-- 密码经前端 SHA-512 哈希后经 HTTPS 传输，服务端只接受哈希、不再接收明文，也不再返回 `password_sha512`；本地仅保存本地计算的密码哈希与兑换到的 Token（base64 封装于 localStorage，非加密存储）；"记住密码"默认勾选以自动填充（保存明文，可手动取消）。注意：哈希即等同于凭据（服务端直接比对哈希），泄露哈希与泄露明文等效，需依赖 HTTPS 与本地存储安全
-- 新密码强度规则（>8 位且含大小写字母与数字）只能由前端校验：服务端收到的已是哈希，无法还原明文做强度检查
-- 服务端 API 返回的英文错误信息（如 `Invalid credentials`）在前端统一翻译为中文提示（如"账号或密码错误"）后展示
-- 登录/兑换接口为 GET 请求，参数（哈希值）会出现在浏览器历史与服务器日志中（受服务端 API 限制）
-- GitHub 单文件 100MB 限制故大文件必须分片；contents API 每次变更产生一个 commit，高频写操作受引用竞争与速率限制约束（已通过并发控制 + 退避重试缓解）
