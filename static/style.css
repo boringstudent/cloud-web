@@ -320,6 +320,14 @@ a:hover {
     word-break: break-all;
     min-width: 0;
 }
+.refresh-countdown {
+    float: right;
+    font-size: 13px;
+    color: #999;
+    font-weight: normal;
+    line-height: 2.4;
+    font-variant-numeric: tabular-nums;
+}
 .refresh-indicator {
     display: none;
     position: fixed;

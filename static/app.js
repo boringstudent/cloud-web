@@ -273,13 +273,30 @@ function logout() {
     document.getElementById('loginPassword').value = '';
 }
 
-// Auto refresh: paused while the tab is hidden to avoid unnecessary requests
+// Auto refresh every 45s with a visible countdown; paused while the tab is hidden
+var REFRESH_INTERVAL = 45000;
+var nextRefreshAt = Date.now() + REFRESH_INTERVAL;
+
 setInterval(function() {
-    if (!document.hidden) loadFileList();
-}, 60000);
+    if (document.hidden) return;
+    var now = Date.now();
+    if (now >= nextRefreshAt) {
+        nextRefreshAt = now + REFRESH_INTERVAL;
+        loadFileList();
+        return;
+    }
+    var el = document.getElementById('refreshCountdown');
+    if (el) {
+        var text = Math.max(0, Math.ceil((nextRefreshAt - now) / 1000)) + 's';
+        if (el.textContent !== text) el.textContent = text;
+    }
+}, 1000);
 
 document.addEventListener('visibilitychange', function() {
-    if (!document.hidden) loadFileList();
+    if (!document.hidden) {
+        nextRefreshAt = Date.now() + REFRESH_INTERVAL;
+        loadFileList();
+    }
 });
 
 function openUploadModal() {
