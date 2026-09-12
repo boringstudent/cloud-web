@@ -67,6 +67,11 @@ body {
     color: #666;
     font-size: 0.9em;
 }
+.file-mtime {
+    color: #999;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
 h1 {
     color: #333;
     border-bottom: 2px solid #eee;
