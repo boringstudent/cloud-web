@@ -927,6 +927,7 @@ var svcChecking = false;
 
 function checkOneService(url, cb) {
     var xhr = new XMLHttpRequest();
+    var startTs = 0;
     var done = function(res) {
         if (done.called) return;
         done.called = true;
@@ -937,17 +938,20 @@ function checkOneService(url, cb) {
     xhr.setRequestHeader('Cache-Control', 'no-cache');
     xhr.onload = function() {
         clearTimeout(timer);
+        // 浏览器无法 ICMP ping，以请求往返时间（RTT）作为延时
+        var rtt = Math.round(performance.now() - startTs);
         if (xhr.status === 200) {
             try {
                 var d = JSON.parse(xhr.responseText);
-                done({ ok: true, ip: d.ip || '', location: d.location || '', isp: d.isp || '' });
+                done({ ok: true, ip: d.ip || '', location: d.location || '', isp: d.isp || '', rtt: rtt });
                 return;
             } catch (e) {}
         }
-        done({ ok: false });
+        done({ ok: false, rtt: rtt });
     };
     xhr.onerror = function() { clearTimeout(timer); done({ ok: false }); };
     xhr.onabort = function() { clearTimeout(timer); done({ ok: false }); };
+    startTs = performance.now();
     xhr.send();
 }
 
@@ -995,6 +999,12 @@ function addSvcTipLine(tip, name, addr, st) {
         state.textContent = st ? '连接失败' : '检测中…';
     }
     div.appendChild(state);
+    if (st && typeof st.rtt === 'number') {
+        var rttSpan = document.createElement('span');
+        rttSpan.className = 'svc-rtt';
+        rttSpan.textContent = ' ' + st.rtt + 'ms';
+        div.appendChild(rttSpan);
+    }
     tip.appendChild(div);
 }
 

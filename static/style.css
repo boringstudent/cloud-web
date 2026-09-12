@@ -840,6 +840,10 @@ h1 {
 .svc-status-tip .svc-fail {
     color: #dc3545;
 }
+.svc-status-tip .svc-rtt {
+    color: #999;
+    font-variant-numeric: tabular-nums;
+}
 @keyframes spin {
     to { transform: translateX(-50%) rotate(360deg); }
 }
