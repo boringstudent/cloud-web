@@ -193,7 +193,12 @@ var API_BASE = 'https://api.boring-student.cn';
 // Known API error messages shown in Chinese
 var API_ERROR_MAP = {
     'Invalid credentials': '账号或密码错误',
+    'Invalid admin credentials': '账号或密码错误',
     'Admin auth required (admin_user / admin_pass)': '需要管理员身份验证',
+    'Permission denied: not an admin': '权限不足：不是管理员',
+    'Missing username / password / new_password': '缺少用户名或密码',
+    'Missing username / password': '缺少用户名或密码',
+    'Nothing to update (password/role)': '没有需要修改的内容 (password/role)',
     'User already exists': '用户已存在',
     'User not found': '用户不存在',
     'Missing username or password': '缺少用户名或密码',
