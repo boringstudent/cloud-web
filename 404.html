@@ -69,9 +69,10 @@
                         <option value="1">1</option>
                         <option value="2">2</option>
                         <option value="3" selected>3</option>
-                        <option value="4">4</option>
-                        <option value="6">6</option>
+                        <option value="5">5</option>
+                        <option value="custom">自定义</option>
                     </select>
+                    <input type="number" id="concurrencyCustom" min="1" max="10" value="4" style="display: none; width: 70px; padding: 8px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px;">
                 </div>
                 <div id="selectedFiles" style="margin-top: 10px; font-size: 13px; color: #666; max-height: 80px; overflow-y: auto; word-break: break-all;"></div>
                 <div class="progress-container" style="display: none;">
@@ -142,6 +143,7 @@
             <button class="btn" id="batchSelectAllBtn" style="background: #6c757d;">全选</button>
             <button class="btn" id="batchInvertBtn" style="background: #6c757d;">反选</button>
             <button class="btn" id="batchDownloadBtn">批量下载</button>
+            <button class="btn" id="batchStopBtn" style="background: #e67e22; display: none;">停止下载</button>
             <button class="btn" id="batchDeleteBtn" style="background: #dc3545;">批量删除</button>
             <button class="btn" id="batchCancelBtn" style="background: #999;">取消</button>
         </div>

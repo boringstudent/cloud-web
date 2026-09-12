@@ -1445,6 +1445,19 @@ function buildEntryModels(items) {
             sizeText: formatSize(file.size)
         });
     });
+    // Mark entries whose display names collide (e.g. a folder stored with a
+    // percent-encoded literal name alongside the real Chinese-named folder)
+    var nameCount = {};
+    models.forEach(function(m) {
+        var k = m.kind + '|' + m.displayName;
+        nameCount[k] = (nameCount[k] || 0) + 1;
+    });
+    models.forEach(function(m) {
+        var k = m.kind + '|' + m.displayName;
+        if (nameCount[k] > 1 && m.name !== m.displayName) {
+            m.displayName = m.displayName + ' [原名: ' + m.name + ']';
+        }
+    });
     return models;
 }
 
@@ -1581,24 +1594,53 @@ function invertSelection() {
     updateBatchBar();
 }
 
+var batchDownloadState = null;
+
 function batchDownload() {
+    if (batchDownloadState) return;
     var keys = Object.keys(selectedKeys);
     if (!keys.length) return;
     var models = keys.map(function(k) { return selectedKeys[k]; });
+    batchDownloadState = { cancelled: false };
+    toggleBatchDownloadUI(true);
     var i = 0;
     var next = function() {
-        if (i >= models.length) return;
+        if (!batchDownloadState || batchDownloadState.cancelled) {
+            finishBatchDownload(true);
+            return;
+        }
+        if (i >= models.length) {
+            finishBatchDownload(false);
+            return;
+        }
         var m = models[i++];
+        showToast('正在下载 (' + i + '/' + models.length + '): ' + m.displayName);
         if (m.chunked && m.parts) {
             downloadMergedFile(m.parts, m.name);
         } else {
             downloadFile(m.path, m.name);
         }
-        setTimeout(next, 500);
+        setTimeout(next, 800);
     };
     next();
-    showToast('开始下载 ' + models.length + ' 个文件');
+}
+
+function stopBatchDownload() {
+    if (batchDownloadState) {
+        batchDownloadState.cancelled = true;
+    }
+}
+
+function finishBatchDownload(stopped) {
+    batchDownloadState = null;
+    toggleBatchDownloadUI(false);
+    showToast(stopped ? '已停止批量下载' : '批量下载已全部开始');
     setTimeout(hideToast, 2000);
+}
+
+function toggleBatchDownloadUI(downloading) {
+    document.getElementById('batchDownloadBtn').style.display = downloading ? 'none' : '';
+    document.getElementById('batchStopBtn').style.display = downloading ? '' : 'none';
 }
 
 function openBatchDeleteModal() {
@@ -1987,6 +2029,10 @@ function startUpload(key, doneBases) {
     });
     var sel = document.getElementById('concurrencySelect');
     var mode = sel ? sel.value : '3';
+    if (mode === 'custom') {
+        var customInput = document.getElementById('concurrencyCustom');
+        mode = String(customInput ? parseInt(customInput.value, 10) || 3 : 3);
+    }
     var adaptive = mode === 'auto';
     if (uploadState && uploadState.adaptive) {
         // keep the learned limit across chunk-size downgrades in adaptive mode
@@ -2010,7 +2056,7 @@ function startUpload(key, doneBases) {
         speedTimer: null,
         activeTasks: {},
         adaptive: adaptive,
-        limit: adaptive ? 2 : Math.min(UPLOAD_LIMIT_MAX, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3))
+        limit: adaptive ? 2 : Math.min(10, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3))
     };
     uploadTasks.forEach(function(t) {
         uploadState.baseTotals[t.base] = (uploadState.baseTotals[t.base] || 0) + 1;
@@ -2135,13 +2181,14 @@ function runUploadTask(task, done) {
                         return;
                     }
 
-                    // 409: concurrent commits race on the same git ref.
-                    // Retry separately with longer jittered backoff to let other
-                    // in-flight commits land first; does not consume normal attempts.
-                    if (status === 409) {
+                    // Ref conflicts (409, or "is at <sha> but expected <sha>"): concurrent
+                    // commits race on the same git ref. Retry separately with longer
+                    // jittered backoff; does not consume normal attempts.
+                    var isRefConflict = status === 409 || /is at [0-9a-f]{40} but expected/i.test(responseText || '');
+                    if (isRefConflict) {
                         conflicts++;
                         if (conflicts <= 6) {
-                            showMessage('提交冲突(409)，等待其他分片完成后重试 (' + conflicts + '/6): ' + task.label, 'success');
+                            showMessage('提交冲突，等待其他分片完成后重试 (' + conflicts + '/6): ' + task.label, 'success');
                             setTimeout(tryOnce, 1500 * conflicts + Math.floor(Math.random() * 1000));
                             return;
                         }
@@ -2451,6 +2498,10 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('batchSelectAllBtn').addEventListener('click', selectAllFiles);
     document.getElementById('batchInvertBtn').addEventListener('click', invertSelection);
     document.getElementById('batchDownloadBtn').addEventListener('click', batchDownload);
+    document.getElementById('batchStopBtn').addEventListener('click', stopBatchDownload);
+    document.getElementById('concurrencySelect').addEventListener('change', function() {
+        document.getElementById('concurrencyCustom').style.display = this.value === 'custom' ? '' : 'none';
+    });
     document.getElementById('batchDeleteBtn').addEventListener('click', openBatchDeleteModal);
     document.getElementById('batchCancelBtn').addEventListener('click', clearSelection);
 });
