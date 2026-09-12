@@ -69,6 +69,12 @@
                     </div>
                     <div class="progress-text" id="progressText">0%</div>
                 </div>
+                <div id="chunkPanel" style="display: none; margin-top: 10px; font-size: 13px; color: #666;">
+                    <div id="chunkPanelToggle" style="cursor: pointer; user-select: none; padding: 6px 8px; background: rgba(44,130,201,0.08); border-radius: 8px;">
+                        <span id="chunkPanelArrow">▸</span> 分片详情 <span id="chunkPanelSummary"></span>
+                    </div>
+                    <div id="chunkList" style="display: none; max-height: 150px; overflow-y: auto; margin-top: 6px; border: 1px solid #eee; border-radius: 8px;"></div>
+                </div>
                 <button class="btn" onclick="uploadFile()" id="uploadBtn" style="width: 100%; margin-top: 15px;">开始上传</button>
                 <div id="uploadMessage" class="message"></div>
             </div>

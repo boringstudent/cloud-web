@@ -317,6 +317,10 @@ function closeUploadModal() {
     document.querySelector('.progress-container').style.display = 'none';
     document.getElementById('progressFill').style.width = '0%';
     document.getElementById('progressText').textContent = '0%';
+    document.getElementById('chunkPanel').style.display = 'none';
+    document.getElementById('chunkList').style.display = 'none';
+    document.getElementById('chunkList').innerHTML = '';
+    document.getElementById('chunkPanelArrow').textContent = '▸';
     pendingFiles = [];
     document.getElementById('selectedFiles').textContent = '';
     document.getElementById('fileInput').value = '';
@@ -1767,7 +1771,8 @@ function startUpload(key, doneBases) {
         doneBases: doneBases || {},
         downgrading: false,
         failedMsg: null,
-        speedTimer: null
+        speedTimer: null,
+        activeTasks: {}
     };
     uploadTasks.forEach(function(t) {
         uploadState.baseTotals[t.base] = (uploadState.baseTotals[t.base] || 0) + 1;
@@ -1776,6 +1781,7 @@ function startUpload(key, doneBases) {
     uploadState.speedTimer = setInterval(sampleUploadSpeed, 1000);
     showMessage('正在上传 (0/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
     updateUploadProgressUI();
+    renderChunkPanel();
     var starters = Math.min(UPLOAD_CONCURRENCY, uploadTasks.length);
     for (var i = 0; i < starters; i++) {
         pumpUpload();
@@ -1793,8 +1799,12 @@ function pumpUpload() {
     }
     var task = uploadTasks[st.nextIndex++];
     st.active++;
+    st.activeTasks[task.relativePath] = task;
+    renderChunkPanel();
     runUploadTask(task, function(ok) {
         st.active--;
+        delete st.activeTasks[task.relativePath];
+        renderChunkPanel();
         if (ok) {
             st.doneCount++;
             st.baseDones[task.base] = (st.baseDones[task.base] || 0) + 1;
@@ -1940,6 +1950,7 @@ function stopUploadTimer() {
 function finishUpload() {
     stopUploadTimer();
     uploadState = null;
+    renderChunkPanel();
     fileTreeCache = null;
     invalidateHttpCache();
     updateUploadProgressText(100, '');
@@ -1955,6 +1966,7 @@ function failUpload(finalMsg) {
     var st = uploadState;
     stopUploadTimer();
     uploadState = null;
+    renderChunkPanel();
     var staleParts = uploadedParts.filter(function(p) { return !st.doneBases[p.base]; });
     if (staleParts.length > 0) {
         uploadedParts = staleParts;
@@ -1975,7 +1987,47 @@ function sampleUploadSpeed() {
     st.lastSampleBytes = st.bytesDone;
     st.lastSampleTime = now;
     st.speedText = speed > 1024 ? formatSize(Math.round(speed)) + '/s' : '';
+    // per-chunk speeds
+    for (var key in st.activeTasks) {
+        var t = st.activeTasks[key];
+        var chunkSpeed = ((t.loadedBytes || 0) - (t.sampledBytes || 0)) / dt;
+        t.sampledBytes = t.loadedBytes || 0;
+        t.speedText = chunkSpeed > 1024 ? formatSize(Math.round(chunkSpeed)) + '/s' : '';
+    }
     updateUploadProgressUI();
+    renderChunkPanel();
+}
+
+function renderChunkPanel() {
+    var panel = document.getElementById('chunkPanel');
+    if (!panel) return;
+    var st = uploadState;
+    if (!st) {
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = 'block';
+    var activeList = [];
+    for (var key in st.activeTasks) {
+        activeList.push(st.activeTasks[key]);
+    }
+    document.getElementById('chunkPanelSummary').textContent =
+        '· 进行中 ' + activeList.length + ' · 已完成 ' + st.doneCount + '/' + uploadTasks.length;
+    var list = document.getElementById('chunkList');
+    if (!activeList.length) {
+        list.innerHTML = '<div style="padding: 6px 8px; color: #999;">等待分片调度...</div>';
+        return;
+    }
+    var html = '';
+    activeList.forEach(function(t) {
+        var percent = Math.round((t.fraction || 0) * 100);
+        html += '<div style="padding: 6px 8px; border-bottom: 1px solid #f0f0f0;">' +
+            '<div style="word-break: break-all;">' + escapeHtml(t.label) + '</div>' +
+            '<div style="display: flex; justify-content: space-between; margin-top: 2px; color: #2c82c9;">' +
+            '<span>' + percent + '%</span><span>' + (t.speedText || '计算中...') + '</span>' +
+            '</div></div>';
+    });
+    list.innerHTML = html;
 }
 
 function updateUploadProgressUI() {
@@ -2124,5 +2176,11 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     document.getElementById('folderInput').addEventListener('change', function() {
         handleFileInput(this);
+    });
+    document.getElementById('chunkPanelToggle').addEventListener('click', function() {
+        var list = document.getElementById('chunkList');
+        var open = list.style.display !== 'none';
+        list.style.display = open ? 'none' : 'block';
+        document.getElementById('chunkPanelArrow').textContent = open ? '▸' : '▾';
     });
 });
