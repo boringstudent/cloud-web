@@ -320,6 +320,47 @@ a:hover {
     word-break: break-all;
     min-width: 0;
 }
+.entry-name {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+.entry-name > span {
+    word-break: break-all;
+    min-width: 0;
+}
+.entry-checkbox {
+    pointer-events: none;
+    margin-right: 8px;
+    flex-shrink: 0;
+    width: 15px;
+    height: 15px;
+    accent-color: #2c82c9;
+}
+.entry-selected {
+    background: rgba(44, 130, 201, 0.15) !important;
+    box-shadow: 0 0 0 2px rgba(44, 130, 201, 0.6);
+}
+.batch-bar {
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 200;
+    display: none;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.95);
+    padding: 10px 16px;
+    border-radius: 12px;
+    box-shadow: 0 2px 16px rgba(0, 0, 0, 0.25);
+    font-size: 14px;
+    color: #333;
+    white-space: nowrap;
+}
+.batch-bar .btn {
+    padding: 8px 14px;
+}
 .refresh-countdown {
     float: right;
     font-size: 13px;

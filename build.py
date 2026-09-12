@@ -34,7 +34,9 @@ if __name__ == "__main__":
     # Cache-busting version for static assets, identical for both pages in one build
     version = str(int(time.time()))
 
-    for out_name, title in [('index.html', 'Home'), ('404.html', '404 - 页面未找到')]:
+    # Both pages share the same neutral initial title; app.js sets the real
+    # title from the URL immediately on load, so no "404" ever flashes.
+    for out_name, title in [('index.html', 'Home'), ('404.html', 'Home')]:
         content = template.format(
             title=title,
             repo_owner=REPO_OWNER,

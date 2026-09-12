@@ -509,6 +509,12 @@ function bindEntryEvents(entry) {
         if (Date.now() - menuOpenedAt < 400) {
             e.preventDefault();
             e.stopPropagation();
+            return;
+        }
+        // File cards toggle selection; folders keep their default navigation
+        if (entry._model && entry._model.type === 'file') {
+            e.preventDefault();
+            toggleSelect(entry._key);
         }
     });
     var touchTimer = null;
@@ -1040,7 +1046,7 @@ function confirmDelete() {
                     }
                     if (deleteFileType === 'dir') {
                         deleteFolder(response.key, deleteFilePath);
-                    } else if (deleteFileType === 'chunked') {
+                    } else if (deleteFileType === 'chunked' || deleteFileType === 'batch') {
                         deleteFolderFiles(response.key, deleteParts, 0);
                     } else {
                         deleteFile(response.key, deleteFilePath, deleteFileSha);
@@ -1139,6 +1145,7 @@ function deleteFolderFiles(key, files, index) {
         showDeleteMessage('删除成功！', 'success');
         setTimeout(function() {
             closeDeleteModal();
+            clearSelection();
             loadFileList();
         }, 1500);
         return;
@@ -1414,16 +1421,9 @@ function createEntryElement(model) {
             type: 'dir'
         };
     } else {
-        if (model.chunked) {
-            entry.href = 'javascript:void(0);';
-            entry.onclick = function() {
-                downloadMergedFile(entry._model.parts, entry._model.name);
-            };
-        } else {
-            entry.href = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(model.path));
-            entry.target = '_blank';
-            entry.rel = 'noopener noreferrer';
-        }
+        // Clicking a file card toggles its selection checkbox (batch ops);
+        // single-file open/download remains available via the context menu.
+        entry.href = 'javascript:void(0);';
         nameSpan.textContent = model.name;
         sizeSpan.textContent = model.sizeText;
         entry._model = {
@@ -1435,6 +1435,22 @@ function createEntryElement(model) {
             chunked: model.chunked,
             parts: model.parts
         };
+        var nameWrap = document.createElement('span');
+        nameWrap.className = 'entry-name';
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'entry-checkbox';
+        checkbox.tabIndex = -1;
+        nameWrap.appendChild(checkbox);
+        nameWrap.appendChild(nameSpan);
+        entry._checkbox = checkbox;
+
+        infoSpan.appendChild(sizeSpan);
+        entry.appendChild(nameWrap);
+        entry.appendChild(infoSpan);
+        entry._sizeSpan = sizeSpan;
+        bindEntryEvents(entry);
+        return entry;
     }
 
     infoSpan.appendChild(sizeSpan);
@@ -1443,6 +1459,106 @@ function createEntryElement(model) {
     entry._sizeSpan = sizeSpan;
     bindEntryEvents(entry);
     return entry;
+}
+
+// ---- Multi-select & batch operations ----
+var selectedKeys = {};
+
+function toggleSelect(key) {
+    var rec = entryMap[key];
+    if (!rec || rec.model.kind !== 'file') return;
+    if (selectedKeys[key]) {
+        delete selectedKeys[key];
+    } else {
+        selectedKeys[key] = rec.model;
+    }
+    applySelectionVisual(key);
+    updateBatchBar();
+}
+
+function applySelectionVisual(key) {
+    var rec = entryMap[key];
+    if (!rec) return;
+    var selected = !!selectedKeys[key];
+    if (selected) {
+        rec.el.classList.add('entry-selected');
+    } else {
+        rec.el.classList.remove('entry-selected');
+    }
+    if (rec.el._checkbox) rec.el._checkbox.checked = selected;
+}
+
+function updateBatchBar() {
+    var bar = document.getElementById('batchBar');
+    if (!bar) return;
+    var count = Object.keys(selectedKeys).length;
+    if (count) {
+        bar.style.display = 'flex';
+        document.getElementById('batchCount').textContent = '已选 ' + count + ' 项';
+    } else {
+        bar.style.display = 'none';
+    }
+}
+
+function clearSelection() {
+    Object.keys(selectedKeys).forEach(function(k) {
+        delete selectedKeys[k];
+        applySelectionVisual(k);
+    });
+    updateBatchBar();
+}
+
+function batchDownload() {
+    var keys = Object.keys(selectedKeys);
+    if (!keys.length) return;
+    var models = keys.map(function(k) { return selectedKeys[k]; });
+    var i = 0;
+    var next = function() {
+        if (i >= models.length) return;
+        var m = models[i++];
+        if (m.chunked && m.parts) {
+            downloadMergedFile(m.parts, m.name);
+        } else {
+            downloadFile(m.path, m.name);
+        }
+        setTimeout(next, 500);
+    };
+    next();
+    showToast('开始下载 ' + models.length + ' 个文件');
+    setTimeout(hideToast, 2000);
+}
+
+function openBatchDeleteModal() {
+    var keys = Object.keys(selectedKeys);
+    if (!keys.length) return;
+    var files = [];
+    keys.forEach(function(k) {
+        var m = selectedKeys[k];
+        if (m.chunked && m.parts) {
+            m.parts.forEach(function(p) { files.push({ path: p.path, sha: p.sha }); });
+        } else {
+            files.push({ path: m.path, sha: m.sha });
+        }
+    });
+    deleteFilePath = '';
+    deleteFileSha = '';
+    deleteFileType = 'batch';
+    deleteParts = files;
+    var deleteBtn = document.getElementById('deleteBtn');
+    deleteBtn.disabled = false;
+    var deleteMsg = document.getElementById('deleteMessage');
+    deleteMsg.className = 'message';
+    deleteMsg.textContent = '';
+    var confirmP = document.getElementById('deleteConfirmText');
+    confirmP.textContent = '';
+    confirmP.appendChild(document.createTextNode('确定要删除选中的 '));
+    var nameStrong = document.createElement('strong');
+    nameStrong.textContent = keys.length + ' 个文件';
+    confirmP.appendChild(nameStrong);
+    confirmP.appendChild(document.createTextNode('（共 ' + files.length + ' 个存储文件）吗？此操作不可撤销。'));
+    var savedAuth = getSavedAuth();
+    document.getElementById('deleteAuthFields').style.display = savedAuth ? 'none' : '';
+    document.getElementById('deleteModal').classList.add('show');
 }
 
 function renderFileList(items) {
@@ -1559,6 +1675,16 @@ function renderFileList(items) {
 
     entryOrder = newOrder;
     hasRenderedList = true;
+
+    // prune selections of entries that disappeared, re-apply visuals otherwise
+    Object.keys(selectedKeys).forEach(function(k) {
+        if (!entryMap[k]) {
+            delete selectedKeys[k];
+        } else {
+            applySelectionVisual(k);
+        }
+    });
+    updateBatchBar();
 
     if (listChanged) {
         fileTreeCache = null;
@@ -2140,6 +2266,19 @@ function deletePartsQuietly(key, parts, index, done) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    // Set the title from the URL immediately so a subfolder page never
+    // flashes a generic/404 title while the file list is loading.
+    var initPath = getCurrentPath();
+    var pageTitleEl = document.getElementById('pageTitle');
+    if (initPath === '') {
+        pageTitleEl.textContent = 'Home';
+        document.title = 'Home - boring_student';
+    } else {
+        var initName = decodeURIComponent(initPath.split('/').pop());
+        pageTitleEl.textContent = initName;
+        document.title = initName + ' - boring_student';
+    }
+
     updateBreadcrumbs();
     updateAuthBtn();
 
@@ -2183,4 +2322,7 @@ document.addEventListener('DOMContentLoaded', function() {
         list.style.display = open ? 'none' : 'block';
         document.getElementById('chunkPanelArrow').textContent = open ? '▸' : '▾';
     });
+    document.getElementById('batchDownloadBtn').addEventListener('click', batchDownload);
+    document.getElementById('batchDeleteBtn').addEventListener('click', openBatchDeleteModal);
+    document.getElementById('batchCancelBtn').addEventListener('click', clearSelection);
 });
