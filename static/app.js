@@ -2666,13 +2666,11 @@ function renderFileList(items) {
 
     if (!hasRenderedList) {
         container.innerHTML = '';
-        var frag = document.createDocumentFragment();
         models.forEach(function(m) {
             var el = createEntryElement(m);
-            frag.appendChild(el);
+            container.appendChild(el);
             entryMap[m.key] = { el: el, model: m, sizeText: m.sizeText };
         });
-        container.appendChild(frag);
         listChanged = true;
     } else {
         // removals (animated, only the affected entries)
