@@ -454,6 +454,40 @@ template = """
                 return url;
             }}
 
+            var ghApiKey = null;
+            var ghApiKeyFetching = false;
+
+            function applyGhAuth(xhr) {{
+                if (ghApiKey) {{
+                    xhr.setRequestHeader('Authorization', 'Bearer ' + ghApiKey);
+                }}
+            }}
+
+            function fetchGhKey(done) {{
+                var finish = function() {{
+                    ghApiKeyFetching = false;
+                    if (done) done();
+                }};
+                if (ghApiKey || ghApiKeyFetching) {{ finish(); return; }}
+                var saved = getSavedAuth();
+                if (!saved) {{ finish(); return; }}
+                ghApiKeyFetching = true;
+                var params = 'username=' + encodeURIComponent(saved.u) + '&password=' + encodeURIComponent(saved.p);
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', 'https://api.boring-student.cn/?' + params, true);
+                xhr.onload = function() {{
+                    if (xhr.status === 200) {{
+                        try {{
+                            var response = JSON.parse(xhr.responseText);
+                            if (response.success && response.key) ghApiKey = response.key;
+                        }} catch (e) {{}}
+                    }}
+                    finish();
+                }};
+                xhr.onerror = finish;
+                xhr.send();
+            }}
+
             function loadConfig(done) {{
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', '/config.json', true);
@@ -599,6 +633,7 @@ template = """
                         try {{
                             var response = JSON.parse(xhr.responseText);
                             if (response.success && response.key) {{
+                                ghApiKey = response.key;
                                 saveAuth(username, password);
                                 updateAuthBtn();
                                 showLoginMessage('登录成功！', 'success');
@@ -627,6 +662,7 @@ template = """
             }}
 
             function logout() {{
+                ghApiKey = null;
                 clearAuth();
                 updateAuthBtn();
                 document.getElementById('deleteUsername').value = '';
@@ -686,6 +722,7 @@ template = """
                 }}
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH), true);
+                applyGhAuth(xhr);
                 xhr.onload = function() {{
                     if (xhr.status === 200) {{
                         try {{
@@ -693,6 +730,7 @@ template = """
                             var treeSha = commitData.commit.tree.sha;
                             var treeXhr = new XMLHttpRequest();
                             treeXhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + treeSha + '?recursive=1'), true);
+                            applyGhAuth(treeXhr);
                             treeXhr.onload = function() {{
                                 if (treeXhr.status === 200) {{
                                     try {{
@@ -1240,6 +1278,7 @@ template = """
                 var shaUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
                 var shaXhr = new XMLHttpRequest();
                 shaXhr.open('GET', shaUrl, true);
+                shaXhr.setRequestHeader('Authorization', 'Bearer ' + key);
                 shaXhr.onload = function() {{
                     if (shaXhr.status === 200) {{
                         try {{
@@ -1432,12 +1471,14 @@ template = """
 
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH), true);
+                applyGhAuth(xhr);
                 xhr.onload = function() {{
                     if (xhr.status === 200) {{
                         try {{
                             var commitData = JSON.parse(xhr.responseText);
                             var treeXhr = new XMLHttpRequest();
                             treeXhr.open('GET', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + commitData.commit.tree.sha + '?recursive=1'), true);
+                            applyGhAuth(treeXhr);
                             treeXhr.onload = function() {{
                                 if (treeXhr.status === 200) {{
                                     try {{
@@ -1566,7 +1607,7 @@ template = """
                 }}
             }}
 
-            function loadFileList() {{
+            function loadFileList(retried) {{
                 var path = getCurrentPath();
                 var apiUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + path);
 
@@ -1575,6 +1616,7 @@ template = """
 
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', apiUrl, true);
+                applyGhAuth(xhr);
 
                 xhr.onload = function() {{
                     if (xhr.status === 200) {{
@@ -1596,6 +1638,10 @@ template = """
                             container.innerHTML = '<div class="message error">解析文件列表失败</div>';
                         }}
                     }} else if (xhr.status === 403) {{
+                        if (!retried && !ghApiKey && getSavedAuth()) {{
+                            fetchGhKey(function() {{ loadFileList(true); }});
+                            return;
+                        }}
                         container.innerHTML = '<div class="message error">API请求受限，请稍后重试</div>';
                     }} else if (xhr.status === 404) {{
                         container.innerHTML = '<div class="message error">目录不存在</div>';
@@ -2016,6 +2062,7 @@ template = """
                     if (uploadXhr.status === 422 && !sha) {{
                         var shaXhr = new XMLHttpRequest();
                         shaXhr.open('GET', uploadUrl, true);
+                        shaXhr.setRequestHeader('Authorization', 'Bearer ' + key);
                         shaXhr.onload = function() {{
                             if (shaXhr.status === 200) {{
                                 try {{
@@ -2081,7 +2128,9 @@ template = """
             document.addEventListener('DOMContentLoaded', function() {{
                 updateBreadcrumbs();
                 updateAuthBtn();
-                loadConfig(loadFileList);
+                loadConfig(function() {{
+                    fetchGhKey(function() {{ loadFileList(); }});
+                }});
 
                 var dropZone = document.getElementById('dropZone');
                 dropZone.addEventListener('click', function() {{
