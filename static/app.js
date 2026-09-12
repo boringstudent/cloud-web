@@ -355,7 +355,7 @@ function togglePwdEye(btn) {
     var input = btn.parentNode.querySelector('input');
     var show = input.type === 'password';
     input.type = show ? 'text' : 'password';
-    btn.innerHTML = show ? PWD_EYE_OFF_SVG : PWD_EYE_SVG;
+    btn.innerHTML = show ? PWD_EYE_SVG : PWD_EYE_OFF_SVG;
     btn.title = show ? '隐藏密码' : '显示密码';
 }
 
@@ -371,7 +371,7 @@ function initPwdEyes() {
         btn.type = 'button';
         btn.className = 'pwd-eye';
         btn.title = '显示密码';
-        btn.innerHTML = PWD_EYE_SVG;
+        btn.innerHTML = PWD_EYE_OFF_SVG;
         btn.onclick = function() { togglePwdEye(this); };
         wrap.appendChild(btn);
     }

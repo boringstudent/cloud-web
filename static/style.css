@@ -3,11 +3,10 @@ html, body {
     padding: 0;
     height: 100%;
     min-height: 100vh;
-    background-size: cover;
-    background-position: center;
 }
 body {
-    background: url('https://www.loliapi.com/acg') fixed;
+    /* loliapi 按 UA 返回 PC/移动端适配图；center/cover no-repeat 防止小图平铺拼接 */
+    background: url('https://www.loliapi.com/acg') center / cover no-repeat fixed;
     font-family: Arial, sans-serif;
 }
 .container {
@@ -275,6 +274,27 @@ a:hover {
 }
 .form-group input[type="file"] {
     padding: 5px;
+}
+.form-group select {
+    width: 100%;
+    padding: 10px 34px 10px 10px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    box-sizing: border-box;
+    font-size: 14px;
+    color: #333;
+    background: white url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 12px center;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+.form-group select:hover {
+    border-color: #bbb;
+}
+.form-group select:focus {
+    outline: none;
+    border-color: #2c82c9;
 }
 .pwd-wrap {
     position: relative;
