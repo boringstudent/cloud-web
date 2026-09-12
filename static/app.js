@@ -803,6 +803,7 @@ function adminResetPassword(username) {
             showAdminMessage('需要管理员权限或身份验证失败', 'error');
             return;
         }
+        showAdminMessage('正在修改 ' + username + ' 的密码...', 'success');
         sha512Hex(password, function(err, pwHash) {
             if (err || !pwHash) {
                 showAdminMessage('修改失败: ' + (err || '密码加密失败'), 'error');
@@ -831,6 +832,7 @@ function adminChangeRole(username, newRole) {
             showAdminMessage('需要管理员权限或身份验证失败', 'error');
             return;
         }
+        showAdminMessage('正在修改 ' + username + ' 的角色...', 'success');
         var body = {
             admin_user: creds.admin_user,
             admin_pass: creds.admin_pass,
@@ -854,6 +856,7 @@ function adminDeleteUser(username) {
             showAdminMessage('需要管理员权限或身份验证失败', 'error');
             return;
         }
+        showAdminMessage('正在删除用户 ' + username + '...', 'success');
         apiSendJson('DELETE', API_BASE + '/api/users/' + encodeURIComponent(username), {
             admin_user: creds.admin_user,
             admin_pass: creds.admin_pass

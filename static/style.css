@@ -97,11 +97,26 @@ a:hover {
     cursor: not-allowed;
 }
 .icon-btn {
-    padding: 4px 10px;
-    font-size: 15px;
+    background: transparent;
+    border: none;
+    color: #666;
+    padding: 4px 8px;
+    font-size: 16px;
     line-height: 1;
     margin-left: 10px;
     vertical-align: middle;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: color 0.3s, background 0.3s;
+}
+.icon-btn:hover {
+    color: #333;
+    background: rgba(0, 0, 0, 0.06);
+}
+.icon-btn:disabled {
+    color: #bbb;
+    background: transparent;
+    cursor: not-allowed;
 }
 .icon-btn.spinning {
     animation: iconSpin 0.8s linear infinite;
