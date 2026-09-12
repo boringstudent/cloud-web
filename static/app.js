@@ -1556,6 +1556,10 @@ function deleteFolderFiles(key, files) {
                         if (xhr.status === 200 || xhr.status === 201) {
                             state.done++;
                             showDeleteMessage('正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
+                        } else if (xhr.status === 404) {
+                            // already gone (e.g. removed by an earlier attempt): count as done
+                            state.done++;
+                            showDeleteMessage('已不存在，跳过 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
                         } else {
                             state.failed = true;
                             try {
@@ -2446,8 +2450,18 @@ function startUpload(key, doneBases) {
         speedTimer: null,
         activeTasks: {},
         adaptive: adaptive,
-        limit: adaptive ? 2 : Math.min(10, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3))
+        limit: adaptive ? 2 : Math.min(10, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3)),
+        startTime: Date.now(),
+        smallDurSum: 0,
+        smallDurCount: 0,
+        conflictCount: 0,
+        smallRatio: 0
     };
+    var smallCount = 0;
+    uploadTasks.forEach(function(t) {
+        if (t.blob.size < 1048576) smallCount++;
+    });
+    uploadState.smallRatio = uploadTasks.length ? smallCount / uploadTasks.length : 0;
     uploadTasks.forEach(function(t) {
         uploadState.baseTotals[t.base] = (uploadState.baseTotals[t.base] || 0) + 1;
     });
@@ -2506,12 +2520,18 @@ function fillUploads() {
                         st2.doneBases[t.base] = true;
                     }
                     // adaptive: fast chunks -> scale up, slow chunks -> scale down
-                    if (st2.adaptive && t.startTime) {
+                    if (t.startTime) {
                         var dur = Date.now() - t.startTime;
-                        if (dur < 10000 && st2.limit < UPLOAD_LIMIT_MAX) {
-                            st2.limit++;
-                        } else if (dur > 30000 && st2.limit > UPLOAD_LIMIT_MIN) {
-                            st2.limit--;
+                        if (t.blob.size < 1048576) {
+                            st2.smallDurSum += dur;
+                            st2.smallDurCount++;
+                        }
+                        if (st2.adaptive) {
+                            if (dur < 10000 && st2.limit < UPLOAD_LIMIT_MAX) {
+                                st2.limit++;
+                            } else if (dur > 30000 && st2.limit > UPLOAD_LIMIT_MIN) {
+                                st2.limit--;
+                            }
                         }
                     }
                     showMessage('正在上传 (' + st2.doneCount + '/' + uploadTasks.length + ') · 分片大小 ' + currentChunkLabel(), 'success');
@@ -2600,6 +2620,7 @@ function runUploadTask(task, done) {
                     var isRefConflict = status === 409 || /is at [0-9a-f]{40} but expected/i.test(responseText || '');
                     if (isRefConflict) {
                         conflicts++;
+                        st.conflictCount++;
                         if (conflicts <= 6) {
                             showMessage('提交冲突，等待其他分片完成后重试 (' + conflicts + '/6): ' + task.label, 'success');
                             setTimeout(tryOnce, 1500 * conflicts + Math.floor(Math.random() * 1000));
@@ -2742,17 +2763,45 @@ function renderChunkPanel() {
     list.innerHTML = html;
 }
 
+// ETA from measured aggregate speed, per-small-task latency (small/large ratio
+// weighted), remaining task count and the observed ref-conflict rate.
+function estimateEtaText() {
+    var st = uploadState;
+    if (!st || !st.doneCount) return '';
+    var elapsed = (Date.now() - st.startTime) / 1000;
+    if (elapsed <= 0) return '';
+    var speed = st.bytesDone / elapsed;
+    var totalBytes = 0;
+    uploadTasks.forEach(function(t) { totalBytes += t.blob.size; });
+    var remainingBytes = Math.max(0, totalBytes - st.bytesDone);
+    var remainingTasks = uploadTasks.length - st.doneCount;
+    var transferTime = speed > 0 ? remainingBytes / speed : 0;
+    var avgSmallLatency = st.smallDurCount ? (st.smallDurSum / st.smallDurCount / 1000) : 2;
+    var conflictRate = st.conflictCount / Math.max(1, st.doneCount);
+    var eta = transferTime
+        + remainingTasks * avgSmallLatency * st.smallRatio / Math.max(1, st.limit)
+        + conflictRate * remainingTasks * 3;
+    if (!isFinite(eta) || eta < 1) return '';
+    var m = Math.floor(eta / 60);
+    var s = Math.round(eta % 60);
+    if (m > 59) return Math.floor(m / 60) + '小时' + (m % 60) + '分';
+    return (m > 0 ? m + '分' : '') + s + '秒';
+}
+
 function updateUploadProgressUI() {
     var st = uploadState;
     if (!st) return;
     var total = uploadTasks.length;
     var percent = total ? Math.min(100, Math.round(((st.doneCount + st.fractionSum) / total) * 100)) : 100;
-    updateUploadProgressText(percent, st.speedText);
+    updateUploadProgressText(percent, st.speedText, estimateEtaText());
 }
 
-function updateUploadProgressText(percent, speedText) {
+function updateUploadProgressText(percent, speedText, etaText) {
+    var text = percent + '%';
+    if (speedText) text += ' · ' + speedText;
+    if (etaText) text += ' · 预计剩余 ' + etaText;
     document.getElementById('progressFill').style.width = percent + '%';
-    document.getElementById('progressText').textContent = percent + '%' + (speedText ? ' · ' + speedText : '');
+    document.getElementById('progressText').textContent = text;
 }
 
 function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress, retries) {
