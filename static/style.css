@@ -67,11 +67,6 @@ body {
     color: #666;
     font-size: 0.9em;
 }
-.file-mtime {
-    color: #999;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
 h1 {
     color: #333;
     border-bottom: 2px solid #eee;
@@ -100,6 +95,19 @@ a:hover {
 .btn:disabled {
     background: #ccc;
     cursor: not-allowed;
+}
+.icon-btn {
+    padding: 4px 10px;
+    font-size: 15px;
+    line-height: 1;
+    margin-left: 10px;
+    vertical-align: middle;
+}
+.icon-btn.spinning {
+    animation: iconSpin 0.8s linear infinite;
+}
+@keyframes iconSpin {
+    to { transform: rotate(360deg); }
 }
 .modal-overlay {
     display: none;

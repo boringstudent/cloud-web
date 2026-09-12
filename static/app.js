@@ -625,18 +625,25 @@ function showAdminMessage(text, type) {
     msg.textContent = text;
 }
 
-// 用户列表直接从 cloud-user 仓库的 user.json 读取（经 config.json 配置的代理），
-// 不再调用 /api/users，因此查看列表无需管理员凭据；写操作仍走鉴权 API。
+// 用户列表读取 cloud-user 仓库的 user.json，查看列表无需管理员凭据；写操作仍走鉴权 API。
+// 注意：raw.githubusercontent.com 有数分钟 CDN 缓存（外层代理亦可能缓存），写操作后
+// 立刻读取会拿到旧内容，因此优先走实时返回仓库内容的 contents API（用登录令牌鉴权），
+// 失败时回退到 raw + 时间戳。
 var ADMIN_USER_REPO = 'boringstudent/cloud-user';
 var ADMIN_USER_BRANCH = 'main';
 var adminUsersData = null;
 
 function loadAdminUsers() {
     var refreshBtn = document.getElementById('adminRefreshBtn');
-    if (refreshBtn) refreshBtn.disabled = true;
-    var url = ghUrl('https://raw.githubusercontent.com/' + ADMIN_USER_REPO + '/' + ADMIN_USER_BRANCH + '/user.json?t=' + Date.now());
-    apiGetJson(url, function(err, data) {
-        if (refreshBtn) refreshBtn.disabled = false;
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.classList.add('spinning');
+    }
+    var done = function(err, data) {
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.classList.remove('spinning');
+        }
         if (err || !data || typeof data !== 'object') {
             adminUsersData = null;
             document.getElementById('adminUserList').innerHTML = '<div class="message error">加载失败: ' + (err || '响应异常') + '</div>';
@@ -644,7 +651,27 @@ function loadAdminUsers() {
         }
         adminUsersData = data;
         renderAdminUserList();
+    };
+    ensureGhKey(function(key) {
+        if (!key) { fetchAdminUsersRaw(done); return; }
+        var url = 'https://api.github.com/repos/' + ADMIN_USER_REPO + '/contents/user.json?ref=' + ADMIN_USER_BRANCH;
+        cachedGet(url, true, function(status, body) {
+            if (status === 200 || status === 304) {
+                try {
+                    var obj = JSON.parse(body);
+                    var b64 = String(obj.content || '').replace(/\s+/g, '');
+                    done(null, JSON.parse(decodeURIComponent(escape(atob(b64)))));
+                    return;
+                } catch (e) {}
+            }
+            fetchAdminUsersRaw(done);
+        });
     });
+}
+
+function fetchAdminUsersRaw(done) {
+    var url = ghUrl('https://raw.githubusercontent.com/' + ADMIN_USER_REPO + '/' + ADMIN_USER_BRANCH + '/user.json?t=' + Date.now());
+    apiGetJson(url, done);
 }
 
 function toggleAdminUserList() {
@@ -757,6 +784,7 @@ function adminAddUser() {
                 showAdminMessage('添加成功: ' + username, 'success');
                 document.getElementById('adminNewUsername').value = '';
                 document.getElementById('adminNewPassword').value = '';
+                bypassHttpCache();
                 loadAdminUsers();
             });
         });
@@ -787,6 +815,7 @@ function adminResetPassword(username) {
                     return;
                 }
                 showAdminMessage('已重置 ' + username + ' 的密码', 'success');
+                bypassHttpCache();
                 loadAdminUsers();
             });
         });
@@ -810,6 +839,7 @@ function adminChangeRole(username, newRole) {
                 return;
             }
             showAdminMessage('已将 ' + username + ' 调整为 ' + newRole, 'success');
+            bypassHttpCache();
             loadAdminUsers();
         });
     });
@@ -831,6 +861,7 @@ function adminDeleteUser(username) {
                 return;
             }
             showAdminMessage('已删除用户: ' + username, 'success');
+            bypassHttpCache();
             loadAdminUsers();
         });
     });
@@ -985,10 +1016,6 @@ function showProperties(filePath, fileName, fileType) {
     propsHtml += propRow('名称', escapeHtml(displayName(fileName)));
     propsHtml += propRow('类型', fileType === 'dir' ? '文件夹' : (menuFileInfo.chunked ? '文件（分片存储）' : '文件'));
     propsHtml += propRow('路径', escapeHtml(filePath), true);
-    var mtimeText = dirMtimes[filePath];
-    if (mtimeText) {
-        propsHtml += propRow('修改时间', mtimeText);
-    }
     if (fileType === 'dir') {
         var fileCount = 0, dirCount = 0, totalSize = 0;
         if (fileTreeCache) {
@@ -2222,152 +2249,6 @@ function updateBreadcrumbs() {
     }
 }
 
-// ---- File modification times (derived from commit history) ----
-// The contents API returns no dates, so the newest commit touching each entry
-// is looked up instead. Commit messages written by this app ("Upload/Update/
-// Delete file: <path>") provide a fast path needing no extra requests; commit
-// details are fetched only for entries still undated afterwards (e.g. commits
-// made outside the app), sequentially and capped to limit request volume.
-var dirMtimes = {};
-var lastMtimeDir = null;
-var MTIME_DETAIL_CAP = 30;
-var MTIME_MSG_RE = /^(Upload|Update|Create|Delete) file: (.+)$/;
-
-function formatMtime(iso) {
-    var d = new Date(iso);
-    if (isNaN(d.getTime())) return '';
-    var p = function(n) { return String(n).padStart(2, '0'); };
-    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
-}
-
-function updateMtimeSpans() {
-    entryOrder.forEach(function(k) {
-        var rec = entryMap[k];
-        if (!rec || !rec.el._timeSpan) return;
-        var text = dirMtimes[rec.model.path] || '';
-        if (rec.el._timeSpan.textContent !== text) {
-            rec.el._timeSpan.textContent = text;
-        }
-    });
-}
-
-function applyMtimes(dirPath, result) {
-    // guard against directory navigation while requests were in flight
-    if (dirPath !== lastMtimeDir) return;
-    Object.keys(result).forEach(function(p) {
-        dirMtimes[p] = formatMtime(result[p]);
-    });
-    updateMtimeSpans();
-}
-
-function loadMtimes() {
-    var dirPath = getCurrentPath();
-    if (dirPath !== lastMtimeDir) {
-        dirMtimes = {};
-        lastMtimeDir = dirPath;
-    }
-    if (!entryOrder.length) return;
-    var url = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits?sha=' + DEFAULT_BRANCH + '&per_page=100';
-    if (dirPath) url += '&path=' + encodePath(dirPath);
-    cachedGet(url, true, function(status, body) {
-        if (status !== 200) return; // 304: history unchanged, keep shown times
-        try {
-            computeMtimes(dirPath, JSON.parse(body));
-        } catch (e) {}
-    });
-}
-
-function computeMtimes(dirPath, commits) {
-    var filePending = {};
-    var dirPending = {};
-    // alias maps every stored part path to the displayed (chunked) base path
-    var fileAlias = {};
-    entryOrder.forEach(function(k) {
-        var rec = entryMap[k];
-        if (!rec) return;
-        var m = rec.model;
-        if (m.kind === 'dir') {
-            dirPending[m.path] = true;
-        } else {
-            filePending[m.path] = true;
-            fileAlias[m.path] = m.path;
-            if (m.parts) {
-                m.parts.forEach(function(p) { fileAlias[p.path] = m.path; });
-            }
-        }
-    });
-    var result = {};
-    var detailShas = [];
-    commits.forEach(function(c) {
-        var date = c.commit && c.commit.committer && c.commit.committer.date;
-        if (!date) return;
-        var firstLine = (c.commit.message || '').split('\n')[0];
-        var m = firstLine.match(MTIME_MSG_RE);
-        if (m) {
-            var fp = m[2];
-            var base = fileAlias[fp];
-            // a "Delete file" commit is not a modification of a listed file,
-            // but it does count as a content change for its parent folder
-            if (m[1] !== 'Delete' && base && filePending[base]) {
-                result[base] = date;
-                delete filePending[base];
-            }
-            Object.keys(dirPending).forEach(function(dp) {
-                if (fp.indexOf(dp + '/') === 0) {
-                    result[dp] = date;
-                    delete dirPending[dp];
-                }
-            });
-        }
-        if (Object.keys(filePending).length || Object.keys(dirPending).length) {
-            detailShas.push(c.sha);
-        }
-    });
-    applyMtimes(dirPath, result);
-    if (Object.keys(filePending).length || Object.keys(dirPending).length) {
-        fetchMtimeDetails(dirPath, detailShas, fileAlias, filePending, dirPending, result);
-    }
-}
-
-function fetchMtimeDetails(dirPath, shas, fileAlias, filePending, dirPending, result) {
-    var idx = 0;
-    var fetched = 0;
-    function next() {
-        if (dirPath !== lastMtimeDir) return;
-        if (!Object.keys(filePending).length && !Object.keys(dirPending).length) return;
-        if (idx >= shas.length || fetched >= MTIME_DETAIL_CAP) return;
-        var sha = shas[idx++];
-        fetched++;
-        var url = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + sha;
-        cachedGet(url, true, function(status, body) {
-            if (status === 200 && dirPath === lastMtimeDir) {
-                try {
-                    var data = JSON.parse(body);
-                    var date = data.commit && data.commit.committer && data.commit.committer.date;
-                    if (date) {
-                        (data.files || []).forEach(function(f) {
-                            var base = fileAlias[f.filename];
-                            if (base && f.status !== 'removed' && filePending[base]) {
-                                result[base] = date;
-                                delete filePending[base];
-                            }
-                            Object.keys(dirPending).forEach(function(dp) {
-                                if (f.filename.indexOf(dp + '/') === 0) {
-                                    result[dp] = date;
-                                    delete dirPending[dp];
-                                }
-                            });
-                        });
-                        applyMtimes(dirPath, result);
-                    }
-                } catch (e) {}
-            }
-            next();
-        });
-    }
-    next();
-}
-
 // ---- File list: incremental rendering state ----
 var entryMap = {};
 var entryOrder = [];
@@ -2421,7 +2302,6 @@ function loadFileList(retried) {
                     document.title = dirName + ' - boring_student';
                 }
                 renderFileList(items);
-                loadMtimes();
             } catch (e) {
                 showListError('解析文件列表失败');
             }
@@ -2550,9 +2430,6 @@ function createEntryElement(model) {
     var infoSpan = document.createElement('span');
     infoSpan.className = 'file-info';
     var sizeSpan = document.createElement('span');
-    var timeSpan = document.createElement('span');
-    timeSpan.className = 'file-mtime';
-    if (dirMtimes[model.path]) timeSpan.textContent = dirMtimes[model.path];
 
     if (model.kind === 'dir') {
         entry.href = baseUrl + encodeURIComponent(model.name) + '/';
@@ -2587,22 +2464,18 @@ function createEntryElement(model) {
         nameWrap.className = 'entry-name';
         nameWrap.appendChild(nameSpan);
 
-        infoSpan.appendChild(timeSpan);
         infoSpan.appendChild(sizeSpan);
         entry.appendChild(nameWrap);
         entry.appendChild(infoSpan);
         entry._sizeSpan = sizeSpan;
-        entry._timeSpan = timeSpan;
         bindEntryEvents(entry);
         return entry;
     }
 
-    infoSpan.appendChild(timeSpan);
     infoSpan.appendChild(sizeSpan);
     entry.appendChild(nameSpan);
     entry.appendChild(infoSpan);
     entry._sizeSpan = sizeSpan;
-    entry._timeSpan = timeSpan;
     bindEntryEvents(entry);
     return entry;
 }
