@@ -1497,8 +1497,8 @@ function deleteFolder(key, folderPath) {
     }, deleteFolderError);
 }
 
-// Parallel delete with adaptive concurrency (starts at 3, scales up to 5
-// on consecutive successes, backs off to 3 on errors).
+// Sequential delete (single-threaded) to avoid git ref conflicts;
+// per-file conflict retry still applies when the ref moves unexpectedly.
 function deleteFolderFiles(key, files) {
     if (!files.length) {
         deleteAllDone();
@@ -1508,8 +1508,7 @@ function deleteFolderFiles(key, files) {
         next: 0,
         active: 0,
         done: 0,
-        limit: 3,
-        okStreak: 0,
+        limit: 1,
         failed: false,
         errMsg: ''
     };
@@ -1556,11 +1555,6 @@ function deleteFolderFiles(key, files) {
                         state.active--;
                         if (xhr.status === 200 || xhr.status === 201) {
                             state.done++;
-                            state.okStreak++;
-                            if (state.okStreak >= 4 && state.limit < 5) {
-                                state.limit++;
-                                state.okStreak = 0;
-                            }
                             showDeleteMessage('正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
                         } else {
                             state.failed = true;
