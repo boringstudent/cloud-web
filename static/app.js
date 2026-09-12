@@ -190,6 +190,24 @@ function clearRemember() {
 // ---- auth API (https://api.boring-student.cn) ----
 var API_BASE = 'https://api.boring-student.cn';
 
+// Known API error messages shown in Chinese
+var API_ERROR_MAP = {
+    'Invalid credentials': '账号或密码错误',
+    'Admin auth required (admin_user / admin_pass)': '需要管理员身份验证',
+    'User already exists': '用户已存在',
+    'User not found': '用户不存在',
+    'Missing username or password': '缺少用户名或密码',
+    'Invalid key hash': '密钥哈希无效',
+    'Password must be longer than 8 characters': '新密码长度必须大于 8 位',
+    'Password must contain lowercase letters (a-z)': '新密码必须包含小写字母 (a-z)',
+    'Password must contain uppercase letters (A-Z)': '新密码必须包含大写字母 (A-Z)',
+    'Password must contain digits (0-9)': '新密码必须包含数字 (0-9)'
+};
+
+function translateApiError(msg) {
+    return API_ERROR_MAP[msg] || msg;
+}
+
 function apiGetJson(url, cb) {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url, true);
@@ -204,7 +222,7 @@ function apiGetJson(url, cb) {
             var msg = '状态码: ' + xhr.status;
             try {
                 var err = JSON.parse(xhr.responseText);
-                if (err.error) msg = err.error;
+                if (err.error) msg = translateApiError(err.error);
             } catch (e) {}
             cb(msg);
         }
@@ -228,7 +246,7 @@ function apiSendJson(method, url, body, cb) {
             var msg = '状态码: ' + xhr.status;
             try {
                 var err = JSON.parse(xhr.responseText);
-                if (err.error) msg = err.error;
+                if (err.error) msg = translateApiError(err.error);
             } catch (e) {}
             cb(msg);
         }

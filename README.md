@@ -113,5 +113,7 @@ CLOUD=owner/repo BRANCH=main python build.py
 ## 已知限制
 
 - 密码以明文经 HTTPS 传输（服务端 API 仅接受明文校验）；本地仅保存服务端返回的 SHA-512 哈希与兑换到的 Token（base64 封装于 localStorage，非加密存储）；"记住密码"功能如需自动填充会保存明文，由用户自行勾选
+- 服务端 API 返回的英文错误信息（如 `Invalid credentials`）在前端统一翻译为中文提示（如"账号或密码错误"）后展示
+- 服务端 `GET /api/users`（用户列表）当前不解析 query 参数，导致该接口在浏览器中不可用（浏览器无法为 GET 请求附加 body），需服务端 Worker 修复参数解析后"用户管理"的列表功能才能恢复；添加/修改/删除用户走 body 传参不受影响
 - 登录/兑换接口为 GET 请求，参数会出现在浏览器历史与服务器日志中（受服务端 API 限制）
 - GitHub 单文件 100MB 限制故大文件必须分片；contents API 每次变更产生一个 commit，高频写操作受引用竞争与速率限制约束（已通过并发控制 + 退避重试缓解）
