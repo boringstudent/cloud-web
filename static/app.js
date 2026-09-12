@@ -250,25 +250,41 @@ function apiSendJson(method, url, body, cb) {
     xhr.send(body ? JSON.stringify(body) : null);
 }
 
-// Full login flow: /api/login (hashed password) -> /api/redeem-key -> real key.
+// Full login flow: /api/login -> /api/redeem-key -> real key.
+// The SHA-512 hash is tried first; when the server rejects it and the
+// plaintext is available, it is retried as a fallback.
 // persist=true stores {u, hash, role, key} locally; otherwise session-only.
-function loginAndGetKey(username, hash, persist, cb) {
-    apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(hash), function(err, data) {
-        if (err) { cb(err); return; }
-        if (!data || !data.success || !data.key_sha512) { cb('用户名或密码错误'); return; }
-        apiGetJson(API_BASE + '/api/redeem-key?key_sha512=' + encodeURIComponent(data.key_sha512), function(err2, data2) {
-            if (err2 || !data2 || !data2.key) { cb(err2 || '兑换密钥失败'); return; }
-            ghApiKey = data2.key;
-            var auth = { v: 2, u: username, h: hash, role: data.role || 'user', key: ghApiKey };
-            if (persist) {
-                saveAuth(username, hash, auth.role, ghApiKey);
-            } else {
-                sessionAuth = auth;
+var sessionPlain = null;
+
+function loginAndGetKey(username, hash, persist, cb, plaintext) {
+    var attempts = [hash];
+    if (plaintext && plaintext !== hash) attempts.push(plaintext);
+    var tryLogin = function(idx) {
+        apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(attempts[idx]), function(err, data) {
+            if (err || !data || !data.success || !data.key_sha512) {
+                if (idx + 1 < attempts.length) {
+                    tryLogin(idx + 1);
+                    return;
+                }
+                cb(err || '用户名或密码错误');
+                return;
             }
-            updateAuthBtn();
-            cb(null, ghApiKey);
+            apiGetJson(API_BASE + '/api/redeem-key?key_sha512=' + encodeURIComponent(data.key_sha512), function(err2, data2) {
+                if (err2 || !data2 || !data2.key) { cb(err2 || '兑换密钥失败'); return; }
+                ghApiKey = data2.key;
+                if (plaintext) sessionPlain = plaintext;
+                var auth = { v: 2, u: username, h: hash, role: data.role || 'user', key: ghApiKey };
+                if (persist) {
+                    saveAuth(username, hash, auth.role, ghApiKey);
+                } else {
+                    sessionAuth = auth;
+                }
+                updateAuthBtn();
+                cb(null, ghApiKey);
+            });
         });
-    });
+    };
+    tryLogin(0);
 }
 
 // Resolve a usable GitHub key without re-requesting it every time:
@@ -319,6 +335,10 @@ function updateAuthBtn() {
     if (adminBtn) {
         adminBtn.style.display = saved && saved.role === 'admin' ? '' : 'none';
     }
+    var accountBtn = document.getElementById('accountBtn');
+    if (accountBtn) {
+        accountBtn.style.display = saved ? '' : 'none';
+    }
 }
 
 function handleAuthBtnClick() {
@@ -368,6 +388,7 @@ function doLogin() {
                 loginBtn.disabled = false;
                 return;
             }
+            sessionPlain = password;
             if (rememberPwd) {
                 saveRemember(username, password);
             } else {
@@ -384,6 +405,7 @@ function doLogin() {
 
 function logout() {
     ghApiKey = null;
+    sessionPlain = null;
     clearAuth();
     updateAuthBtn();
     document.getElementById('deleteUsername').value = '';
@@ -394,11 +416,150 @@ function logout() {
     document.getElementById('loginKeepLogged').checked = false;
 }
 
+// ---- Self-service account (change password / delete account) ----
+function openAccountModal() {
+    document.getElementById('accountMessage').className = 'message';
+    document.getElementById('accountMessage').textContent = '';
+    document.getElementById('cpCurrent').value = '';
+    document.getElementById('cpNew').value = '';
+    document.getElementById('cpConfirm').value = '';
+    document.getElementById('daPassword').value = '';
+    document.getElementById('accountModal').classList.add('show');
+}
+
+function closeAccountModal() {
+    document.getElementById('accountModal').classList.remove('show');
+}
+
+function showAccountMessage(text, type) {
+    var msg = document.getElementById('accountMessage');
+    msg.className = 'message ' + type;
+    msg.textContent = text;
+}
+
+function validateNewPassword(p) {
+    if (p.length <= 8) return '新密码长度必须大于 8 位';
+    if (!/[a-z]/.test(p)) return '新密码必须包含小写字母 (a-z)';
+    if (!/[A-Z]/.test(p)) return '新密码必须包含大写字母 (A-Z)';
+    if (!/[0-9]/.test(p)) return '新密码必须包含数字 (0-9)';
+    return null;
+}
+
+// Try password candidates (hash first, plaintext fallback) against an endpoint
+function postWithPasswordFallback(url, makeBody, plaintext, hash, cb) {
+    var attempts = [hash];
+    if (plaintext && plaintext !== hash) attempts.push(plaintext);
+    var tryNext = function(idx) {
+        apiSendJson('POST', url, makeBody(attempts[idx]), function(err, data) {
+            if (err && idx + 1 < attempts.length) {
+                tryNext(idx + 1);
+                return;
+            }
+            cb(err, data);
+        });
+    };
+    tryNext(0);
+}
+
+function changeOwnPassword() {
+    var auth = getSavedAuth();
+    if (!auth) {
+        showAccountMessage('请先登录', 'error');
+        return;
+    }
+    var current = document.getElementById('cpCurrent').value;
+    var newPwd = document.getElementById('cpNew').value;
+    var confirmPwd = document.getElementById('cpConfirm').value;
+    if (!current || !newPwd) {
+        showAccountMessage('请输入当前密码和新密码', 'error');
+        return;
+    }
+    if (newPwd !== confirmPwd) {
+        showAccountMessage('两次输入的新密码不一致', 'error');
+        return;
+    }
+    var ruleErr = validateNewPassword(newPwd);
+    if (ruleErr) {
+        showAccountMessage(ruleErr, 'error');
+        return;
+    }
+    var btn = document.getElementById('cpBtn');
+    btn.disabled = true;
+    showAccountMessage('正在修改...', 'success');
+    sha512Hex(current).then(function(curHash) {
+        postWithPasswordFallback(API_BASE + '/api/change-password', function(pw) {
+            return { username: auth.u, password: pw, new_password: newPwd };
+        }, current, curHash, function(err) {
+            if (err) {
+                showAccountMessage('修改失败: ' + err, 'error');
+                btn.disabled = false;
+                return;
+            }
+            // refresh stored credentials with the new password hash
+            sha512Hex(newPwd).then(function(newHash) {
+                if (sessionAuth) {
+                    sessionAuth = { v: 2, u: auth.u, h: newHash, role: auth.role, key: auth.key };
+                } else {
+                    saveAuth(auth.u, newHash, auth.role, auth.key);
+                }
+                sessionPlain = newPwd;
+                if (getRemember()) {
+                    saveRemember(auth.u, newPwd);
+                }
+                showAccountMessage('密码修改成功！', 'success');
+                btn.disabled = false;
+                document.getElementById('cpCurrent').value = '';
+                document.getElementById('cpNew').value = '';
+                document.getElementById('cpConfirm').value = '';
+            });
+        });
+    });
+}
+
+function deleteOwnAccount() {
+    var auth = getSavedAuth();
+    if (!auth) {
+        showAccountMessage('请先登录', 'error');
+        return;
+    }
+    var password = document.getElementById('daPassword').value;
+    if (!password) {
+        showAccountMessage('请输入密码以确认注销', 'error');
+        return;
+    }
+    if (!confirm('确定要永久注销账户 ' + auth.u + ' 吗？此操作不可撤销！')) {
+        return;
+    }
+    var btn = document.getElementById('daBtn');
+    btn.disabled = true;
+    showAccountMessage('正在注销...', 'success');
+    sha512Hex(password).then(function(hash) {
+        postWithPasswordFallback(API_BASE + '/api/delete-account', function(pw) {
+            return { username: auth.u, password: pw };
+        }, password, hash, function(err) {
+            btn.disabled = false;
+            if (err) {
+                showAccountMessage('注销失败: ' + err, 'error');
+                return;
+            }
+            ghApiKey = null;
+            sessionPlain = null;
+            clearAuth();
+            clearRemember();
+            updateAuthBtn();
+            closeAccountModal();
+            showToast('账户已注销');
+            setTimeout(hideToast, 2500);
+        });
+    });
+}
+
 // ---- Admin user management (role=admin only) ----
 function adminCreds() {
     var a = getSavedAuth();
     if (!a || a.role !== 'admin') return null;
-    return { admin_user: a.u, admin_pass: a.h };
+    // prefer the in-memory plaintext (server validates plaintext); hash as fallback
+    return { admin_user: a.u, admin_pass: sessionPlain || a.h };
 }
 
 function openAdminModal() {
@@ -1595,7 +1756,7 @@ function savePreviewFile() {
                 return;
             }
             updateFileOnGitHub(key, previewFileInfo.path, newContent);
-        });
+        }, password);
     });
 }
 
@@ -1709,7 +1870,7 @@ function confirmDelete() {
                 return;
             }
             runDelete(key);
-        });
+        }, password);
     });
 }
 

@@ -28,6 +28,7 @@
         <button class="btn" onclick="openUploadModal()" style="position: fixed; bottom: 30px; right: 30px; z-index: 100;">上传文件</button>
         <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 100; display: flex; align-items: center; gap: 10px;">
             <span id="authUser" style="display: none; background: rgba(255, 255, 255, 0.9); padding: 10px 15px; border-radius: 8px; color: #333; font-size: 14px; box-shadow: 0 0 10px rgba(0,0,0,0.1);"></span>
+            <button class="btn" id="accountBtn" onclick="openAccountModal()" style="display: none; background: #16a085;">我的账户</button>
             <button class="btn" id="adminBtn" onclick="openAdminModal()" style="display: none; background: #6c5ce7;">用户管理</button>
             <button class="btn" id="authBtn" onclick="handleAuthBtnClick()">登录</button>
         </div>
@@ -144,6 +145,34 @@
                 <span class="modal-close" onclick="document.getElementById('propertiesModal').classList.remove('show')">&times;</span>
                 <h2 id="propertiesTitle">属性</h2>
                 <div id="propertiesContent"></div>
+            </div>
+        </div>
+
+        <div id="accountModal" class="modal-overlay">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeAccountModal()">&times;</span>
+                <h2>我的账户</h2>
+                <h3 style="color: #333; margin: 10px 0;">修改密码</h3>
+                <div class="form-group">
+                    <label>当前密码</label>
+                    <input type="password" id="cpCurrent" placeholder="请输入当前密码">
+                </div>
+                <div class="form-group">
+                    <label>新密码</label>
+                    <input type="password" id="cpNew" placeholder="大于8位，含大小写字母和数字">
+                </div>
+                <div class="form-group">
+                    <label>确认新密码</label>
+                    <input type="password" id="cpConfirm" placeholder="再次输入新密码">
+                </div>
+                <button class="btn" onclick="changeOwnPassword()" id="cpBtn" style="width: 100%;">修改密码</button>
+                <h3 style="color: #dc3545; margin: 18px 0 10px;">注销账户</h3>
+                <div class="form-group">
+                    <label>输入密码确认注销</label>
+                    <input type="password" id="daPassword" placeholder="注销后账户将被永久删除">
+                </div>
+                <button class="btn" onclick="deleteOwnAccount()" id="daBtn" style="width: 100%; background: #dc3545;">永久注销账户</button>
+                <div id="accountMessage" class="message"></div>
             </div>
         </div>
 
