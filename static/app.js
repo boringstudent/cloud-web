@@ -121,6 +121,7 @@ function setPreviewBlobUrl(url) {
 
 var previewAbort = null; // 图片流式预览的 AbortController
 var previewProbe = null; // 音/视频预览的测速探测请求
+var previewMerge = null; // 分片合并预览的取消句柄
 
 // 关闭/切换预览时停止媒体继续缓冲、中断进行中的流式读取与测速探测，避免后台浪费带宽
 function stopPreviewMedia() {
@@ -131,6 +132,10 @@ function stopPreviewMedia() {
     if (previewProbe) {
         try { previewProbe.abort(); } catch (e) {}
         previewProbe = null;
+    }
+    if (previewMerge) {
+        previewMerge.cancel();
+        previewMerge = null;
     }
     var content = document.getElementById('previewContent');
     if (!content) return;
@@ -1437,11 +1442,14 @@ function hideToast() {
 // Parallel chunk downloading (limited concurrency) for faster preview/download
 var MERGE_CONCURRENCY = 6;
 
-function fetchMergedBlob(parts, onDone, onFail, onProgress) {
+function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart) {
     var buffers = new Array(parts.length);
     var nextIndex = 0;
     var doneCount = 0;
     var failed = false;
+    var cancelled = false;
+    var actives = [];
+    var lastPrefix = 0;
     var totalBytes = 0;
     parts.forEach(function(p) { totalBytes += p.size || 0; });
     var loadedBytes = 0;
@@ -1474,14 +1482,14 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress) {
     showToast('正在加载 0/' + parts.length + ' ...');
 
     var fail = function() {
-        if (failed) return;
+        if (failed || cancelled) return;
         failed = true;
         hideToast();
         if (onFail) onFail();
     };
 
     var next = function() {
-        if (failed) return;
+        if (failed || cancelled) return;
         if (doneCount >= parts.length) {
             hideToast();
             if (onProgress) onProgress(100, '');
@@ -1492,6 +1500,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress) {
         var i = nextIndex++;
         var url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[i].path));
         var xhr = new XMLHttpRequest();
+        actives.push(xhr);
         xhr.open('GET', url, true);
         xhr.responseType = 'arraybuffer';
         xhr.onprogress = function(e) {
@@ -1502,17 +1511,31 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress) {
             report();
         };
         xhr.onload = function() {
+            actives.splice(actives.indexOf(xhr), 1);
+            if (cancelled) return;
             if (xhr.status === 200) {
                 buffers[i] = xhr.response;
                 loadedBytes += (parts[i].size || 0) - (parts[i]._loaded || 0);
                 doneCount++;
                 report();
+                // 已连续完成的前缀分片数增长时回调，供分片音频边下边播
+                if (onPart) {
+                    var prefix = 0;
+                    while (prefix < buffers.length && buffers[prefix]) prefix++;
+                    if (prefix > lastPrefix) {
+                        lastPrefix = prefix;
+                        onPart(prefix, buffers);
+                    }
+                }
                 next();
             } else {
                 fail();
             }
         };
-        xhr.onerror = fail;
+        xhr.onerror = function() {
+            actives.splice(actives.indexOf(xhr), 1);
+            fail();
+        };
         xhr.send();
     };
 
@@ -1520,6 +1543,15 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress) {
     for (var k = 0; k < starters; k++) {
         next();
     }
+
+    // 返回句柄供关闭预览时中止合并，避免后台继续拉分片
+    return {
+        cancel: function() {
+            cancelled = true;
+            actives.slice().forEach(function(x) { try { x.abort(); } catch (e) {} });
+            hideToast();
+        }
+    };
 }
 
 // Fetch a whole file as Blob with live percentage + speed updates
@@ -1573,10 +1605,19 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
     var tmpUrl = null;
 
     var paint = function() {
+        // 先用隐藏 Image 验证部分数据可解码再换到可见 img：
+        // 基线 JPEG / WebP 等格式收完前无法解码，直接换源会闪破图图标
         var u = URL.createObjectURL(new Blob(chunks));
-        if (tmpUrl) URL.revokeObjectURL(tmpUrl);
-        tmpUrl = u;
-        img.src = u;
+        var probe = new Image();
+        probe.onload = function() {
+            if (tmpUrl) URL.revokeObjectURL(tmpUrl);
+            tmpUrl = u;
+            img.src = u;
+        };
+        probe.onerror = function() {
+            URL.revokeObjectURL(u);
+        };
+        probe.src = u;
     };
 
     var isAbort = function(err) { return err && err.name === 'AbortError'; };
@@ -2021,21 +2062,61 @@ function previewFile(filePath, fileName) {
     setPreviewBlobUrl(null);
 
     if (menuFileInfo.chunked) {
-        fetchMergedBlob(menuFileInfo.parts, function(blob) {
+        // 分片音频边下边播：音频元素立即创建，每连续收完一段分片就更新播放源
+        // （未播放时换源无感知；一旦开始播放则不再换源，最后完整 blob 恢复进度）
+        var isAudioPreview = AUDIO_EXTS.indexOf(ext) !== -1;
+        var audioEl = null;
+        var audioRateTag = null;
+        var tmpAudioUrl = null;
+        var startedPlaying = false;
+        if (isAudioPreview) {
+            content.innerHTML = '';
+            content.appendChild(loadingDiv);
+            audioEl = document.createElement('audio');
+            audioEl.controls = true;
+            audioEl.preload = 'auto';
+            audioEl.className = 'preview-audio';
+            var audioWrap = document.createElement('div');
+            audioWrap.className = 'media-wrap';
+            audioRateTag = document.createElement('div');
+            audioRateTag.className = 'media-rate-below';
+            audioWrap.appendChild(audioEl);
+            audioWrap.appendChild(audioRateTag);
+            content.appendChild(audioWrap);
+            audioEl.addEventListener('play', function() { startedPlaying = true; });
+            // 部分前缀数据可能暂时无法解码（如头部不完整），忽略，等更多分片后重试
+            audioEl.addEventListener('error', function() {});
+        }
+        previewMerge = fetchMergedBlob(menuFileInfo.parts, function(blob) {
+            previewMerge = null;
+            if (isAudioPreview && audioEl) {
+                loadingDiv.style.display = 'none';
+                var finalUrl = URL.createObjectURL(blob);
+                setPreviewBlobUrl(finalUrl);
+                var pos = 0, resume = false;
+                try {
+                    pos = audioEl.currentTime;
+                    resume = !audioEl.paused && !audioEl.ended;
+                } catch (e) {}
+                audioEl.addEventListener('loadedmetadata', function() {
+                    try { audioEl.currentTime = pos; } catch (e) {}
+                    if (resume) audioEl.play();
+                }, { once: true });
+                audioEl.src = finalUrl;
+                if (tmpAudioUrl) {
+                    URL.revokeObjectURL(tmpAudioUrl);
+                    tmpAudioUrl = null;
+                }
+                if (audioRateTag) setTimeout(function() { audioRateTag.textContent = ''; }, 3000);
+                return;
+            }
             var mediaUrl = null;
-            if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
+            if (VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
                 mediaUrl = URL.createObjectURL(blob);
                 setPreviewBlobUrl(mediaUrl);
                 content.innerHTML = '';
             }
-            if (AUDIO_EXTS.indexOf(ext) !== -1) {
-                var audio = document.createElement('audio');
-                audio.src = mediaUrl;
-                audio.controls = true;
-                audio.preload = 'auto';
-                audio.className = 'preview-audio';
-                content.appendChild(audio);
-            } else if (VIDEO_EXTS.indexOf(ext) !== -1) {
+            if (VIDEO_EXTS.indexOf(ext) !== -1) {
                 var video = document.createElement('video');
                 video.src = mediaUrl;
                 video.controls = true;
@@ -2058,6 +2139,7 @@ function previewFile(filePath, fileName) {
                 textReader.readAsText(blob);
             }
         }, function() {
+            if (previewMerge) previewMerge = null;
             content.innerHTML = '';
             var msgDiv = document.createElement('div');
             msgDiv.className = 'message error';
@@ -2067,6 +2149,13 @@ function previewFile(filePath, fileName) {
             if (pct !== null) {
                 loadingDiv.textContent = '加载中 ' + pct + '%' + (speed ? ' · ' + speed : '');
             }
+            if (audioRateTag && speed) audioRateTag.textContent = speed;
+        }, function onPart(prefix, buffers) {
+            if (!isAudioPreview || startedPlaying || !audioEl) return;
+            var u = URL.createObjectURL(new Blob(buffers.slice(0, prefix)));
+            if (tmpAudioUrl) URL.revokeObjectURL(tmpAudioUrl);
+            tmpAudioUrl = u;
+            audioEl.src = u;
         });
         return;
     }
@@ -2091,7 +2180,8 @@ function previewFile(filePath, fileName) {
             mediaEl.style.borderRadius = '8px';
         }
         var rateTag = document.createElement('div');
-        rateTag.className = 'media-rate';
+        // 音频条太矮，叠加标签会遮挡控制按钮，改放在播放器下方右对齐
+        rateTag.className = (AUDIO_EXTS.indexOf(ext) !== -1) ? 'media-rate-below' : 'media-rate';
         var rateBox = document.createElement('div');
         rateBox.className = 'media-wrap';
         rateBox.style.position = 'relative';
