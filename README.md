@@ -1,6 +1,6 @@
 # cloud-web
 
-一个基于 GitHub 仓库作为存储后端的网页版网盘。纯静态前端，部署在 GitHub Pages 上，通过 GitHub REST API 实现文件的上传、下载、预览、编辑与删除。
+一个基于 GitHub 仓库作为存储后端的网页版网盘。**全站一体部署在腾讯云 EdgeOne（EO）边缘函数上**：`eo.js` 单文件同时提供前端页面、静态资源、认证用户 API、GitHub 代理与下载中转，浏览器的一切请求（含下载中转）都与站点同源，GitHub key 只保存在 EO 服务端，永不出现在用户端。
 
 > 该项目代码由 AI 辅助编写。
 
@@ -10,10 +10,10 @@
 - **自动刷新**：每 45 秒自动刷新文件列表，标题右侧显示刷新倒计时；标签页隐藏时暂停轮询，恢复可见时立即刷新
 - **增量渲染**：列表按 key 做 diff，仅更新变化的文件大小文本（带高亮闪烁）、增删对应条目（带过渡动画），不再整列表闪屏；后台刷新失败保留原列表仅 toast 提示
 - **请求优化**：
-  - GitHub API 使用 ETag 条件请求（304 不占速率限制、不触发重渲染）
+  - 全部请求与站点同源（EO 边缘函数），无任何第三方域名依赖；背景图也经 EO 中转
+  - GitHub API 使用 ETag 条件请求（304 不占速率限制、不触发重渲染），经 EO 原样透传
   - 变更操作（上传/编辑/删除）后开启 15 秒缓存穿透窗口，请求附加时间戳绕过代理与 ETag 缓存
-  - 首屏 `config.json` 与授权密钥并行请求；`preconnect` 预热连接
-  - JS/CSS 外链并按构建时间戳做缓存清除
+  - 页面不缓存、JS/CSS 按构建时间戳长缓存；首屏无需预取配置/凭据，直接加载
 - **上传**：
   - 支持多文件、文件夹拖拽/选择上传
   - 大文件自动分片（45MB / 30MB 两档，按 base64 后不超过 GitHub 单文件限制反算切片大小），`too large` 时自动降档续传
@@ -35,10 +35,10 @@
   - 音频播放器定宽占满容器（原生控制条不被压缩、音量按钮常驻），音量/静音状态跨预览记忆
   - 图片：fetch 分块流式读取，部分数据渐进渲染边下边显示，角落与加载文案实时显示下载速度与百分比；大图（>512KB 且服务器支持 206）自动切 4 段 Range 并行拉取（多线程加速），渐进渲染只取已连续完成的前缀分段，并行度不影响边下边显示；基线 JPEG 等非渐进格式收完前无法解码属正常，加载文案持续显示进度；关闭预览即中断下载，不浪费带宽
   - 文本：纯文本或代码着色（按扩展名自动识别 JavaScript / JSON / Python / C 等，可手动切换），长行不换行走水平滚动
-  - Markdown：默认渲染预览（标题/列表/引用/代码块/链接/图片等），可切回纯文本查看原文
+  - Markdown：默认渲染预览（标题/列表/引用/代码块/GFM 表格/链接/图片等），可切回纯文本查看原文
 - **在线编辑**：文本编辑支持着色（透明 textarea 叠加高亮层）与 Markdown 编辑预览切换，保存经鉴权后通过 contents API 提交
 - **属性面板**：文件 SHA、大小、分片数；文件夹包含文件数、子文件夹数、总大小
-- **服务状态**：左下角角标实时显示 GitHub 代理与登录 API 的连通性、RTT、IP/归属地/ISP，每 10 分钟自动检测；点击角标立即重新检测，检测中再次点击会中止当前轮并重新开始
+- **服务状态**：左下角角标实时显示 EO 边缘函数的连通性、RTT（HEAD 轻量测量）、出口 IP/归属地/ISP，每 10 分钟自动检测；点击角标立即重新检测，检测中再次点击会中止当前轮并重新开始（页面/API/代理同体，单点检测即可反映全站状态）
 - **路径兼容**：路径段仅解码一次保证字面名可访问；显示层反复解码，历史遗留的编码乱码名称显示为可读中文，重名时追加 `[原名: ...]` 标记区分
 - **安全细节**：外链均带 `noopener`；所有文件名渲染走 `textContent`/转义，无 XSS 注入点；Markdown 渲染的链接/图片 URL 经协议白名单（拒绝 `javascript:`/`data:`/`vbscript:`）与引号过滤，杜绝属性逃逸注入；管理后台错误提示一律 `textContent` 渲染，服务端返回文本不进入 HTML
 - **登录策略**：会话始终持久化（默认"保持登录"，无 UI 开关）；"记住密码"默认勾选，可手动取消
@@ -46,23 +46,29 @@
 ## 架构与文件说明
 
 ```
-build.py            构建脚本：读取 template.html 生成 build/index.html 与 build/404.html，
-                    拷贝 static/、favicon.ico、CNAME、config.json，并同步根目录 404.html
+build_eo.py         EO 一体化构建脚本：将后端（认证/用户 API + GitHub 代理与下载中转）
+                    与前端资源（页面/JS/CSS/图标）打包为单文件 eo.js，生成后自动
+                    node --check 语法校验，并同步根目录 404.html
+eo.js               构建产物（gitignore，仅本地）：可直接粘贴/部署到 EdgeOne 边缘函数
+API.md              eo.js 全部 HTTP 接口文档
 template.html       唯一 HTML 模板（Python str.format，内联启动参数需双大括号转义）
 404.html            与 template.html 保持同步的模板副本（构建时自动覆盖）
 static/app.js       全部前端逻辑（普通 JS，无模板转义）
-static/style.css    全部样式
-config.json         代理配置 {"proxy": "https://..."}
-.github/workflows/  push 到 main 后自动运行 build.py 并部署 build/ 到 GitHub Pages
+static/style.css    全部样式（背景图走 EO 同源 /api/bg 中转）
+test_eo_smoke.js    eo.js 本地冒烟测试（Node 模拟 fetch 事件，验证路由/资源/安全）
+test_eo_server.js   eo.js 本地模拟服务器（Node HTTP 包装 fetch 处理器，端到端预览）
+build.py 等         早期 GitHub Pages 部署链路（build.py / config.json / CNAME /
+                    .github/workflows/），已被 EO 一体化方案取代，仅作历史保留
 ```
 
 ### 运行原理
 
-1. **存储**：文件存放在另一个 GitHub 仓库（由环境变量 `CLOUD` 指定，格式 `owner/repo`）。目录列表走 contents API，文件夹统计走 git trees API。
-2. **单页应用**：Pages 上任何子路径都由 404.html 兜底渲染，`app.js` 根据 `location.pathname` 解析当前目录并加载列表。
+1. **存储**：文件存放在另一个 GitHub 仓库（构建时由环境变量 `CLOUD` 指定，格式 `owner/repo`）。目录列表走 contents API，文件夹统计走 git trees API——全部经 EO 代理路径 `/api.github.com/...` 访问，key 由 EO 在服务端注入。
+2. **单页应用**：EO 对所有未命中子路径返回同一主页面（SPA 兜底），`app.js` 根据 `location.pathname` 解析当前目录并加载列表。
 3. **大文件分片**：超过分片大小的文件切成 `名称.part1、.part2 ...` 上传；列表展示时按后缀归并为一个虚拟文件，下载/预览时并发拉取分片合并为 Blob。
-4. **鉴权**：按服务端 API 约定，所有密码类参数（登录、改密、注销、管理员鉴权 `admin_pass`、添加/重置用户密码）均在浏览器本地用 `crypto.subtle` 计算 SHA-512 哈希后再经 HTTPS 传输，**明文密码不出浏览器**；服务端只接受 128 位十六进制哈希（传明文返回 400），且所有响应不再返回 `password_sha512`（用户列表中的密码字段脱敏为 `***`）。登录时以哈希调用 `/api/login` 换取 `key_sha512`，再经 `/api/redeem-key` 兑换真实 GitHub Token；Token 与本地计算的密码哈希、角色一起缓存于 localStorage（会话始终持久化，即默认"保持登录"，界面不再提供开关），后续操作直接使用缓存 Token，不再每次请求兑换；缓存 Token 失效（403）且本会话持有明文密码时自动重新登录刷新。"记住密码"默认勾选（可取消），保存明文用于下次自动填充。管理员（role=admin）显示"用户管理"入口，用户列表读取 cloud-user 仓库的 `user.json`（contents API 实时读取，整条链路不使用任何缓存：不走 ETag/304，请求带时间戳与 `Cache-Control: no-cache`，无令牌时回退 raw + 时间戳；无需再次输入管理员密码），按 admin 靠前排序，支持用户名搜索与列表折叠；添加用户（前端哈希后传输，服务端直接存储）、重置密码、调整角色、删除用户仍走鉴权 API，标题旁提供"刷新"按钮，且每次操作成功后自动刷新用户列表；会话恢复后执行管理操作需重新输入一次管理员密码验证身份。所有用户可通过"我的账户"自助修改密码（新密码要求 >8 位且含大小写字母与数字，客户端先行校验，因服务端只收到哈希无法校验强度）与注销账户（密码确认后永久删除并清除本地凭据）。
-5. **代理**：`config.json` 中的 `proxy` 会将 GitHub 请求改写为 `proxy/<去协议的URL>`，用于加速或绕限；ETag 缓存键基于原始 URL。
+4. **鉴权**：所有密码类参数（登录、改密、注销、管理员鉴权 `admin_pass`、添加/重置用户密码）均在浏览器本地用 `crypto.subtle` 计算 SHA-512 哈希后再经 HTTPS 传输，**明文密码不出浏览器**；服务端只接受 128 位十六进制哈希（传明文返回 400），且所有响应不返回密码哈希（用户列表中的密码字段脱敏为 `***`）。登录只调 `/api/login` 校验并保存 `{用户名, 哈希, 角色}` 于 localStorage（会话始终持久化，即默认"保持登录"）；**前端不再接触任何 GitHub key**——上传/编辑/删除等写操作在请求头携带 `X-Auth-User` / `X-Auth-Pass`（即缓存的密码哈希），EO 逐请求实时校验后代为写 GitHub。"记住密码"默认勾选（可取消），保存明文用于下次自动填充。管理员（role=admin）显示"用户管理"入口，用户列表走 `/api/users`（管理员凭据即缓存哈希，无需重复输入密码，服务端脱敏返回），按 admin 靠前排序，支持搜索与折叠；添加用户（前端哈希后传输）、重置密码、调整角色、删除用户走鉴权 API，每次操作成功后自动刷新列表。所有用户可通过"我的账户"自助修改密码（新密码要求 >8 位且含大小写字母与数字，客户端先行校验）与注销账户（密码确认后永久删除并清除本地凭据）。
+5. **代理与下载中转**：`ghUrl()` 把一切 GitHub URL 改写为同源路径（`/api.github.com/...`、`/raw.githubusercontent.com/...`、`/github.com/<owner>/<repo>/archive/...`），EO 仅放行白名单存储仓库，读操作公开、写操作鉴权；状态码、ETag、Content-Range 原样透传（304 条件请求、206 分段流式预览可用），请求/响应体流式转发不落地；用户数据仓库被白名单永久拒绝，任何后端数据（key、密码哈希）都不会出现在用户端。
+6. **安全模型**：页面带 CSP/`nosniff`/`X-Frame-Options` 等安全头；`/api/bg` 中转唯一外部资源（背景图）且仅放行 `image/*`；用户文件鉴权读有 60 秒实例级缓存（分片上传高频鉴权不重复回源），写后立即刷新。
 
 ### 关键算法
 
@@ -100,16 +106,27 @@ GitHub contents API 每次写操作产生一个 commit，并行提交在同一 g
 - 上传：该分片独立重试最多 10 次（`1.5s × 次数 + 0~1s 随机抖动`），不消耗常规重试次数（另有 3 次），其余分片不受影响
 - 删除：单线程顺序执行，单个文件遇冲突独立重试最多 8 次（`1.2s × 次数 + 抖动`）；404 视为已删除幂等跳过
 
-### 本地构建
+### 构建与部署（EO）
+
+GitHub key 通过以下任一方式提供（**本仓库不保存任何真实 key**，`eo.js` 与 `.eo-key` 均已 gitignore）：
+
+1. 环境变量：`GITHUB_KEY=ghp_xxx`
+2. 项目根目录创建 `.eo-key` 文件，内容为 key 单行文本
 
 ```bash
-python build.py            # 生成 build/
-# 指定存储仓库与分支
-CLOUD=owner/repo BRANCH=main python build.py
+python build_eo.py                 # 生成 eo.js（含 key 的部署版，仅存在本地）并自动语法校验
+# 覆盖默认配置（存储仓库 / 分支 / 用户数据仓库）
+CLOUD=owner/repo BRANCH=main USER_REPO=owner/user-repo python build_eo.py
+node test_eo_smoke.js              # 可选：本地冒烟测试（26 项断言，不触网）
+node test_eo_server.js 3210        # 可选：本地 EO 模拟服务器，完整端到端预览
 ```
 
-构建后 `build/` 即完整静态站点，可用任意静态服务器预览（如 `python -m http.server -d build`）。
+将本地生成的 `eo.js` 全部内容粘贴到腾讯云 EdgeOne 边缘函数（或按其函数部署方式上传），绑定域名后即完成部署——页面、API、GitHub 代理与下载中转全部同源可用。接口详见 [API.md](API.md)。
 
-### 部署
+> 注意：`eo.js` 内含 GitHub key，属于服务端机密，请勿提交或泄露；key 只会随函数在服务端执行，浏览器端获取的页面与静态资源中不含任何后端凭据。未配置 key 时构建产物为脱敏版（占位符 key），仅可用于查看与路由测试。
 
-推送到 `main` 分支后，GitHub Actions 自动执行 `python build.py`（读取 `secrets.CLOUD` / `secrets.BRANCH`）并将 `build/` 发布到 GitHub Pages。
+### 本地构建（旧 GitHub Pages 链路，已弃用）
+
+```bash
+python build.py            # 生成 build/ 静态站点（历史保留）
+```

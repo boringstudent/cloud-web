@@ -6,7 +6,7 @@ html, body {
 }
 body {
     /* loliapi 按 UA 返回 PC/移动端适配图；center/cover no-repeat 防止小图平铺拼接 */
-    background: url('https://www.loliapi.com/acg') center / cover no-repeat fixed;
+    background: url('/api/bg') center / cover no-repeat fixed;
     font-family: Arial, sans-serif;
 }
 .container {
@@ -695,6 +695,23 @@ a:hover {
     border: none;
     border-top: 1px solid #ddd;
     margin: 12px 0;
+}
+.markdown-view table {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 14px;
+    display: block;
+    overflow-x: auto;
+}
+.markdown-view th,
+.markdown-view td {
+    border: 1px solid #ddd;
+    padding: 6px 12px;
+    text-align: left;
+    white-space: nowrap;
+}
+.markdown-view th {
+    background: #f6f8fa;
 }
 .markdown-view a {
     color: #2c82c9;

@@ -2,66 +2,24 @@ var APP = window.__APP__ || {};
 var REPO_OWNER = APP.repoOwner || '';
 var REPO_NAME = APP.repoName || '';
 var DEFAULT_BRANCH = APP.defaultBranch || 'main';
-var PROXY_BASE = '';
+// 站点整体运行于 EO 边缘函数：页面、认证 API、GitHub 读写与下载中转全部同源，
+// GitHub key 由 EO 在服务端注入，客户端不持有任何后端凭据
+var API_BASE = '';
 
+// 所有 GitHub 请求统一改写为 EO 同源代理路径：/api.github.com/... 等，
+// 下载中转（raw / archive zip）同样经 EO
 function ghUrl(url) {
-    if (PROXY_BASE) {
-        return PROXY_BASE + '/' + url.replace(/^https?:\/\//, '');
-    }
-    return url;
+    return '/' + url.replace(/^https?:\/\//, '');
 }
 
-var ghApiKey = null;
-var ghApiKeyFetching = false;
-
-function applyGhAuth(xhr) {
-    if (ghApiKey) {
-        xhr.setRequestHeader('Authorization', 'Bearer ' + ghApiKey);
+// 写操作（上传/编辑/删除）附加登录凭据头，EO 校验通过后才代理写 GitHub；
+// 只读 GET 请求不带凭据
+function applyEoAuth(xhr) {
+    var a = getSavedAuth();
+    if (a && a.u && a.h) {
+        xhr.setRequestHeader('X-Auth-User', a.u);
+        xhr.setRequestHeader('X-Auth-Pass', a.h);
     }
-}
-
-function fetchGhKey(done, force) {
-    var finish = function() {
-        ghApiKeyFetching = false;
-        if (done) done();
-    };
-    if (ghApiKeyFetching) { finish(); return; }
-    if (ghApiKey && !force) { finish(); return; }
-    var saved = getSavedAuth();
-    if (!saved) { finish(); return; }
-    if (saved.key && !force) {
-        ghApiKey = saved.key;
-        finish();
-        return;
-    }
-    // Re-login requires the plaintext password, only available in this tab session
-    if (!sessionPlain) { finish(); return; }
-    if (force) {
-        ghApiKey = null;
-    }
-    ghApiKeyFetching = true;
-    var persisted = !sessionAuth;
-    loginAndGetKey(saved.u, sessionPlain, persisted, function() {
-        finish();
-    });
-}
-
-function loadConfig(done) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', '/config.json', true);
-    xhr.onload = function() {
-        if (xhr.status === 200) {
-            try {
-                var cfg = JSON.parse(xhr.responseText);
-                if (cfg && cfg.proxy) {
-                    PROXY_BASE = String(cfg.proxy).replace(/\/+$/, '');
-                }
-            } catch (e) {}
-        }
-        done();
-    };
-    xhr.onerror = function() { done(); };
-    xhr.send();
 }
 
 // ---- HTTP cache (ETag conditional requests, 304 responses don't hit rate limits) ----
@@ -75,7 +33,7 @@ function bypassHttpCache() {
     noCacheUntil = Date.now() + 15000;
 }
 
-function cachedGet(url, auth, cb) {
+function cachedGet(url, cb) {
     var bypass = Date.now() < noCacheUntil;
     var reqUrl = bypass
         ? url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now()
@@ -83,7 +41,6 @@ function cachedGet(url, auth, cb) {
     var cached = httpCache[url];
     var xhr = new XMLHttpRequest();
     xhr.open('GET', ghUrl(reqUrl), true);
-    if (auth) applyGhAuth(xhr);
     if (!bypass && cached && cached.etag) {
         xhr.setRequestHeader('If-None-Match', cached.etag);
     }
@@ -183,10 +140,10 @@ var AUTH_STORAGE_KEY = 'cloud_web_auth';
 var REMEMBER_STORAGE_KEY = 'cloud_web_remember';
 var sessionAuth = null;
 
-function saveAuth(username, hash, role, key) {
+function saveAuth(username, hash, role) {
     try {
         localStorage.setItem(AUTH_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({
-            v: 2, u: username, h: hash, role: role || 'user', key: key || null
+            v: 2, u: username, h: hash, role: role || 'user'
         })))));
     } catch (e) {}
 }
@@ -197,7 +154,7 @@ function getSavedAuth() {
         var data = localStorage.getItem(AUTH_STORAGE_KEY);
         if (!data) return null;
         var obj = JSON.parse(decodeURIComponent(escape(atob(data))));
-        if (obj && obj.v === 2 && obj.u && (obj.h || obj.key)) return obj;
+        if (obj && obj.v === 2 && obj.u && obj.h) return obj;
         // legacy plaintext format: force re-login once
         clearAuth();
         return null;
@@ -237,8 +194,7 @@ function clearRemember() {
     } catch (e) {}
 }
 
-// ---- auth API (https://api.boring-student.cn) ----
-var API_BASE = 'https://api.boring-student.cn';
+// ---- auth API（与站点同源的 EO 边缘函数） ----
 
 // Known API error messages shown in Chinese
 var API_ERROR_MAP = {
@@ -328,58 +284,30 @@ function apiSendJson(method, url, body, cb) {
     xhr.send(body ? JSON.stringify(body) : null);
 }
 
-// Full login flow: /api/login (password SHA-512 hashed client-side) ->
-// /api/redeem-key -> real key. The API only accepts hashed passwords and no
-// longer returns password_sha512; the locally computed hash and the real key
-// are cached so the key is not requested again on subsequent visits.
-// persist=true stores {u, hash, role, key} in localStorage ("保持登录");
-// otherwise the auth is kept for this tab session only.
-var sessionPlain = null;
-
-function loginAndGetKey(username, password, persist, cb) {
+// 登录流程：密码在浏览器本地计算 SHA-512 哈希后调用 /api/login（与站点同源），
+// 服务端实时校验。persist=true 将 {u, hash, role} 存入 localStorage（"保持登录"），
+// 否则仅保留在本标签页会话内。登录后不再获取任何 GitHub key——后续写操作
+// 经 X-Auth-User / X-Auth-Pass 请求头由 EO 逐请求实时校验并代为写 GitHub。
+function loginUser(username, password, persist, cb) {
     sha512Hex(password, function(err, pwHash) {
         if (err || !pwHash) { cb(err || '密码加密失败'); return; }
         apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(pwHash), function(err2, data) {
-            if (err2 || !data || !data.success || !data.key_sha512) {
+            if (err2 || !data || !data.success) {
                 cb(err2 || '用户名或密码错误');
                 return;
             }
-            apiGetJson(API_BASE + '/api/redeem-key?key_sha512=' + encodeURIComponent(data.key_sha512), function(err3, data2) {
-                if (err3 || !data2 || !data2.key) { cb(err3 || '兑换密钥失败'); return; }
-                ghApiKey = data2.key;
-                sessionPlain = password;
-                var role = data.role || 'user';
-                var auth = { v: 2, u: username, h: pwHash, role: role, key: ghApiKey };
-                if (persist) {
-                    saveAuth(username, pwHash, role, ghApiKey);
-                } else {
-                    sessionAuth = auth;
-                }
-                updateAuthBtn();
-                cb(null, ghApiKey);
-            });
+            var role = data.role || 'user';
+            if (persist) {
+                saveAuth(username, pwHash, role);
+            } else {
+                sessionAuth = { v: 2, u: username, h: pwHash, role: role };
+            }
+            updateAuthBtn();
+            cb(null);
         });
     });
 }
 
-// Resolve a usable GitHub key without re-requesting it every time:
-// memory -> key cached in storage -> re-login with session plaintext.
-function ensureGhKey(cb) {
-    if (ghApiKey) { cb(ghApiKey); return; }
-    var saved = getSavedAuth();
-    if (saved && saved.key) {
-        ghApiKey = saved.key;
-        cb(ghApiKey);
-        return;
-    }
-    if (saved && sessionPlain) {
-        loginAndGetKey(saved.u, sessionPlain, !sessionAuth, function(err, key) {
-            cb(err ? null : key);
-        });
-        return;
-    }
-    cb(null);
-}
 
 function fillAuthInputs(usernameId, passwordId, checkboxId) {
     var remembered = getRemember();
@@ -480,7 +408,7 @@ function doLogin() {
     setMsg('loginMessage', '正在登录...', 'success');
 
     // Sessions are always persisted ("保持登录" is the default, no UI toggle)
-    loginAndGetKey(username, password, true, function(err) {
+    loginUser(username, password, true, function(err) {
         if (err) {
             setMsg('loginMessage', '登录失败: ' + err, 'error');
             loginBtn.disabled = false;
@@ -500,8 +428,6 @@ function doLogin() {
 }
 
 function logout() {
-    ghApiKey = null;
-    sessionPlain = null;
     clearAuth();
     updateAuthBtn();
     document.getElementById('deleteUsername').value = '';
@@ -583,11 +509,10 @@ function changeOwnPassword() {
                 }
                 // refresh stored credentials with the locally computed new password hash
                 if (sessionAuth) {
-                    sessionAuth = { v: 2, u: auth.u, h: newHash, role: auth.role, key: auth.key };
+                    sessionAuth = { v: 2, u: auth.u, h: newHash, role: auth.role };
                 } else {
-                    saveAuth(auth.u, newHash, auth.role, auth.key);
+                    saveAuth(auth.u, newHash, auth.role);
                 }
-                sessionPlain = newPwd;
                 if (getRemember()) {
                     saveRemember(auth.u, newPwd);
                 }
@@ -633,8 +558,6 @@ function deleteOwnAccount() {
                 setMsg('accountMessage', '注销失败: ' + err2, 'error');
                 return;
             }
-            ghApiKey = null;
-            sessionPlain = null;
             clearAuth();
             clearRemember();
             updateAuthBtn();
@@ -646,32 +569,12 @@ function deleteOwnAccount() {
 }
 
 // ---- Admin user management (role=admin only) ----
-// Admin endpoints validate the admin's SHA-512 password hash. When the session
-// was restored from local storage the plaintext is no longer in memory, so it
-// is re-asked once and verified via /api/login (hashed client-side).
+// 本地缓存的密码哈希即管理员凭据，直接作为 admin_pass 使用；
+// EO 服务端对每个管理请求实时校验，无需重复输入密码
 function withAdminCreds(cb) {
     var a = getSavedAuth();
     if (!a || a.role !== 'admin') { cb(null); return; }
-    var emitHashed = function(pwd) {
-        sha512Hex(pwd, function(err, h) {
-            if (err || !h) { cb(null); return; }
-            cb({ admin_user: a.u, admin_pass: h });
-        });
-    };
-    if (sessionPlain) {
-        emitHashed(sessionPlain);
-        return;
-    }
-    var pwd = prompt('请输入管理员 ' + a.u + ' 的密码以验证身份:');
-    if (!pwd) { cb(null); return; }
-    sha512Hex(pwd, function(err, h) {
-        if (err || !h) { cb(null); return; }
-        apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(a.u) + '&password=' + encodeURIComponent(h), function(err2, data) {
-            if (err2 || !data || !data.success) { cb(null); return; }
-            sessionPlain = pwd;
-            cb({ admin_user: a.u, admin_pass: h });
-        });
-    });
+    cb({ admin_user: a.u, admin_pass: a.h });
 }
 
 function openAdminModal() {
@@ -686,11 +589,8 @@ function closeAdminModal() {
     document.getElementById('adminModal').classList.remove('show');
 }
 
-// 用户列表读取 cloud-user 仓库的 user.json，查看列表无需管理员凭据；写操作仍走鉴权 API。
-// 整条链路不使用任何缓存：不走 ETag/304，请求附加时间戳并带 Cache-Control: no-cache，
-// 每次拿到的都是仓库实时内容；无令牌时回退 raw + 时间戳。
-var ADMIN_USER_REPO = 'boringstudent/cloud-user';
-var ADMIN_USER_BRANCH = 'main';
+// 用户列表走 /api/users（管理员鉴权），服务端返回脱敏数据（密码字段为 ***），
+// 用户数据文件不再经过客户端读取；附加时间戳防止任何中间缓存。
 var adminUsersData = null;
 
 function loadAdminUsers() {
@@ -717,32 +617,15 @@ function loadAdminUsers() {
         adminUsersData = data;
         renderAdminUserList();
     };
-    ensureGhKey(function(key) {
-        if (!key) { fetchAdminUsersRaw(done); return; }
-        var url = ghUrl('https://api.github.com/repos/' + ADMIN_USER_REPO + '/contents/user.json?ref=' + ADMIN_USER_BRANCH + '&_=' + Date.now());
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        applyGhAuth(xhr);
-        xhr.setRequestHeader('Cache-Control', 'no-cache');
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var obj = JSON.parse(xhr.responseText);
-                    var b64 = String(obj.content || '').replace(/\s+/g, '');
-                    done(null, JSON.parse(decodeURIComponent(escape(atob(b64)))));
-                    return;
-                } catch (e) {}
-            }
-            fetchAdminUsersRaw(done);
-        };
-        xhr.onerror = function() { fetchAdminUsersRaw(done); };
-        xhr.send();
+    withAdminCreds(function(creds) {
+        if (!creds) { done('需要管理员权限', null); return; }
+        apiGetJson(API_BASE + '/api/users?admin_user=' + encodeURIComponent(creds.admin_user)
+            + '&admin_pass=' + encodeURIComponent(creds.admin_pass) + '&_=' + Date.now(),
+            function(err, data) {
+                if (err || !data || !data.users) { done(err || '响应异常', null); return; }
+                done(null, data.users);
+            });
     });
-}
-
-function fetchAdminUsersRaw(done) {
-    var url = ghUrl('https://raw.githubusercontent.com/' + ADMIN_USER_REPO + '/' + ADMIN_USER_BRANCH + '/user.json?t=' + Date.now());
-    apiGetJson(url, done);
 }
 
 function toggleAdminUserList() {
@@ -964,10 +847,10 @@ document.addEventListener('visibilitychange', function() {
     }
 });
 
-// ---- service status: GitHub proxy + auth API, refreshed every 10 min ----
+// ---- service status: EO 边缘函数单点检测（页面/API/代理同体），每 10 min 刷新 ----
 // RTT 用 HEAD 轻量请求测量：不含响应体传输与服务端地理查询耗时，更接近真实网络延迟
 var SVC_CHECK_INTERVAL = 10 * 60 * 1000;
-var svcStatus = { proxy: null, api: null };
+var svcStatus = { api: null };
 var svcChecking = false;
 var svcCheckGen = 0;    // 代数令牌：被取代的旧检测回调一律忽略
 var svcCheckXhrs = [];  // 当前轮次在途请求，供强制重检时中止
@@ -1035,19 +918,16 @@ function renderSvcStatus() {
     var el = document.getElementById('svcStatus');
     var text = document.getElementById('svcStatusText');
     var tip = document.getElementById('svcStatusTip');
-    var p = svcStatus.proxy;
     var a = svcStatus.api;
-    if (!p && !a) {
+    if (!a) {
         el.className = 'svc-status';
         text.textContent = '服务检测中…';
         return;
     }
-    var allOk = p && p.ok && a && a.ok;
-    el.className = 'svc-status ' + (allOk ? 'ok' : 'fail');
-    text.textContent = allOk ? '服务正常' : '服务异常';
+    el.className = 'svc-status ' + (a.ok ? 'ok' : 'fail');
+    text.textContent = a.ok ? '服务正常' : '服务异常';
     tip.textContent = '';
-    addSvcTipLine(tip, 'GitHub 代理', PROXY_BASE || 'https://cloud-ecr.pages.dev', p);
-    addSvcTipLine(tip, '登录 API', API_BASE, a);
+    addSvcTipLine(tip, 'EO 边缘函数', location.origin, a);
     var timeDiv = document.createElement('div');
     var timeLabel = document.createElement('span');
     timeLabel.className = 'svc-name';
@@ -1096,30 +976,15 @@ function checkSvcStatus(force) {
     svcChecking = true;
     var gen = svcCheckGen;
     // 立即重置为“检测中”，点击重新检测时才有即时反馈（否则角标保持旧状态看似没反应）
-    svcStatus.proxy = null;
     svcStatus.api = null;
     renderSvcStatus();
-    var proxyBase = PROXY_BASE || 'https://cloud-ecr.pages.dev';
-    var pending = 2;
-    var finish = function() {
+    svcCheckXhrs = checkOneService(API_BASE + '/api/my-ip', function(res) {
         if (gen !== svcCheckGen) return;
-        pending--;
-        if (pending === 0) {
-            svcChecking = false;
-            svcCheckXhrs = [];
-            renderSvcStatus();
-        }
-    };
-    svcCheckXhrs = svcCheckXhrs.concat(checkOneService(proxyBase + '/ip', function(res) {
-        if (gen !== svcCheckGen) return;
-        svcStatus.proxy = res;
-        finish();
-    }));
-    svcCheckXhrs = svcCheckXhrs.concat(checkOneService(API_BASE + '/api/my-ip', function(res) {
-        if (gen !== svcCheckGen) return;
+        svcChecking = false;
+        svcCheckXhrs = [];
         svcStatus.api = res;
-        finish();
-    }));
+        renderSvcStatus();
+    });
 }
 
 setInterval(function() {
@@ -1172,7 +1037,7 @@ function fetchFileTree(onDone, onFail) {
         return;
     }
     var commitUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/commits/' + DEFAULT_BRANCH;
-    cachedGet(commitUrl, true, function(status, body) {
+    cachedGet(commitUrl, function(status, body) {
         if (status !== 200 && status !== 304) {
             if (onFail) onFail();
             return;
@@ -1180,7 +1045,7 @@ function fetchFileTree(onDone, onFail) {
         try {
             var commitData = JSON.parse(body);
             var treeUrl = 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/trees/' + commitData.commit.tree.sha + '?recursive=1';
-            cachedGet(treeUrl, true, function(status2, body2) {
+            cachedGet(treeUrl, function(status2, body2) {
                 if (status2 !== 200 && status2 !== 304) {
                     if (onFail) onFail();
                     return;
@@ -1670,6 +1535,7 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
     var lastPaint = 0;
     var tmpUrl = null;
     var failed = false;
+    var finished = false;   // 全程完成后置位，迟到的部分数据探针不得再换源
 
     var isAbort = function(err) { return err && err.name === 'AbortError'; };
 
@@ -1693,11 +1559,18 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
     };
 
     var paint = function() {
+        if (finished || failed) return;
         // 先用隐藏 Image 验证部分数据可解码再换到可见 img：
         // 基线 JPEG / WebP 等格式收完前无法解码，直接换源会闪破图图标
         var u = URL.createObjectURL(new Blob(prefixChunks()));
         var probe = new Image();
         probe.onload = function() {
+            // 竞态防护：探针解码是异步的，finishAll 完成后迟到的部分数据
+            // 若再换源会把完整图片覆盖回不完整数据（加载后显示不全）
+            if (finished || failed) {
+                URL.revokeObjectURL(u);
+                return;
+            }
             if (tmpUrl) URL.revokeObjectURL(tmpUrl);
             tmpUrl = u;
             img.src = u;
@@ -1709,12 +1582,16 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
     };
 
     var finishAll = function() {
+        finished = true;
         var all = [];
         segments.forEach(function(s) {
             for (var j = 0; j < s.chunks.length; j++) all.push(s.chunks[j]);
         });
         var u = URL.createObjectURL(new Blob(all));
-        if (tmpUrl) URL.revokeObjectURL(tmpUrl);
+        if (tmpUrl) {
+            URL.revokeObjectURL(tmpUrl);
+            tmpUrl = null;
+        }
         setPreviewBlobUrl(u);
         if (previewAbort === controller) previewAbort = null;
         img.src = u;
@@ -1976,6 +1853,19 @@ function mdInline(text) {
     return s;
 }
 
+// GFM 表格行拆分：去掉首尾竖线后按 | 切分并 trim
+function splitMdRow(line) {
+    var t = line.trim();
+    if (t.charAt(0) === '|') t = t.slice(1);
+    if (t.charAt(t.length - 1) === '|') t = t.slice(0, -1);
+    return t.split('|').map(function(c) { return c.trim(); });
+}
+
+// 分隔行：| --- | :---: | ---: |（可省略首尾竖线），必须含 -
+function isMdTableDelim(line) {
+    return /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.indexOf('-') !== -1;
+}
+
 function markdownToHtml(src) {
     var lines = src.split('\n');
     var html = '';
@@ -1983,6 +1873,7 @@ function markdownToHtml(src) {
     var codeBuf = [];
     var listType = null;
     var para = [];
+    var skip = 0;   // 表格已消费的后续行数
 
     function flushPara() {
         if (para.length) {
@@ -2001,7 +1892,11 @@ function markdownToHtml(src) {
         flushList();
     }
 
-    lines.forEach(function(line) {
+    lines.forEach(function(line, idx) {
+        if (skip > 0) {
+            skip--;
+            return;
+        }
         if (/^\s*```/.test(line)) {
             if (inCode) {
                 html += '<pre class="code-view">' + escapeHtml(codeBuf.join('\n')) + '</pre>';
@@ -2018,6 +1913,40 @@ function markdownToHtml(src) {
             return;
         }
         var m;
+        // GFM 表格：表头行以 | 开头，下一行是分隔行
+        if (/^\s*\|/.test(line) && idx + 1 < lines.length && isMdTableDelim(lines[idx + 1])) {
+            flushAll();
+            var header = splitMdRow(line);
+            var aligns = splitMdRow(lines[idx + 1]).map(function(c) {
+                var l = c.charAt(0) === ':';
+                var r = c.charAt(c.length - 1) === ':';
+                return l && r ? 'center' : (r ? 'right' : (l ? 'left' : ''));
+            });
+            var rows = [];
+            var j = idx + 2;
+            while (j < lines.length && /^\s*\|/.test(lines[j])) {
+                rows.push(splitMdRow(lines[j]));
+                j++;
+            }
+            skip = j - idx - 1;
+            var alignAttr = function(ci) {
+                return aligns[ci] ? ' style="text-align: ' + aligns[ci] + ';"' : '';
+            };
+            html += '<table><thead><tr>';
+            header.forEach(function(cell, ci) {
+                html += '<th' + alignAttr(ci) + '>' + mdInline(cell) + '</th>';
+            });
+            html += '</tr></thead><tbody>';
+            rows.forEach(function(row) {
+                html += '<tr>';
+                for (var ci = 0; ci < header.length; ci++) {
+                    html += '<td' + alignAttr(ci) + '>' + mdInline(row[ci] || '') + '</td>';
+                }
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            return;
+        }
         if ((m = line.match(/^(#{1,6})\s+(.*)/))) {
             flushAll();
             var lvl = m[1].length;
@@ -2531,13 +2460,7 @@ function savePreviewFile() {
     };
 
     if (getSavedAuth()) {
-        ensureGhKey(function(key) {
-            if (!key) {
-                fail('获取授权失败，请重新登录');
-                return;
-            }
-            updateFileOnGitHub(key, previewFileInfo.path, newContent);
-        });
+        updateFileOnGitHub(previewFileInfo.path, newContent);
         return;
     }
 
@@ -2547,20 +2470,19 @@ function savePreviewFile() {
         fail('请输入用户名和密码');
         return;
     }
-    loginAndGetKey(username, password, false, function(err, key) {
+    loginUser(username, password, false, function(err) {
         if (err) {
             fail('获取授权失败: ' + err);
             return;
         }
-        updateFileOnGitHub(key, previewFileInfo.path, newContent);
+        updateFileOnGitHub(previewFileInfo.path, newContent);
     });
 }
 
-function updateFileOnGitHub(key, filePath, newContent) {
+function updateFileOnGitHub(filePath, newContent) {
     var shaUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
     var shaXhr = new XMLHttpRequest();
     shaXhr.open('GET', shaUrl, true);
-    shaXhr.setRequestHeader('Authorization', 'Bearer ' + key);
     shaXhr.onload = function() {
         if (shaXhr.status === 200) {
             try {
@@ -2577,7 +2499,7 @@ function updateFileOnGitHub(key, filePath, newContent) {
                 var updateXhr = new XMLHttpRequest();
                 var updateUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
                 updateXhr.open('PUT', updateUrl, true);
-                updateXhr.setRequestHeader('Authorization', 'Bearer ' + key);
+                applyEoAuth(updateXhr);
                 updateXhr.setRequestHeader('Content-Type', 'application/json');
 
                 updateXhr.onload = function() {
@@ -2627,13 +2549,13 @@ function confirmDelete() {
     deleteBtn.disabled = true;
     setMsg('deleteMessage', '正在获取授权...', 'success');
 
-    var runDelete = function(key) {
+    var runDelete = function() {
         if (deleteFileType === 'dir') {
-            deleteFolder(key, deleteFilePath);
+            deleteFolder(deleteFilePath);
         } else if (deleteFileType === 'chunked' || deleteFileType === 'batch') {
-            deleteFolderFiles(key, deleteParts, 0);
+            deleteFolderFiles(deleteParts);
         } else {
-            deleteFile(key, deleteFilePath, deleteFileSha);
+            deleteFile(deleteFilePath, deleteFileSha);
         }
     };
 
@@ -2643,13 +2565,7 @@ function confirmDelete() {
     };
 
     if (getSavedAuth()) {
-        ensureGhKey(function(key) {
-            if (!key) {
-                fail('获取授权失败，请重新登录');
-                return;
-            }
-            runDelete(key);
-        });
+        runDelete();
         return;
     }
 
@@ -2659,20 +2575,20 @@ function confirmDelete() {
         fail('请输入用户名和密码');
         return;
     }
-    loginAndGetKey(username, password, true, function(err, key) {
+    loginUser(username, password, true, function(err) {
         if (err) {
             fail('获取授权失败: ' + err);
             return;
         }
-        runDelete(key);
+        runDelete();
     });
 }
 
 // Shared contents-API DELETE helper. cb(status, responseText); status 0 = network error.
-function ghDeleteFile(key, filePath, sha, cb) {
+function ghDeleteFile(filePath, sha, cb) {
     var xhr = new XMLHttpRequest();
     xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath)), true);
-    xhr.setRequestHeader('Authorization', 'Bearer ' + key);
+    applyEoAuth(xhr);
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.onload = function() { cb(xhr.status, xhr.responseText); };
     xhr.onerror = function() { cb(0, ''); };
@@ -2682,10 +2598,10 @@ function ghDeleteFile(key, filePath, sha, cb) {
     }));
 }
 
-function deleteFile(key, filePath, sha) {
+function deleteFile(filePath, sha) {
     setMsg('deleteMessage', '正在删除...', 'success');
 
-    ghDeleteFile(key, filePath, sha, function(status, responseText) {
+    ghDeleteFile(filePath, sha, function(status, responseText) {
         if (status === 0) {
             setMsg('deleteMessage', '网络错误，删除失败', 'error');
             document.getElementById('deleteBtn').disabled = false;
@@ -2716,7 +2632,7 @@ function deleteFolderError() {
     document.getElementById('deleteBtn').disabled = false;
 }
 
-function deleteFolder(key, folderPath) {
+function deleteFolder(folderPath) {
     setMsg('deleteMessage', '正在获取文件夹内容...', 'success');
 
     fetchFileTree(function() {
@@ -2732,13 +2648,13 @@ function deleteFolder(key, folderPath) {
             document.getElementById('deleteBtn').disabled = false;
             return;
         }
-        deleteFolderFiles(key, files, 0);
+        deleteFolderFiles(files);
     }, deleteFolderError);
 }
 
 // Sequential delete (single-threaded) to avoid git ref conflicts;
 // per-file conflict retry still applies when the ref moves unexpectedly.
-function deleteFolderFiles(key, files) {
+function deleteFolderFiles(files) {
     if (!files.length) {
         deleteAllDone();
         return;
@@ -2771,7 +2687,7 @@ function deleteFolderFiles(key, files) {
             state.active++;
             (function(file) {
                 var attempt = function() {
-                    ghDeleteFile(key, file.path, file.sha, function(status, responseText) {
+                    ghDeleteFile(file.path, file.sha, function(status, responseText) {
                         if (status === 0) {
                             state.active--;
                             state.failed = true;
@@ -2934,7 +2850,7 @@ function hideRefreshIndicator() {
     if (el) el.classList.remove('show');
 }
 
-function loadFileList(retried) {
+function loadFileList() {
     if (listLoading) return;
     listLoading = true;
 
@@ -2948,7 +2864,7 @@ function loadFileList(retried) {
         showRefreshIndicator();
     }
 
-    cachedGet(apiUrl, true, function(status, body, notModified) {
+    cachedGet(apiUrl, function(status, body, notModified) {
         listLoading = false;
         hideRefreshIndicator();
 
@@ -2975,11 +2891,6 @@ function loadFileList(retried) {
                 showListError('解析文件列表失败');
             }
         } else if (status === 403) {
-            if (!retried && getSavedAuth()) {
-                // cached key may be stale/rate-limited: force a fresh login
-                fetchGhKey(function() { loadFileList(true); }, true);
-                return;
-            }
             showListError('API请求受限，请稍后重试');
         } else if (status === 404) {
             showListError('目录不存在', true);
@@ -3623,17 +3534,8 @@ function uploadFile() {
     }
 
     uploadBtn.disabled = true;
-    setMsg('uploadMessage', '正在获取授权...', 'success');
-
-    ensureGhKey(function(key) {
-        if (!key) {
-            setMsg('uploadMessage', '获取授权失败，请重新登录', 'error');
-            uploadBtn.disabled = false;
-            return;
-        }
-        chunkSizeLevel = 0;
-        startUpload(key);
-    });
+    chunkSizeLevel = 0;
+    startUpload();
 }
 
 // ---- Parallel chunked upload with per-chunk retry and live speed ----
@@ -3642,7 +3544,7 @@ var UPLOAD_LIMIT_MIN = 1;
 var UPLOAD_LIMIT_MAX = 6;
 var uploadState = null;
 
-function startUpload(key, doneBases) {
+function startUpload(doneBases) {
     uploadTasks = buildUploadTasks().filter(function(t) {
         return !(doneBases && doneBases[t.base]);
     });
@@ -3661,7 +3563,6 @@ function startUpload(key, doneBases) {
         adaptive = true;
     }
     uploadState = {
-        key: key,
         nextIndex: 0,
         active: 0,
         doneCount: 0,
@@ -3780,15 +3681,14 @@ function checkUploadSettled() {
         return;
     }
     if (st.downgrading) {
-        var key = st.key;
         var doneBases = st.doneBases;
         var staleParts = uploadedParts.filter(function(p) { return !doneBases[p.base]; });
         setMsg('uploadMessage', '分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），正在重新上传...', 'success');
         stopUploadTimer();
         uploadState = null;
-        deletePartsQuietly(key, staleParts, 0, function() {
+        deletePartsQuietly(staleParts, 0, function() {
             fileTreeCache = null;
-            startUpload(key, doneBases);
+            startUpload(doneBases);
         });
         return;
     }
@@ -3816,7 +3716,7 @@ function runUploadTask(task, done) {
             var currentPath = getCurrentPath();
             var filePath = currentPath ? currentPath + '/' + task.relativePath : task.relativePath;
 
-            putFileToGitHub(st.key, filePath, base64Content, null,
+            putFileToGitHub(filePath, base64Content, null,
                 function(newSha) {
                     if (PART_SUFFIX.test(task.relativePath) && newSha) {
                         uploadedParts.push({ path: filePath, sha: newSha, base: task.base });
@@ -3935,7 +3835,7 @@ function failUpload(finalMsg) {
     var staleParts = uploadedParts.filter(function(p) { return !st.doneBases[p.base]; });
     if (staleParts.length > 0) {
         uploadedParts = staleParts;
-        cleanupUploadedParts(st.key, finalMsg);
+        cleanupUploadedParts(finalMsg);
     } else {
         setMsg('uploadMessage', finalMsg, 'error');
         document.getElementById('uploadBtn').disabled = false;
@@ -4036,7 +3936,7 @@ function updateUploadProgressText(percent, speedText, etaText) {
     document.getElementById('progressText').textContent = text;
 }
 
-function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress, retries) {
+function putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries) {
     if (retries === undefined) retries = 2;
 
     var data = {
@@ -4048,7 +3948,7 @@ function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, 
     var uploadXhr = new XMLHttpRequest();
     var uploadUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
     uploadXhr.open('PUT', uploadUrl, true);
-    uploadXhr.setRequestHeader('Authorization', 'Bearer ' + key);
+    applyEoAuth(uploadXhr);
     uploadXhr.setRequestHeader('Content-Type', 'application/json');
 
     uploadXhr.upload.onprogress = function(e) {
@@ -4069,12 +3969,11 @@ function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, 
         if (uploadXhr.status === 422 && !sha) {
             var shaXhr = new XMLHttpRequest();
             shaXhr.open('GET', uploadUrl, true);
-            shaXhr.setRequestHeader('Authorization', 'Bearer ' + key);
             shaXhr.onload = function() {
                 if (shaXhr.status === 200) {
                     try {
                         var info = JSON.parse(shaXhr.responseText);
-                        putFileToGitHub(key, filePath, base64Content, info.sha, onSuccess, onError, onProgress);
+                        putFileToGitHub(filePath, base64Content, info.sha, onSuccess, onError, onProgress);
                         return;
                     } catch (e) {}
                 }
@@ -4091,7 +3990,7 @@ function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, 
 
     uploadXhr.onerror = function() {
         if (retries > 0) {
-            putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, onProgress, retries - 1);
+            putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries - 1);
             return;
         }
         onError(0, '');
@@ -4100,9 +3999,9 @@ function putFileToGitHub(key, filePath, base64Content, sha, onSuccess, onError, 
     uploadXhr.send(JSON.stringify(data));
 }
 
-function cleanupUploadedParts(key, finalMsg) {
+function cleanupUploadedParts(finalMsg) {
     setMsg('uploadMessage', '上传失败，正在清理已上传的分片...', 'error');
-    deletePartsQuietly(key, uploadedParts, 0, function() {
+    deletePartsQuietly(uploadedParts, 0, function() {
         fileTreeCache = null;
         uploadedParts = [];
         setMsg('uploadMessage', finalMsg + '（残留分片已清理）', 'error');
@@ -4110,13 +4009,13 @@ function cleanupUploadedParts(key, finalMsg) {
     });
 }
 
-function deletePartsQuietly(key, parts, index, done) {
+function deletePartsQuietly(parts, index, done) {
     if (index >= parts.length) {
         done();
         return;
     }
-    ghDeleteFile(key, parts[index].path, parts[index].sha, function() {
-        deletePartsQuietly(key, parts, index + 1, done);
+    ghDeleteFile(parts[index].path, parts[index].sha, function() {
+        deletePartsQuietly(parts, index + 1, done);
     });
 }
 
@@ -4143,14 +4042,9 @@ document.addEventListener('DOMContentLoaded', function() {
         checkSvcStatus(true);
     });
 
-    // config and key fetches are independent: run in parallel for faster first load
-    var cfgDone = false;
-    var keyDone = false;
-    function kickoff() {
-        if (cfgDone && keyDone) loadFileList();
-    }
-    loadConfig(function() { cfgDone = true; kickoff(); checkSvcStatus(); });
-    fetchGhKey(function() { keyDone = true; kickoff(); });
+    // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载与服务检测
+    loadFileList();
+    checkSvcStatus();
 
     var dropZone = document.getElementById('dropZone');
     dropZone.addEventListener('click', function() {

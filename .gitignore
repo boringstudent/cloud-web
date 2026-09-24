@@ -1,2 +1,9 @@
 build/
 .idea/
+# eo.js 为构建产物且含 GitHub key（服务端机密），只保留在本地用于部署
+eo.js
+# 本地 GitHub key 文件（build_eo.py 读取，绝不提交）
+.eo-key
+# 本地测试产物
+server.log
+.playwright-cli/
