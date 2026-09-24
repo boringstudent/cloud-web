@@ -985,6 +985,59 @@ h1 {
     color: #dc3545;
     background: rgba(220, 53, 69, 0.08);
 }
+#taskDlConc {
+    flex-shrink: 0;
+    padding: 3px 4px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #666;
+    background: white;
+    cursor: pointer;
+}
+.task-progress-graph-btn {
+    flex-shrink: 0;
+    background: none;
+    border: 1px solid #ddd;
+    color: #666;
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.task-progress-graph-btn:hover,
+.task-progress-graph-btn.active {
+    color: #2c82c9;
+    border-color: #2c82c9;
+    background: rgba(44, 130, 201, 0.08);
+}
+#taskDlGraph {
+    width: 100%;
+    height: 90px;
+    margin-top: 8px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    background: #fafafa;
+}
+#taskDlLegend {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #666;
+    font-variant-numeric: tabular-nums;
+}
+#taskDlLegend i {
+    display: inline-block;
+    width: 10px;
+    height: 3px;
+    border-radius: 2px;
+    margin-left: 8px;
+}
+#taskDlLegend i:first-child {
+    margin-left: 0;
+}
 
 /* ---- 图片查看器（缩放/平移/缩略图条） ---- */
 .img-viewer {
