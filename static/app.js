@@ -36,9 +36,11 @@ function cfApiUrl(filePath) {
 // 否则 GitHub 返回 401。用必失败的请求体探测，不会创建任何提交。
 // 探测结果缓存于会话内；不可用时上传自动仅走 EO，功能无任何影响。
 var cfUploadState = null;   // null=未探测, true/false
+var cfUploadProbedAt = 0;
 
 function probeCfUpload(cb) {
-    if (cfUploadState !== null) {
+    // 失败结果 60 秒后重探（CF 侧可能后来才配置服务端 key）
+    if (cfUploadState !== null && (cfUploadState || Date.now() - cfUploadProbedAt < 60000)) {
         cb(cfUploadState);
         return;
     }
@@ -48,10 +50,12 @@ function probeCfUpload(cb) {
     xhr.onload = function() {
         // 401/403 = CF 无服务端写鉴权；400/422 等 = CF 能鉴权（请求体无效被拒）
         cfUploadState = xhr.status !== 401 && xhr.status !== 403 && xhr.status !== 0;
+        cfUploadProbedAt = Date.now();
         cb(cfUploadState);
     };
     xhr.onerror = function() {
         cfUploadState = false;
+        cfUploadProbedAt = Date.now();
         cb(false);
     };
     xhr.send('not-json');
@@ -1100,6 +1104,16 @@ function openUploadModal() {
 }
 
 function closeUploadModal() {
+    // 上传进行中：关闭即转入后台——浮泡实时显示进度，点击恢复弹窗
+    if (uploadState) {
+        document.getElementById('uploadModal').classList.remove('show');
+        showBgTask(document.getElementById('progressText').textContent || '上传中...', function() {
+            document.getElementById('uploadModal').classList.add('show');
+        });
+        showToast('上传已转入后台，点击右下角浮泡可查看');
+        setTimeout(hideToast, 2500);
+        return;
+    }
     document.getElementById('uploadModal').classList.remove('show');
     document.getElementById('uploadMessage').className = 'message';
     document.getElementById('uploadMessage').textContent = '';
@@ -1366,6 +1380,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
     function failAll() {
         if (state.failed || state.cancelled) return;
         state.failed = true;
+        dlUnregisterScheduler(pumpSegs);
         dlTrackStop();
         onFail();
     }
@@ -1373,6 +1388,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
     function cancel() {
         if (state.cancelled) return;
         state.cancelled = true;
+        dlUnregisterScheduler(pumpSegs);
         state.controllers.forEach(function(c) { try { c.abort(); } catch (e) {} });
         dlTrackStop();
     }
@@ -1388,6 +1404,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
         segments.forEach(function(s) {
             for (var j = 0; j < s.chunks.length; j++) parts.push(s.chunks[j]);
         });
+        dlUnregisterScheduler(pumpSegs);
         dlTrackStop();
         onDone(new Blob(parts));
     }
@@ -1405,8 +1422,19 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
 
     function fetchSeg(seg, attempt) {
         if (state.failed || state.cancelled) return;
-        // 通道：段序号与尝试次数共同决定，重试自然换源；CF 熔断后强制 EO
-        var useCf = !state.cfDown && ((seg.index + attempt) % 2 === 1);
+        // 通道：首次按两通道实测速率比例加权分配（无数据时交替），
+        // 重试换源；CF 熔断后强制 EO
+        var useCf;
+        if (state.cfDown) {
+            useCf = false;
+        } else if (attempt > 0) {
+            useCf = !(seg._lastCf === true);
+        } else {
+            var picked = pickDlChannel();
+            useCf = picked === null ? (seg.index % 2 === 1) : picked;
+        }
+        seg._lastCf = useCf;
+        dlChanInc(useCf);
         var ctrl = new AbortController();
         state.controllers.push(ctrl);
         var headers = {};
@@ -1440,6 +1468,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
                     if (r.done) {
                         seg.done = true;
                         activeSegs--;
+                        dlChanDec(useCf);
                         dlAdaptiveSuccess(Date.now() - (seg.t0 || Date.now()));
                         checkAll();
                         pumpSegs();
@@ -1465,6 +1494,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
 
     function retrySeg(seg, attempt, wasCf) {
         if (state.failed || state.cancelled) return;
+        dlChanDec(wasCf);
         if (wasCf) {
             state.cfFails++;
             if (state.cfFails >= 2) state.cfDown = true;
@@ -1481,6 +1511,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
 
     function start(totalSize) {
         total = totalSize;
+        dlRegisterScheduler(pumpSegs);
         if (!total || total <= DUAL_DL_MIN) {
             segments = [{ index: 0, start: 0, end: total ? total - 1 : null, chunks: [], received: 0, done: false }];
             if (!total) segments[0].end = null;
@@ -1840,6 +1871,7 @@ function closeDeleteModal() {
     document.getElementById('deleteMessage').textContent = '';
     document.getElementById('deleteUsername').value = '';
     document.getElementById('deletePassword').value = '';
+    document.getElementById('deleteStopBtn').style.display = 'none';
     setDeleteProgress(null);
 }
 
@@ -2042,6 +2074,62 @@ function hideToast() {
     document.getElementById('toast').classList.remove('show');
 }
 
+// ---- 后台任务浮泡与持久化 ----
+// 进行中的任务（上传/下载）可挂后台：浮泡显示进度，点击恢复界面；
+// 任务快照定期写入 localStorage，整页刷新后浮泡仍以“已中断”样式提示
+// （传输本身无法在页面刷新后继续，这是浏览器限制）
+var BG_TASK_KEY = 'cloud_web_bgtask';
+var bgTaskRestore = null;
+var bgTaskInterrupted = false;
+
+function showBgTask(text, restoreFn, interrupted) {
+    var b = document.getElementById('bgTaskBubble');
+    b.style.display = 'flex';
+    bgTaskInterrupted = !!interrupted;
+    b.classList.toggle('interrupted', bgTaskInterrupted);
+    document.getElementById('bgTaskText').textContent = text;
+    bgTaskRestore = restoreFn || null;
+}
+
+function updateBgTask(text) {
+    var b = document.getElementById('bgTaskBubble');
+    if (b.style.display === 'none' || bgTaskInterrupted) return;
+    document.getElementById('bgTaskText').textContent = text;
+}
+
+function clearBgTask() {
+    document.getElementById('bgTaskBubble').style.display = 'none';
+    bgTaskRestore = null;
+    bgTaskInterrupted = false;
+    clearBgTaskPersist();
+}
+
+function persistBgTask(type, label) {
+    try {
+        localStorage.setItem(BG_TASK_KEY, JSON.stringify({ type: type, label: label, at: Date.now() }));
+    } catch (e) {}
+}
+
+function clearBgTaskPersist() {
+    try {
+        localStorage.removeItem(BG_TASK_KEY);
+    } catch (e) {}
+}
+
+// 页面加载时恢复提示：有未完成任务记录则显示“已中断”浮泡
+function restoreBgTaskHint() {
+    var rec = null;
+    try {
+        rec = JSON.parse(localStorage.getItem(BG_TASK_KEY) || 'null');
+    } catch (e) {}
+    if (!rec || !rec.label) return;
+    if (Date.now() - (rec.at || 0) > 24 * 3600 * 1000) {
+        clearBgTaskPersist();
+        return;
+    }
+    showBgTask(rec.label + ' · 已被页面刷新中断', null, true);
+}
+
 // ---- 全局任务进度条（单文件/批量/文件夹下载共用） ----
 var taskProgressCancelFn = null;
 
@@ -2050,6 +2138,7 @@ function showTaskProgress(text, pct, onCancel) {
     el.classList.add('show');
     taskProgressCancelFn = onCancel || null;
     document.getElementById('taskProgressCancel').style.display = onCancel ? '' : 'none';
+    persistBgTask('download', text);
     updateTaskProgress(text, pct);
 }
 
@@ -2061,19 +2150,19 @@ function updateTaskProgress(text, pct) {
     if (pct === null || pct === undefined) {
         fill.style.width = '100%';
         fill.style.opacity = '0.35';
+        persistBgTask('download', text);
     } else {
         fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
         fill.style.opacity = '';
+        persistBgTask('download', text + ' · ' + Math.round(pct) + '%');
     }
 }
 
 function hideTaskProgress() {
     document.getElementById('taskProgress').classList.remove('show');
     taskProgressCancelFn = null;
+    clearBgTaskPersist();
 }
-
-// Parallel chunk downloading (limited concurrency) for faster preview/download
-var MERGE_CONCURRENCY = 6;
 
 // quiet=true 时不弹 toast（下载场景由全局进度条反馈，避免与 toast 叠在一起）
 function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
@@ -2093,6 +2182,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
     function untrack() {
         if (tracked) {
             tracked = false;
+            dlUnregisterScheduler(pumpMerge);
             dlTrackStop();
         }
     }
@@ -2154,7 +2244,18 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
         var startPart = function() {
             if (failed || cancelled) return;
             parts[i]._t0 = Date.now();
-            var useCf = !mergeCfDown && ((i + attempt) % 2 === 1);
+            // 通道：首次按两通道实测速率比例加权分配（无数据时交替），重试换源
+            var useCf;
+            if (mergeCfDown) {
+                useCf = false;
+            } else if (attempt > 0) {
+                useCf = !parts[i]._lastCf;
+            } else {
+                var picked = pickDlChannel();
+                useCf = picked === null ? (i % 2 === 1) : picked;
+            }
+            parts[i]._lastCf = useCf;
+            dlChanInc(useCf);
             var url = useCf
                 ? cfRawUrl(parts[i].path)
                 : ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[i].path));
@@ -2175,6 +2276,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
                 if (cancelled) return;
                 if (xhr.status === 200) {
                     buffers[i] = xhr.response;
+                    dlChanDec(useCf);
                     loadedBytes += (parts[i].size || 0) - (parts[i]._loaded || 0);
                     doneCount++;
                     dlAdaptiveSuccess(Date.now() - (parts[i]._t0 || Date.now()));
@@ -2202,6 +2304,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
         };
         var retryPart = function(fromCf) {
             if (failed || cancelled) return;
+            dlChanDec(fromCf);
             if (fromCf) {
                 mergeCfFails++;
                 if (mergeCfFails >= 2) mergeCfDown = true;
@@ -2228,6 +2331,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
             next();
         }
     };
+    dlRegisterScheduler(pumpMerge);
     pumpMerge();
 
     // 返回句柄供关闭预览时中止合并，避免后台继续拉分片
@@ -2601,6 +2705,9 @@ function buildImageViewer() {
     toolbar.appendChild(posLabel);
     wrap.appendChild(toolbar);
 
+    // stage-wrap 不滚动：鸟瞰图相对它定位，拖动/缩放时始终固定在右下角
+    var stageWrap = document.createElement('div');
+    stageWrap.className = 'img-viewer-stage-wrap';
     var stage = document.createElement('div');
     stage.className = 'img-viewer-stage';
     var img = document.createElement('img');
@@ -2609,13 +2716,15 @@ function buildImageViewer() {
     // 鸟瞰图：放大后显示整张图与当前视口位置，拖动可快速定位
     var minimap = document.createElement('canvas');
     minimap.className = 'img-viewer-minimap';
-    stage.appendChild(minimap);
-    wrap.appendChild(stage);
+    stageWrap.appendChild(stage);
+    stageWrap.appendChild(minimap);
+    wrap.appendChild(stageWrap);
 
     var thumbs = document.createElement('div');
     thumbs.className = 'img-thumbs';
 
     imgViewer = {
+        wrap: wrap,
         stage: stage,
         img: img,
         minimap: minimap,
@@ -2624,6 +2733,7 @@ function buildImageViewer() {
         prevBtn: prevBtn,
         nextBtn: nextBtn,
         thumbs: thumbs,
+        thumbsLoaded: false,
         list: [],
         index: -1,
         zoom: 1
@@ -2737,6 +2847,7 @@ function bindImageViewerEvents() {
     stage.addEventListener('scroll', imgViewerUpdateMinimap);
     img.addEventListener('load', function() {
         setTimeout(imgViewerUpdateMinimap, 0);
+        imgViewerLoadThumbs();
     });
 }
 
@@ -2790,10 +2901,13 @@ function imgViewerSetList(models, currentPath) {
         }
     }
     v.thumbs.innerHTML = '';
+    v.thumbsLoaded = false;
     if (v.list.length > 1) {
         v.list.forEach(function(item, i) {
             var t = document.createElement('img');
-            t.src = item.url;
+            // 缩略图延后加载：主图首次成功解码后才设置 src，
+            // 保证带宽优先供给当前查看的图片
+            t.dataset.src = item.url;
             t.alt = item.name;
             t.title = item.name;
             t.loading = 'lazy';
@@ -2801,13 +2915,24 @@ function imgViewerSetList(models, currentPath) {
             t.addEventListener('click', function() { imgViewerGo(i); });
             v.thumbs.appendChild(t);
         });
-        if (v.thumbs.parentNode !== v.stage.parentNode) {
-            v.stage.parentNode.appendChild(v.thumbs);
+        if (v.thumbs.parentNode !== v.wrap) {
+            v.wrap.appendChild(v.thumbs);
         }
     } else if (v.thumbs.parentNode) {
         v.thumbs.parentNode.removeChild(v.thumbs);
     }
     imgViewerSyncNav();
+}
+
+// 主图加载成功后再加载缩略图条（幂等）
+function imgViewerLoadThumbs() {
+    var v = imgViewer;
+    if (!v || v.thumbsLoaded) return;
+    v.thumbsLoaded = true;
+    var thumbs = v.thumbs.children;
+    for (var i = 0; i < thumbs.length; i++) {
+        if (thumbs[i].dataset.src) thumbs[i].src = thumbs[i].dataset.src;
+    }
 }
 
 function imgViewerSyncNav() {
@@ -3903,6 +4028,16 @@ function deleteFolder(folderPath) {
 
 // Sequential delete (single-threaded) to avoid git ref conflicts;
 // per-file conflict retry still applies when the ref moves unexpectedly.
+var deleteState = null;   // 进行中的批量删除状态（供停止按钮打断调度）
+
+function stopDelete() {
+    if (deleteState) {
+        deleteState.stopped = true;
+        setMsg('deleteMessage', '正在停止（等待当前文件删除完成）...', 'success');
+    }
+    document.getElementById('deleteStopBtn').style.display = 'none';
+}
+
 function deleteFolderFiles(files) {
     if (!files.length) {
         deleteAllDone();
@@ -3914,13 +4049,29 @@ function deleteFolderFiles(files) {
         done: 0,
         limit: 1,
         failed: false,
+        stopped: false,
         errMsg: ''
     };
+    deleteState = state;
+    document.getElementById('deleteStopBtn').style.display = '';
     setMsg('deleteMessage', '正在删除 (0/' + files.length + ')', 'success');
     setDeleteProgress(0, files.length);
 
     function settle() {
         if (state.active > 0) return;
+        deleteState = null;
+        document.getElementById('deleteStopBtn').style.display = 'none';
+        if (state.stopped) {
+            setMsg('deleteMessage', '已停止（已删除 ' + state.done + '/' + files.length + '），其余文件保留', 'error');
+            setTimeout(function() {
+                closeDeleteModal();
+                clearSelection();
+                fileTreeCache = null;
+                bypassHttpCache();
+                loadFileList();
+            }, 1800);
+            return;
+        }
         if (state.failed) {
             setMsg('deleteMessage', '删除失败: ' + state.errMsg + '（已删除 ' + state.done + '/' + files.length + '）', 'error');
             document.getElementById('deleteBtn').disabled = false;
@@ -3932,7 +4083,7 @@ function deleteFolderFiles(files) {
     }
 
     function pump() {
-        while (!state.failed && state.active < state.limit && state.next < files.length) {
+        while (!state.failed && !state.stopped && state.active < state.limit && state.next < files.length) {
             var f = files[state.next++];
             state.active++;
             (function(file) {
@@ -4693,7 +4844,7 @@ function finishRenderFileList(models, newOrder, listChanged) {
 
 var pendingFiles = [];
 var uploadTasks = [];
-var uploadedParts = [];
+var COMMIT_GROUP_SIZE = 40;   // 每个批量提交包含的 blob 数（引用移动次数 = ceil(N/40)）
 
 function buildUploadTasks() {
     var chunkSize = CHUNK_SIZE_LEVELS[chunkSizeLevel];
@@ -4863,8 +5014,15 @@ function uploadFile() {
 
     uploadBtn.disabled = true;
     setMsg('uploadMessage', '正在探测加速通道...', 'success');
-    // 探测 CF 上传通道（CF 侧有服务端 key 时启用双通道上传），探测完成前不开始
-    probeCfUpload(function() {
+    // 探测 CF 上传通道（CF 侧有服务端 key 时启用双通道上传），探测完成前不开始；
+    // 探测结果明示给用户，通道状态不再是个谜
+    probeCfUpload(function(cfOk) {
+        if (cfOk) {
+            showToast('上传双通道已启用（EO + CF）');
+        } else {
+            showToast('CF 上传通道不可用（CF 侧未配置服务端 key 或不可达），本次仅经 EO 上传');
+        }
+        setTimeout(hideToast, 4000);
         chunkSizeLevel = 0;
         startUpload();
     });
@@ -4897,6 +5055,30 @@ function dlGetLimit() {
     return Math.max(DL_LIMIT_MIN, Math.min(cap, dlLimit.limit));
 }
 
+// 当前实际并行数实时显示 + 调度器实时补位
+var dlSchedulers = [];
+
+function dlRegisterScheduler(fn) {
+    if (dlSchedulers.indexOf(fn) === -1) dlSchedulers.push(fn);
+}
+
+function dlUnregisterScheduler(fn) {
+    var i = dlSchedulers.indexOf(fn);
+    if (i !== -1) dlSchedulers.splice(i, 1);
+}
+
+function dlNotify() {
+    dlUpdateCurUi();
+    dlSchedulers.slice().forEach(function(fn) {
+        try { fn(); } catch (e) {}
+    });
+}
+
+function dlUpdateCurUi() {
+    var el = document.getElementById('taskDlCur');
+    if (el) el.textContent = '×' + dlGetLimit();
+}
+
 function dlSetMode(v) {
     if (v === 'auto') {
         dlLimit.adaptive = true;
@@ -4905,6 +5087,7 @@ function dlSetMode(v) {
         dlLimit.adaptive = false;
         dlLimit.limit = parseInt(v, 10) || DL_LIMIT_ADAPTIVE_START;
     }
+    dlNotify();
 }
 
 // 自适应升档：连续 3 个段快速完成（<3s）说明带宽宽裕
@@ -4915,6 +5098,7 @@ function dlAdaptiveSuccess(durMs) {
         if (dlLimit._fast >= 3 && dlLimit.limit < DL_LIMIT_MAX) {
             dlLimit.limit++;
             dlLimit._fast = 0;
+            dlNotify();
         }
     } else {
         dlLimit._fast = 0;
@@ -4924,8 +5108,43 @@ function dlAdaptiveSuccess(durMs) {
 // 自适应降档：EO 段失败暗示链路饱和
 function dlAdaptiveFail() {
     if (!dlLimit.adaptive) return;
-    if (dlLimit.limit > DL_LIMIT_MIN) dlLimit.limit--;
+    if (dlLimit.limit > DL_LIMIT_MIN) {
+        dlLimit.limit--;
+        dlNotify();
+    }
     dlLimit._fast = 0;
+}
+
+// ---- 通道负载分配（下载）：按两通道最近 5 秒实测速率比例加权 ----
+var dlActiveEo = 0;
+var dlActiveCf = 0;
+
+function dlChanInc(useCf) {
+    if (useCf) dlActiveCf++;
+    else dlActiveEo++;
+}
+
+function dlChanDec(useCf) {
+    if (useCf) dlActiveCf = Math.max(0, dlActiveCf - 1);
+    else dlActiveEo = Math.max(0, dlActiveEo - 1);
+}
+
+function dlRecentRates() {
+    var avg = function(arr) {
+        var tail = arr.slice(-5);
+        if (!tail.length) return 0;
+        var sum = 0;
+        for (var i = 0; i < tail.length; i++) sum += tail[i];
+        return sum / tail.length;
+    };
+    return { eo: avg(dlTracker.eo), cf: avg(dlTracker.cf) };
+}
+
+// 返回 true=CF / false=EO / null=无速率数据（调用方交替兜底）
+function pickDlChannel() {
+    var r = dlRecentRates();
+    if (r.eo < 1024 && r.cf < 1024) return null;
+    return Math.random() < (r.cf / (r.eo + r.cf));
 }
 
 // ---- 下载速度跟踪：按通道（EO/CF）分桶统计，每秒采样一次供三曲线使用 ----
@@ -5027,8 +5246,9 @@ function updateDlLegend(totV, eoV, cfV) {
     var f = function(v) { return v > 1024 ? formatSize(Math.round(v)) + '/s' : '0/s'; };
     var el;
     if ((el = document.getElementById('taskDlLegendTot'))) el.textContent = '总 ' + f(totV);
-    if ((el = document.getElementById('taskDlLegendEo'))) el.textContent = 'EO ' + f(eoV);
-    if ((el = document.getElementById('taskDlLegendCf'))) el.textContent = 'CF ' + f(cfV);
+    // 附带各通道在途段/片数，负载分配一目了然
+    if ((el = document.getElementById('taskDlLegendEo'))) el.textContent = 'EO ' + f(eoV) + ' ×' + dlActiveEo;
+    if ((el = document.getElementById('taskDlLegendCf'))) el.textContent = 'CF ' + f(cfV) + ' ×' + dlActiveCf;
 }
 
 // ---- 曲线图公共：Y 轴刻度 + 网格 + 实时速度 ----
@@ -5156,9 +5376,6 @@ function startUpload(doneBases) {
     uploadTasks = buildUploadTasks().filter(function(t) {
         return !(doneBases && doneBases[t.base]);
     });
-    uploadedParts = uploadedParts.filter(function(p) {
-        return !doneBases || doneBases[p.base];
-    });
     var sel = document.getElementById('concurrencySelect');
     var mode = sel ? sel.value : '3';
     if (mode === 'custom') {
@@ -5193,11 +5410,13 @@ function startUpload(doneBases) {
         smallDurCount: 0,
         conflictCount: 0,
         sinceConflict: 0,
-        commitPhase: 0,
+        blobs: [],
         eoBytes: 0,
         cfBytes: 0,
         lastEoBytes: 0,
         lastCfBytes: 0,
+        eoTasks: 0,
+        cfTasks: 0,
         chanFlip: false,
         cancelled: false,
         smallRatio: 0
@@ -5247,17 +5466,34 @@ function applyConcurrencyChange() {
     fillUploads();
 }
 
+// 按通道负载分配上传任务：尚无速率数据时简单交替；
+// 有数据后按两通道实测速率比例加权（快的通道分得更多任务），并统计各自任务数
+function pickUploadChannel(size) {
+    var st = uploadState;
+    if (cfUploadState !== true || !st) return false;
+    var useCf;
+    var eoRate = st._eoRate || 0;
+    var cfRate = st._cfRate || 0;
+    if (eoRate < 1024 && cfRate < 1024) {
+        useCf = (st.chanFlip = !st.chanFlip);
+    } else {
+        useCf = Math.random() < (cfRate / (eoRate + cfRate));
+    }
+    if (useCf) st.cfTasks++;
+    else st.eoTasks++;
+    return useCf;
+}
+
 // Keep the pipeline filled up to the current concurrency limit.
 // The limit may change at runtime in adaptive mode.
 function fillUploads() {
     var st = uploadState;
     if (!st) return;
-    // 提交阶段（字节已传完、服务端正在生成 commit）的任务单独限流：
-    // 引用竞争发生在提交时刻，同时处于提交阶段的任务越多越容易 409
-    while (!st.failedMsg && !st.downgrading && st.commitPhase < 2 && st.active < st.limit && st.nextIndex < uploadTasks.length) {
+    // blob 上传不移动引用，无需提交阶段限流，全速并行
+    while (!st.failedMsg && !st.downgrading && st.active < st.limit && st.nextIndex < uploadTasks.length) {
         var task = uploadTasks[st.nextIndex++];
-        // CF 写通道可用时任务在 EO/CF 间交替分配，聚合两条上传链路
-        task.useCf = cfUploadState === true && (st.chanFlip = !st.chanFlip);
+        // CF 写通道可用时按通道负载（实测速率比例）分配任务
+        task.useCf = pickUploadChannel(task.blob.size);
         st.active++;
         st.activeTasks[task.relativePath] = task;
         renderChunkPanel();
@@ -5317,14 +5553,11 @@ function checkUploadSettled() {
     }
     if (st.downgrading) {
         var doneBases = st.doneBases;
-        var staleParts = uploadedParts.filter(function(p) { return !doneBases[p.base]; });
         setMsg('uploadMessage', '分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），正在重新上传...', 'success');
         stopUploadTimer();
         uploadState = null;
-        deletePartsQuietly(staleParts, 0, function() {
-            fileTreeCache = null;
-            startUpload(doneBases);
-        });
+        // blob 未提交不产生任何仓库变更，无需清理，直接重传
+        startUpload(doneBases);
         return;
     }
     if (st.nextIndex >= uploadTasks.length) {
@@ -5335,7 +5568,6 @@ function checkUploadSettled() {
 function runUploadTask(task, done) {
     var st = uploadState;
     var attempt = 0;
-    var conflicts = 0;
 
     var tryOnce = function() {
         if (!uploadState || st.cancelled) {
@@ -5355,19 +5587,15 @@ function runUploadTask(task, done) {
             var currentPath = getCurrentPath();
             var filePath = currentPath ? currentPath + '/' + task.relativePath : task.relativePath;
 
-            task.xhr = putFileToGitHub(filePath, base64Content, null,
-                function(newSha) {
-                    if (task.commitPending) {
-                        task.commitPending = false;
-                        st.commitPhase--;
-                    }
+            // 以 blob 对象上传内容：不移动 git 引用，任意并行零提交冲突；
+            // 引用只在全部传完后的批量提交阶段移动（每 40 个 blob 一次）
+            task.xhr = putBlobToGitHub(base64Content,
+                function(blobSha) {
                     if (st.cancelled) {
                         done(false);
                         return;
                     }
-                    if (PART_SUFFIX.test(task.relativePath) && newSha) {
-                        uploadedParts.push({ path: filePath, sha: newSha, base: task.base });
-                    }
+                    st.blobs.push({ path: filePath, sha: blobSha, base: task.base });
                     st.fractionSum -= (task.fraction || 0);
                     task.fraction = 0;
                     var doneDelta = task.blob.size - (task.loadedBytes || 0);
@@ -5376,10 +5604,6 @@ function runUploadTask(task, done) {
                     done(true);
                 },
                 function(status, responseText) {
-                    if (task.commitPending) {
-                        task.commitPending = false;
-                        st.commitPhase--;
-                    }
                     if (st.cancelled) {
                         done(false);
                         return;
@@ -5398,25 +5622,6 @@ function runUploadTask(task, done) {
                         }
                         done(false);
                         return;
-                    }
-
-                    // Ref conflicts (409, or "is at <sha> but expected <sha>"): concurrent
-                    // commits race on the same git ref. Retry separately with longer
-                    // jittered backoff; does not consume normal attempts.
-                    var isRefConflict = status === 409 || /is at [0-9a-f]{40} but expected/i.test(responseText || '');
-                    if (isRefConflict) {
-                        conflicts++;
-                        st.conflictCount++;
-                        st.sinceConflict = 0;
-                        // frequent conflicts mean too much parallel pressure: back off
-                        if (st.adaptive && st.limit > UPLOAD_LIMIT_MIN && st.conflictCount % 2 === 0) {
-                            st.limit--;
-                        }
-                        if (conflicts <= 10) {
-                            setMsg('uploadMessage', '提交冲突，等待其他分片完成后重试 (' + conflicts + '/10): ' + task.label, 'success');
-                            setTimeout(tryOnce, 1500 * conflicts + Math.floor(Math.random() * 1000));
-                            return;
-                        }
                     }
 
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
@@ -5440,12 +5645,6 @@ function runUploadTask(task, done) {
                     done(false);
                 },
                 function(fraction) {
-                    // 字节全部传完后进入提交阶段（服务端计算并生成 commit），
-                    // 引用竞争发生在该阶段，配合调度器限制同时在提交的任务数
-                    if (fraction >= 1 && !task.commitPending) {
-                        task.commitPending = true;
-                        st.commitPhase++;
-                    }
                     st.fractionSum += fraction - (task.fraction || 0);
                     task.fraction = fraction;
                     var loaded = Math.round(task.blob.size * fraction);
@@ -5479,23 +5678,64 @@ function stopUploadTimer() {
     }
 }
 
+// 全部 blob 传完后进入批量提交阶段：每 COMMIT_GROUP_SIZE 个 blob 合成
+// 一个 tree + commit，引用移动次数从任务数降到组数，冲突概率趋近于零
 function finishUpload() {
     stopUploadTimer();
+    document.getElementById('stopUploadBtn').style.display = 'none';
+    var st = uploadState;
+    var blobs = st ? st.blobs.slice() : [];
     uploadState = null;
     renderChunkPanel();
-    fileTreeCache = null;
-    bypassHttpCache();
-    updateUploadProgressText(100, '');
-    document.getElementById('stopUploadBtn').style.display = 'none';
-    setMsg('uploadMessage', '全部上传成功！', 'success');
-    setTimeout(function() {
-        closeUploadModal();
-        document.getElementById('uploadBtn').disabled = false;
-        loadFileList();
-    }, 1500);
+    clearBgTask();
+
+    var groups = [];
+    for (var i = 0; i < blobs.length; i += COMMIT_GROUP_SIZE) {
+        groups.push(blobs.slice(i, i + COMMIT_GROUP_SIZE));
+    }
+    var gi = 0;
+    var commitNext = function() {
+        if (gi >= groups.length) {
+            fileTreeCache = null;
+            bypassHttpCache();
+            updateUploadProgressText(100, '');
+            setMsg('uploadMessage', '全部上传成功！（' + blobs.length + ' 个文件分片，' + groups.length + ' 个提交）', 'success');
+            setTimeout(function() {
+                closeUploadModal();
+                document.getElementById('uploadBtn').disabled = false;
+                loadFileList();
+            }, 1500);
+            return;
+        }
+        setMsg('uploadMessage', '传输完成，正在批量提交 (' + (gi + 1) + '/' + groups.length + ')...', 'success');
+        commitBlobGroup(groups[gi], 'Upload ' + groups[gi].length + ' file(s) via cloud-web', function(ok, err) {
+            if (!ok) {
+                fileTreeCache = null;
+                bypassHttpCache();
+                setMsg('uploadMessage', '提交失败: ' + err + '（已提交 ' + gi + '/' + groups.length + ' 组，其余未写入仓库）', 'error');
+                document.getElementById('uploadBtn').disabled = false;
+                loadFileList();
+                return;
+            }
+            gi++;
+            commitNext();
+        });
+    };
+    if (!groups.length) {
+        // 没有内容需要提交（理论上不会发生）
+        setMsg('uploadMessage', '全部上传成功！', 'success');
+        setTimeout(function() {
+            closeUploadModal();
+            document.getElementById('uploadBtn').disabled = false;
+            loadFileList();
+        }, 1500);
+        return;
+    }
+    commitNext();
 }
 
-// 停止上传并回退：中止全部在途传输，清理已上传的残留分片（回到上传前状态）
+// 停止上传：中止全部在途传输。blob 上传不移动引用，未提交的内容不会
+// 写入仓库（悬空 blob 由 GitHub 自动回收），无需回退清理
 function stopUploadRollback() {
     var st = uploadState;
     if (!st) return;
@@ -5509,36 +5749,21 @@ function stopUploadRollback() {
         }
     }
     renderChunkPanel();
+    clearBgTask();
     document.getElementById('stopUploadBtn').style.display = 'none';
-    var stale = uploadedParts.slice();
-    if (stale.length) {
-        setMsg('uploadMessage', '已停止上传，正在回退（清理 ' + stale.length + ' 个已传分片）...', 'error');
-        deletePartsQuietly(stale, 0, function() {
-            fileTreeCache = null;
-            uploadedParts = [];
-            setMsg('uploadMessage', '已停止上传并完成回退（残留分片已清理）', 'error');
-            document.getElementById('uploadBtn').disabled = false;
-        });
-    } else {
-        setMsg('uploadMessage', '已停止上传（没有已上传的分片需要回退）', 'error');
-        document.getElementById('uploadBtn').disabled = false;
-    }
+    setMsg('uploadMessage', '已停止上传：未产生任何提交，仓库保持不变（已传输的内容随悬空 blob 自动回收）', 'error');
+    document.getElementById('uploadBtn').disabled = false;
 }
 
 function failUpload(finalMsg) {
-    var st = uploadState;
     stopUploadTimer();
     uploadState = null;
     renderChunkPanel();
+    clearBgTask();
     document.getElementById('stopUploadBtn').style.display = 'none';
-    var staleParts = uploadedParts.filter(function(p) { return !st.doneBases[p.base]; });
-    if (staleParts.length > 0) {
-        uploadedParts = staleParts;
-        cleanupUploadedParts(finalMsg);
-    } else {
-        setMsg('uploadMessage', finalMsg, 'error');
-        document.getElementById('uploadBtn').disabled = false;
-    }
+    // blob 管线：传输阶段失败时尚未产生任何提交，仓库保持不变
+    setMsg('uploadMessage', finalMsg + '（未写入任何提交，仓库保持不变）', 'error');
+    document.getElementById('uploadBtn').disabled = false;
 }
 
 function sampleUploadSpeed() {
@@ -5554,6 +5779,9 @@ function sampleUploadSpeed() {
     st.lastEoBytes = st.eoBytes;
     st.lastCfBytes = st.cfBytes;
     st.lastSampleTime = now;
+    // 记录通道实测速率，供任务按负载比例分配
+    st._eoRate = eoSpeed;
+    st._cfRate = cfSpeed;
     st.speedText = speed > 1024 ? formatSize(Math.round(speed)) + '/s' : '';
     // 速度曲线采样：总/EO/CF 三序列（保留最近 SPEED_HISTORY_MAX 秒）
     uploadSpeedHist.tot.push(speed);
@@ -5589,8 +5817,12 @@ function renderChunkPanel() {
     for (var key in st.activeTasks) {
         activeList.push(st.activeTasks[key]);
     }
+    var chanText = '';
+    if (cfUploadState === true) {
+        chanText = ' · EO×' + (st.eoTasks || 0) + ' CF×' + (st.cfTasks || 0);
+    }
     document.getElementById('chunkPanelSummary').textContent =
-        '· 并行 ' + st.limit + (st.adaptive ? '(自适应)' : '') + ' · 进行中 ' + activeList.length + ' · 已完成 ' + st.doneCount + '/' + uploadTasks.length;
+        '· 并行 ' + st.limit + (st.adaptive ? '(自适应)' : '') + ' · 进行中 ' + activeList.length + ' · 已完成 ' + st.doneCount + '/' + uploadTasks.length + chanText;
     var list = document.getElementById('chunkList');
     if (!activeList.length) {
         list.innerHTML = '<div style="padding: 6px 8px; color: #999;">等待分片调度...</div>';
@@ -5647,94 +5879,143 @@ function updateUploadProgressText(percent, speedText, etaText) {
     if (etaText) text += ' · 预计剩余 ' + etaText;
     document.getElementById('progressFill').style.width = percent + '%';
     document.getElementById('progressText').textContent = text;
+    // 后台浮泡与持久化快照同步（供刷新后提示）
+    if (uploadState) {
+        updateBgTask('上传中 ' + text);
+        persistBgTask('upload', '上传中 ' + percent + '%');
+    }
 }
 
-// useCf=true 时经 CF 代理中转上传（CF 侧持有服务端 key 时可用，浏览器不接触 key）；
-// 否则经 EO 同源代理（key 由 EO 注入）。返回 XHR 供停止上传时中止。
-function putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries, useCf) {
-    if (retries === undefined) retries = 2;
+// ---- Git 数据 API 上传管线（根治提交冲突） ----
+// contents API 每次写都立即移动 git 引用，并行写必然竞争 409。
+// 改为 git 对象模型（与 git 本身一致）：文件内容先以 blob 对象上传
+// （POST /git/blobs 不移动引用，任意并行零冲突），全部就绪后用一个
+// tree + commit 批量落盘并一次性移动引用——引用竞争点从 N 次降到每批 1 次。
+// 未提交的 blob 是悬空对象（不被任何 tree 引用，列表不可见，GitHub 定期回收），
+// 停止/失败天然无副作用，无需回退清理。
+function gitApiUrl(apiPath, useCf) {
+    var p = 'api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + apiPath;
+    return useCf ? (CF_PROXY_BASE + p) : ghUrl('https://' + p);
+}
 
-    var data = {
-        message: 'Upload file: ' + filePath,
-        content: base64Content
+function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries, useCf) {
+    if (retries === undefined) retries = 3;
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', gitApiUrl('/git/blobs', useCf), true);
+    if (!useCf) applyEoAuth(xhr);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
-    if (sha) data.sha = sha;
-
-    var uploadXhr = new XMLHttpRequest();
-    var uploadUrl = useCf
-        ? cfApiUrl(filePath)
-        : ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
-    uploadXhr.open('PUT', uploadUrl, true);
-    if (!useCf) applyEoAuth(uploadXhr);
-    uploadXhr.setRequestHeader('Content-Type', 'application/json');
-
-    uploadXhr.upload.onprogress = function(e) {
-        if (e.lengthComputable && onProgress) {
-            onProgress(e.loaded / e.total);
-        }
-    };
-
-    uploadXhr.onload = function() {
-        if (uploadXhr.status === 200 || uploadXhr.status === 201) {
-            var newSha = null;
-            try {
-                newSha = JSON.parse(uploadXhr.responseText).content.sha;
-            } catch (e) {}
-            onSuccess(newSha);
+    xhr.onload = function() {
+        if (xhr.status === 201) {
+            var sha = null;
+            try { sha = JSON.parse(xhr.responseText).sha; } catch (e) {}
+            if (sha) {
+                onSuccess(sha);
+                return;
+            }
+            onError(xhr.status, xhr.responseText);
             return;
         }
-        if (uploadXhr.status === 422 && !sha) {
-            var shaXhr = new XMLHttpRequest();
-            shaXhr.open('GET', uploadUrl, true);
-            shaXhr.onload = function() {
-                if (shaXhr.status === 200) {
-                    try {
-                        var info = JSON.parse(shaXhr.responseText);
-                        putFileToGitHub(filePath, base64Content, info.sha, onSuccess, onError, onProgress, undefined, useCf);
-                        return;
-                    } catch (e) {}
-                }
-                onError(uploadXhr.status, uploadXhr.responseText);
-            };
-            shaXhr.onerror = function() {
-                onError(uploadXhr.status, uploadXhr.responseText);
-            };
-            shaXhr.send();
+        // 5xx/429 等服务端临时错误按网络错误重试；4xx 直接失败
+        if ((xhr.status >= 500 || xhr.status === 429) && retries > 0) {
+            setTimeout(function() {
+                putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries - 1, useCf);
+            }, 1000);
             return;
         }
-        onError(uploadXhr.status, uploadXhr.responseText);
+        onError(xhr.status, xhr.responseText);
     };
-
-    uploadXhr.onerror = function() {
+    xhr.onerror = function() {
         if (retries > 0) {
-            putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries - 1, useCf);
+            setTimeout(function() {
+                putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries - 1, useCf);
+            }, 1000 * (4 - retries));
             return;
         }
         onError(0, '');
     };
-
-    uploadXhr.send(JSON.stringify(data));
-    return uploadXhr;
+    xhr.send(JSON.stringify({ content: base64Content, encoding: 'base64' }));
+    return xhr;
 }
 
-function cleanupUploadedParts(finalMsg) {
-    setMsg('uploadMessage', '上传失败，正在清理已上传的分片...', 'error');
-    deletePartsQuietly(uploadedParts, 0, function() {
-        fileTreeCache = null;
-        uploadedParts = [];
-        setMsg('uploadMessage', finalMsg + '（残留分片已清理）', 'error');
-        document.getElementById('uploadBtn').disabled = false;
-    });
-}
+// 批量提交：把一组 {path, sha} blob 作为一个 tree + commit 落盘并移动分支引用。
+// 引用移动失败（被其他写入者抢先后 422/409）时从最新引用重来，最多 5 次——
+// 每轮重新读取 base tree 再建树，不会丢失他人的并发提交（与 git rebase 同理）。
+// 引用类操作固定走 EO（最可靠通道）。onDone(ok, errMsg)
+function commitBlobGroup(blobs, message, onDone) {
+    var MAX_ATTEMPTS = 5;
+    var attempt = 0;
 
-function deletePartsQuietly(parts, index, done) {
-    if (index >= parts.length) {
-        done();
-        return;
+    function api(method, apiPath, body, cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open(method, gitApiUrl(apiPath, false), true);
+        applyEoAuth(xhr);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function() { cb(xhr.status, xhr.responseText); };
+        xhr.onerror = function() { cb(0, ''); };
+        xhr.send(body ? JSON.stringify(body) : null);
     }
-    ghDeleteFile(parts[index].path, parts[index].sha, function() {
-        deletePartsQuietly(parts, index + 1, done);
-    });
+
+    function tryOnce() {
+        attempt++;
+        // 1. 读最新分支引用
+        api('GET', '/git/ref/heads/' + DEFAULT_BRANCH, null, function(st1, body1) {
+            if (st1 !== 200) return retry(st1, body1, '读取分支引用失败');
+            var baseCommit;
+            try { baseCommit = JSON.parse(body1).object.sha; } catch (e) {}
+            if (!baseCommit) return retry(st1, body1, '解析分支引用失败');
+            // 2. 读该提交的 base tree
+            api('GET', '/git/commits/' + baseCommit, null, function(st2, body2) {
+                if (st2 !== 200) return retry(st2, body2, '读取提交失败');
+                var baseTree;
+                try { baseTree = JSON.parse(body2).tree.sha; } catch (e) {}
+                if (!baseTree) return retry(st2, body2, '解析提交失败');
+                // 3. 基于最新 tree 建树（同路径自动覆盖旧 blob）
+                var treeEntries = blobs.map(function(b) {
+                    return { path: b.path, mode: '100644', type: 'blob', sha: b.sha };
+                });
+                api('POST', '/git/trees', { base_tree: baseTree, tree: treeEntries }, function(st3, body3) {
+                    if (st3 !== 201) return retry(st3, body3, '创建 tree 失败');
+                    var newTree;
+                    try { newTree = JSON.parse(body3).sha; } catch (e) {}
+                    if (!newTree) return retry(st3, body3, '解析 tree 失败');
+                    // 4. 创建提交
+                    api('POST', '/git/commits', { message: message, tree: newTree, parents: [baseCommit] }, function(st4, body4) {
+                        if (st4 !== 201) return retry(st4, body4, '创建提交失败');
+                        var newCommit;
+                        try { newCommit = JSON.parse(body4).sha; } catch (e) {}
+                        if (!newCommit) return retry(st4, body4, '解析提交失败');
+                        // 5. 移动分支引用（全程唯一的引用竞争点）
+                        api('PATCH', '/git/refs/heads/' + DEFAULT_BRANCH, { sha: newCommit }, function(st5, body5) {
+                            if (st5 === 200) {
+                                onDone(true);
+                                return;
+                            }
+                            retry(st5, body5, '更新分支引用失败');
+                        });
+                    });
+                });
+            });
+        });
+    }
+
+    function retry(status, body, stepLabel) {
+        var refMoved = status === 422 || status === 409;
+        if ((refMoved || status === 0 || status >= 500) && attempt < MAX_ATTEMPTS) {
+            setTimeout(tryOnce, 800 * attempt + Math.floor(Math.random() * 600));
+            return;
+        }
+        var msg = stepLabel + '（状态码 ' + status + '）';
+        try {
+            var err = JSON.parse(body);
+            if (err.message) msg = stepLabel + ': ' + err.message;
+        } catch (e) {}
+        onDone(false, msg);
+    }
+
+    tryOnce();
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -5754,6 +6035,22 @@ document.addEventListener('DOMContentLoaded', function() {
     updateBreadcrumbs();
     updateAuthBtn();
     initPwdEyes();
+
+    // 后台任务浮泡：点击恢复任务界面；✕ 仅关闭提示（不中断任务）
+    document.getElementById('bgTaskBubble').addEventListener('click', function(e) {
+        if (e.target.id === 'bgTaskClose') return;
+        if (bgTaskRestore) {
+            var fn = bgTaskRestore;
+            document.getElementById('bgTaskBubble').style.display = 'none';
+            fn();
+        }
+    });
+    document.getElementById('bgTaskClose').addEventListener('click', function(e) {
+        e.stopPropagation();
+        clearBgTask();
+    });
+    restoreBgTaskHint();
+    dlUpdateCurUi();
 
     // 点击服务状态角标立即重新检测（检测中再点则中止当前轮重新检测）
     document.getElementById('svcStatus').addEventListener('click', function() {

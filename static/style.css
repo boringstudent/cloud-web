@@ -1004,6 +1004,58 @@ h1 {
     font-size: 12px;
     color: #666;
 }
+#taskDlCur {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: #2c82c9;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+#taskDlCur:empty {
+    display: none;
+}
+
+/* ---- 后台任务浮泡 ---- */
+.bg-task-bubble {
+    position: fixed;
+    bottom: 156px;
+    right: 30px;
+    z-index: 2600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(44, 130, 201, 0.95);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    user-select: none;
+    max-width: 60vw;
+}
+.bg-task-bubble span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+.bg-task-bubble.interrupted {
+    background: rgba(108, 117, 125, 0.95);
+    cursor: default;
+}
+#bgTaskClose {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+}
+#bgTaskClose:hover {
+    color: #fff;
+}
 .task-progress-graph-btn {
     flex-shrink: 0;
     background: none;
@@ -1079,11 +1131,15 @@ h1 {
     color: #999;
     font-variant-numeric: tabular-nums;
 }
+/* stage-wrap 不滚动，鸟瞰图相对它定位，拖动/缩放时始终固定在右下角 */
+.img-viewer-stage-wrap {
+    position: relative;
+}
 .img-viewer-stage {
     overflow: auto;
     max-height: 62vh;
     border-radius: 8px;
-    background: rgba(0, 0, 0, 0.04);
+    background: #ffffff;
     text-align: center;
     line-height: 0;
 }
@@ -1093,6 +1149,8 @@ h1 {
     cursor: grab;
     user-select: none;
     -webkit-user-drag: none;
+    /* 缩放时优先平滑重采样，照片颜色/细节更自然 */
+    image-rendering: smooth;
 }
 .img-viewer-stage img.dragging {
     cursor: grabbing;

@@ -125,6 +125,7 @@
                     </div>
                 </div>
                 <button class="btn" onclick="confirmDelete()" id="deleteBtn" style="width: 100%;">确认删除</button>
+                <button class="btn" onclick="stopDelete()" id="deleteStopBtn" style="width: 100%; margin-top: 8px; display: none; background: #e67e22;">停止删除</button>
                 <div class="progress-container" id="deleteProgress" style="display: none;">
                     <div class="progress-bar">
                         <div class="progress-fill" id="deleteProgressFill"></div>
@@ -217,9 +218,15 @@
 
         <div id="toast" class="toast"></div>
 
+        <div id="bgTaskBubble" class="bg-task-bubble" style="display: none;">
+            <span id="bgTaskText"></span>
+            <button type="button" id="bgTaskClose" title="关闭提示">&times;</button>
+        </div>
+
         <div id="taskProgress" class="task-progress">
             <div class="task-progress-top">
                 <span id="taskProgressText"></span>
+                <span id="taskDlCur" title="当前实际并行数"></span>
                 <select id="taskDlConc" title="下载并行数">
                     <option value="auto" selected>并行: 自适应</option>
                     <option value="1">并行: 1</option>
