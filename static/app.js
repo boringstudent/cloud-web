@@ -44,29 +44,38 @@ var extProxyState = {
     list: [],         // 可用代理 base 数组（'https://host/'）
     loading: null,    // 进行中的拉取回调队列（null=空闲）
     rr: 0,            // 代理轮询游标
-    fails: {}         // base -> 连续失败次数（>=2 熔断）
+    fails: {},        // base -> 连续失败次数（>=2 熔断，下载/网络级，上传共用）
+    ul404: {}         // base -> 上传 404 次数（>=5 停止用它上传；部分镜像不支持 api 写请求）
 };
 
-// 代理池是否有未熔断的可用代理（不区分下载/上传开关）
-function extProxiesUsable() {
+// 上传专用熔断判断：网络级连败 >=2 或上传 404 >=5（部分外部镜像不支持
+// api.github.com 写请求会稳定 404，只停止其上传用途，不影响下载）
+function extFused(base, forUpload) {
+    if ((extProxyState.fails[base] || 0) >= 2) return true;
+    if (forUpload && (extProxyState.ul404[base] || 0) >= 5) return true;
+    return false;
+}
+
+// 代理池是否有未熔断的可用代理（forUpload 时额外排除上传 404 熔断的）
+function extProxiesUsable(forUpload) {
     if (!extProxyState.list.length) return false;
     for (var i = 0; i < extProxyState.list.length; i++) {
-        if ((extProxyState.fails[extProxyState.list[i]] || 0) < 2) return true;
+        if (!extFused(extProxyState.list[i], forUpload)) return true;
     }
     return false;
 }
 
 function extDlAvailable() {
-    return extProxyState.enabled && extProxiesUsable();
+    return extProxyState.enabled && extProxiesUsable(false);
 }
 
 // 轮询挑选一个未熔断的代理；全部熔断返回 null
-function extPickBase() {
+function extPickBase(forUpload) {
     var n = extProxyState.list.length;
     for (var k = 0; k < n; k++) {
         var i = (extProxyState.rr + k) % n;
         var base = extProxyState.list[i];
-        if ((extProxyState.fails[base] || 0) < 2) {
+        if (!extFused(base, forUpload)) {
             extProxyState.rr = (i + 1) % n;
             return base;
         }
@@ -77,6 +86,12 @@ function extPickBase() {
 function extNoteFail(base) {
     if (!base) return;
     extProxyState.fails[base] = (extProxyState.fails[base] || 0) + 1;
+}
+
+// 上传 404 计数：达 5 次该代理即被上传通道熔断（extFused 判断）
+function extUploadNote404(base) {
+    if (!base) return;
+    extProxyState.ul404[base] = (extProxyState.ul404[base] || 0) + 1;
 }
 
 function extRawUrl(base, filePath) {
@@ -104,6 +119,7 @@ function extProxyLoad(cb) {
         } catch (e) {}
         extProxyState.list = list;
         extProxyState.fails = {};
+        extProxyState.ul404 = {};
         extProxyState.loading = null;
         cbs.forEach(function(f) { f(list); });
     };
@@ -5484,7 +5500,8 @@ function uploadFile() {
 // ---- Parallel chunked upload with per-chunk retry and live speed ----
 var UPLOAD_MAX_ATTEMPTS = 4;
 var UPLOAD_LIMIT_MIN = 1;
-var UPLOAD_LIMIT_MAX = 8;
+var UPLOAD_LIMIT_MAX = 16;        // 自适应模式上限（手动/自定义不限，见 UPLOAD_LIMIT_MANUAL_MAX）
+var UPLOAD_LIMIT_MANUAL_MAX = 999;   // 手动/自定义上限：实际等同无上限
 var uploadState = null;
 var uploadSpeedHist = { eo: [], cf: [], ext: [], tot: [] };   // 每秒分通道采样的速度（bytes/s）
 var SPEED_HISTORY_MAX = 150;
@@ -5973,7 +5990,7 @@ function startUpload(doneBases) {
         speedTimer: null,
         activeTasks: {},
         adaptive: adaptive,
-        limit: adaptive ? 3 : Math.min(10, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3)),
+        limit: adaptive ? 3 : Math.min(UPLOAD_LIMIT_MANUAL_MAX, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3)),
         startTime: Date.now(),
         smallDurSum: 0,
         smallDurCount: 0,
@@ -6032,7 +6049,7 @@ function applyConcurrencyChange() {
         } else {
             v = parseInt(mode, 10);
         }
-        st.limit = Math.min(10, Math.max(UPLOAD_LIMIT_MIN, v || 3));
+        st.limit = Math.min(UPLOAD_LIMIT_MANUAL_MAX, Math.max(UPLOAD_LIMIT_MIN, v || 3));
     }
     renderChunkPanel();
     fillUploads();
@@ -6044,7 +6061,7 @@ function ulChannels(exclude) {
     var chans = [];
     if (ulChanSwitch.eo && exclude !== 'eo') chans.push('eo');
     if (ulChanSwitch.cf && exclude !== 'cf' && cfUploadState === true) chans.push('cf');
-    if (ulChanSwitch.ext && exclude !== 'ext' && isAdminUser() && ulGitKey && extProxiesUsable()) chans.push('ext');
+    if (ulChanSwitch.ext && exclude !== 'ext' && isAdminUser() && ulGitKey && extProxiesUsable(true)) chans.push('ext');
     if (!chans.length) chans.push('eo');
     return chans;
 }
@@ -6256,8 +6273,13 @@ function runUploadTask(task, done) {
                         return;
                     }
 
-                    // 外部代理失败按代理熔断，并在失败通道之外换源重试
-                    if (task.chan === 'ext') extNoteFail(task._extBase);
+                    // 外部代理失败按代理熔断：404 说明该镜像不支持 api 写请求，
+                    // 单独计数（5 次停止用它上传）；其余错误走通用连败熔断，
+                    // 并在失败通道之外换源重试
+                    if (task.chan === 'ext') {
+                        if (status === 404) extUploadNote404(task._extBase);
+                        else extNoteFail(task._extBase);
+                    }
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
                         task.chan = pickUploadChannel(task.blob.size, task.chan, true);
                         // adaptive: failures hint the network is saturated, back off
@@ -6548,7 +6570,7 @@ function gitApiUrl(apiPath, useCf) {
 function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries, chan, task) {
     if (retries === undefined) retries = 3;
     if (chan === 'ext') {
-        var base = extPickBase();
+        var base = extPickBase(true);   // 上传模式：排除上传 404 熔断的代理
         if (!base) chan = 'eo';   // 外部代理全部熔断时兜底 EO
         else if (task) task._extBase = base;
     }
