@@ -391,6 +391,31 @@ a:hover {
     border: 1px solid #eee;
     border-radius: 8px;
 }
+#speedPanel {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #666;
+}
+#speedPanelToggle {
+    cursor: pointer;
+    user-select: none;
+    padding: 6px 8px;
+    background: rgba(44, 130, 201, 0.08);
+    border-radius: 8px;
+}
+#speedPanelPeak {
+    float: right;
+    color: #999;
+    font-variant-numeric: tabular-nums;
+}
+#speedGraph {
+    width: 100%;
+    height: 90px;
+    margin-top: 6px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    background: #fafafa;
+}
 .progress-bar {
     width: 100%;
     height: 20px;
@@ -890,14 +915,16 @@ h1 {
     }
 }
 
-/* ---- 总用量（h1 右侧，与刷新倒计时并排） ---- */
+/* ---- 总用量（h1 右侧，与刷新倒计时并排，加分隔间距） ---- */
 .total-usage {
     float: right;
     font-size: 13px;
     color: #999;
     font-weight: normal;
     line-height: 2.4;
-    margin-left: 12px;
+    margin: 0 14px 0 16px;
+    padding-right: 14px;
+    border-right: 1px solid #eee;
     font-variant-numeric: tabular-nums;
 }
 .total-usage:empty {
@@ -1026,6 +1053,37 @@ h1 {
 .img-thumbs img.active {
     opacity: 1;
     box-shadow: 0 0 0 2px #2c82c9;
+}
+
+/* ---- 文本/图片鸟瞰图（minimap） ---- */
+.minimap-wrap {
+    position: relative;
+}
+.text-minimap {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 56px;
+    background: rgba(255, 255, 255, 0.75);
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 4px;
+    cursor: pointer;
+    z-index: 5;
+}
+.img-viewer-stage {
+    position: relative;
+}
+.img-viewer-minimap {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    border-radius: 4px;
+    cursor: crosshair;
+    display: none;
+    z-index: 5;
+    line-height: 0;
 }
 
 /* ---- 外观细节优化（保持原有风格） ---- */

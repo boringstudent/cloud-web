@@ -34,7 +34,8 @@ async function call(path, opts) {
   const appJs = fs.readFileSync(__dirname + '/static/app.js', 'utf8');
   check('GET /static/app.js 与原文件逐字一致', body === appJs, `len ${body.length} vs ${appJs.length}`);
   check('app.js 不含任何 key/令牌', !/ghp_|GITHUB_KEY|bearer/i.test(body));
-  check('app.js 不含旧后端域名', !body.includes('boring-student') && !body.includes('cloud-ecr') && !body.includes('redeem-key'));
+  check('app.js 不含旧后端域名', !body.includes('boring-student') && !body.includes('redeem-key'));
+  check('app.js 含 CF 下载加速通道', body.includes('https://cloud-ecr.pages.dev/'));
 
   r = await call('/static/style.css?v=1');
   body = await r.text();
