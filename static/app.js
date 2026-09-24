@@ -304,6 +304,7 @@ function ulChanToggle(chan, done) {
 // 探测结果缓存于会话内；不可用时上传自动仅走 EO，功能无任何影响。
 var cfUploadState = null;   // null=未探测, true/false
 var cfUploadProbedAt = 0;
+var cfUploadHint = '';      // 探测失败时的诊断提示（区分未部署/key 无效）
 
 function probeCfUpload(cb) {
     // 失败结果 60 秒后重探（CF 侧可能后来才配置服务端 key）
@@ -318,6 +319,15 @@ function probeCfUpload(cb) {
         // 仅 400/422 才算可写：鉴权通过、仅因请求体无效被拒；
         // 未鉴权的写请求 GitHub 对公开仓库返回 404（而非 401/403），不能误判为可用
         cfUploadState = xhr.status === 400 || xhr.status === 422;
+        // 诊断：新版 cf-worker 注入 key 后响应带 x-cf-auth-injected 标记——
+        // 401 且无标记 = CF 未配置 GITHUB_TOKEN 或未部署新版；401 且有标记 = key 无效/无权限
+        if (cfUploadState) {
+            cfUploadHint = '';
+        } else if (xhr.getResponseHeader('x-cf-auth-injected') === '1') {
+            cfUploadHint = 'CF 服务端 key 无效或无仓库写权限（请检查 GITHUB_TOKEN 配置）';
+        } else {
+            cfUploadHint = 'CF 侧未配置服务端 key 或未部署新版 cf-worker.js';
+        }
         cfUploadProbedAt = Date.now();
         cb(cfUploadState);
     };
@@ -1626,7 +1636,9 @@ function fetchAudioTags(fileInfo, cb) {
 // onProgress(loadedBytes, totalBytes)；onDone(blob)；onFail()。
 // 返回取消句柄。小文件（<=2MB 或大小未知）单段 EO 直取；
 // 大文件分 6 段并行，EO/CF 交替分配，段失败换源续传（从已收位置继续 Range）。
-function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
+// limitOverride>0 时限制本下载器的并发（多文件并行池内分摊连接数用）；
+// 否则跟随全局并行数 dlGetLimit()
+function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limitOverride) {
     var state = {
         cancelled: false,
         controllers: [],
@@ -1639,6 +1651,9 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
     var loaded = 0;
     var nextSeg = 0;
     var activeSegs = 0;
+    var getLimit = function() {
+        return limitOverride > 0 ? limitOverride : dlGetLimit();
+    };
     dlTrackStart();
 
     function report() {
@@ -1682,7 +1697,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
     // 段调度器：在途段数不超过当前下载并发限制（自适应动态调整）
     function pumpSegs() {
         if (state.failed || state.cancelled || !segments) return;
-        while (activeSegs < dlGetLimit() && nextSeg < segments.length) {
+        while (activeSegs < getLimit() && nextSeg < segments.length) {
             var seg = segments[nextSeg++];
             seg.t0 = Date.now();
             activeSegs++;
@@ -1974,8 +1989,8 @@ function showProperties(filePath, fileName, fileType) {
     }
 }
 
-// 文件夹下载：经 git tree 收集全部文件后串行逐个下载（复用批量下载管线，
-// 带总进度条与停止按钮）；同名文件浏览器自动重命名，子目录结构不保留
+// 文件夹下载：经 git tree 收集全部文件后打包为 zip 下载（文件级并行池拉取，
+// 带总进度条与停止按钮）；zip 内保留子目录结构，同名文件自动改名
 function downloadFolder(filePath, fileName) {
     showTaskProgress('正在获取文件夹内容: ' + displayName(fileName), null);
     fetchFileTree(function() {
@@ -2038,38 +2053,40 @@ function downloadFolder(filePath, fileName) {
     });
 }
 
-// 文件夹打包下载：逐个拉取文件（分片先合并，普通文件走双通道加速），
+// 文件夹打包下载：文件级并行池拉取（分片先合并，普通文件走多通道加速），
 // 全部就绪后在前端打包为 zip 一次性保存，保留子目录结构
 function downloadFolderZip(models, folderLabel) {
     var totalBytes = 0;
     models.forEach(function(m) { totalBytes += (m.size || 0); });
-    var loadedAll = 0;
-    var curLoaded = 0;
-    var entries = [];
-    var i = 0;
+    var loadedMap = {};
+    var rawEntries = [];
+    var doneCount = 0;
     var cancelled = false;
-    var currentHandle = null;
     var lastLoaded = 0;
     var lastTime = Date.now();
     var speedText = '';
 
-    var overallPct = function() {
-        if (!totalBytes) return Math.round(i / models.length * 100);
-        return Math.min(99, Math.round((loadedAll + curLoaded) / totalBytes * 100));
+    var sumLoaded = function() {
+        var s = 0;
+        for (var k in loadedMap) s += loadedMap[k];
+        return s;
     };
-    var sampleSpeed = function(loaded) {
+    var report = function() {
         var now = Date.now();
         if (now - lastTime >= 500) {
-            var sp = (loadedAll + loaded - lastLoaded) / ((now - lastTime) / 1000);
-            lastLoaded = loadedAll + loaded;
+            var sp = (sumLoaded() - lastLoaded) / ((now - lastTime) / 1000);
+            lastLoaded = sumLoaded();
             lastTime = now;
             speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
         }
+        var pct = totalBytes ? Math.min(99, Math.round(sumLoaded() / totalBytes * 100)) : Math.round(doneCount / models.length * 100);
+        updateTaskProgress('正在下载 (' + doneCount + '/' + models.length + ') · ' + folderLabel + (speedText ? ' · ' + speedText : ''), pct);
     };
 
+    var pool = null;
     showTaskProgress('正在下载 (0/' + models.length + ') · ' + folderLabel, 0, function() {
         cancelled = true;
-        if (currentHandle && currentHandle.cancel) currentHandle.cancel();
+        if (pool) pool.cancel();
         hideTaskProgress();
         showToast('已取消打包下载');
         setTimeout(hideToast, 2000);
@@ -2078,60 +2095,64 @@ function downloadFolderZip(models, folderLabel) {
     var failFile = function() {
         if (cancelled) return;
         cancelled = true;
+        if (pool) pool.cancel();
         hideTaskProgress();
         showToast('文件下载失败，打包中止');
         setTimeout(hideToast, 2500);
     };
 
-    var next = function() {
-        if (cancelled) return;
-        if (i >= models.length) {
-            pack();
-            return;
-        }
-        var m = models[i++];
-        curLoaded = 0;
-        var head = '正在下载 (' + i + '/' + models.length + '): ' + m.displayName;
-        updateTaskProgress(head, overallPct());
-        var onBlob = function(blob) {
-            if (cancelled) return;
-            var reader = new FileReader();
-            reader.onload = function() {
-                entries.push({ name: m.zipName, data: new Uint8Array(reader.result) });
-                loadedAll += (m.size || blob.size);
-                next();
-            };
-            reader.onerror = failFile;
-            reader.readAsArrayBuffer(blob);
-        };
-        if (m.chunked && m.parts) {
-            currentHandle = fetchMergedBlob(m.parts, onBlob, failFile, function(pct) {
-                curLoaded = (m.size && pct) ? m.size * pct / 100 : 0;
-                sampleSpeed(curLoaded);
-                updateTaskProgress(head + (speedText ? ' · ' + speedText : ''), overallPct());
-            }, null, true);
-        } else {
-            currentHandle = fetchFileBlobDual(m.path, m.size, function(loaded) {
-                curLoaded = loaded;
-                sampleSpeed(loaded);
-                updateTaskProgress(head + (speedText ? ' · ' + speedText : ''), overallPct());
-            }, onBlob, failFile);
-        }
-    };
-
     var pack = function() {
         updateTaskProgress('正在打包 ' + folderLabel + '.zip（' + models.length + ' 个文件）...', null);
-        // 让进度卡片先渲染一帧再做 CPU 密集的 CRC 计算
+        // 让进度卡片先渲染一帧再做 CPU 密集的读取与 CRC 计算
         setTimeout(function() {
-            var zipBlob = buildZipBlob(entries);
-            hideTaskProgress();
-            saveBlobAs(zipBlob, folderLabel + '.zip');
-            showToast('打包下载完成: ' + folderLabel + '.zip（' + formatSize(zipBlob.size) + '）');
-            setTimeout(hideToast, 3000);
+            if (cancelled) return;
+            // zip 条目按名称排序，保证并行下载完成后打包结果确定
+            rawEntries.sort(function(a, b) { return a.name.localeCompare(b.name); });
+            var entries = [];
+            var pending = rawEntries.length;
+            rawEntries.forEach(function(e) {
+                var reader = new FileReader();
+                reader.onload = function() {
+                    entries.push({ name: e.name, data: new Uint8Array(reader.result) });
+                    if (--pending === 0) finishPack(entries);
+                };
+                reader.onerror = function() {
+                    if (--pending === 0) finishPack(entries);
+                };
+                reader.readAsArrayBuffer(e.blob);
+            });
         }, 50);
     };
+    var finishPack = function(entries) {
+        if (cancelled) return;
+        var zipBlob = buildZipBlob(entries);
+        hideTaskProgress();
+        saveBlobAs(zipBlob, folderLabel + '.zip');
+        showToast('打包下载完成: ' + folderLabel + '.zip（' + formatSize(zipBlob.size) + '）');
+        setTimeout(hideToast, 3000);
+    };
 
-    next();
+    var limit = dlGetLimit();
+    var poolLimit = Math.min(models.length, limit);
+    var perFileLimit = Math.max(1, Math.floor(limit / poolLimit));
+    pool = runFileDownloadPool(models, poolLimit, perFileLimit, {
+        onFileBlob: function(idx, m, blob) {
+            rawEntries.push({ name: m.zipName, blob: blob });
+            loadedMap[idx] = m.size || blob.size;
+            doneCount++;
+            report();
+        },
+        onFileFail: function() {
+            failFile();
+        },
+        onFileProgress: function(idx, m, loaded) {
+            loadedMap[idx] = loaded;
+            report();
+        },
+        onSettle: function() {
+            if (!cancelled) pack();
+        }
+    });
 }
 
 var deleteFilePath = '';
@@ -2464,8 +2485,9 @@ function hideTaskProgress() {
     clearBgTaskPersist();
 }
 
-// quiet=true 时不弹 toast（下载场景由全局进度条反馈，避免与 toast 叠在一起）
-function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
+// quiet=true 时不弹 toast（下载场景由全局进度条反馈，避免与 toast 叠在一起）；
+// limitOverride>0 时限制本合并下载的并发（多文件并行池内分摊连接数用）
+function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limitOverride) {
     var buffers = new Array(parts.length);
     var nextIndex = 0;
     var doneCount = 0;
@@ -2473,6 +2495,9 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
     var cancelled = false;
     var mergeCfDown = false;   // CF 通道熔断标志
     var mergeCfFails = 0;
+    var getLimit = function() {
+        return limitOverride > 0 ? limitOverride : dlGetLimit();
+    };
     // quiet=下载场景：纳入分通道速度统计（预览不统计）
     var tracked = false;
     if (quiet) {
@@ -2658,7 +2683,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
 
     // 片调度器：在途片数不超过当前下载并发限制（自适应动态调整）
     var pumpMerge = function() {
-        while (!failed && !cancelled && actives.length < dlGetLimit() && nextIndex < parts.length) {
+        while (!failed && !cancelled && actives.length < getLimit() && nextIndex < parts.length) {
             next();
         }
     };
@@ -4378,12 +4403,14 @@ function deleteFolderFiles(files) {
         deleteAllDone();
         return;
     }
+    // 并发上限跟随下载并行数设置：冲突自动降档（最低 1），连续成功升回
+    var delLimit = dlGetLimit();
     var state = {
         next: 0,
         active: 0,
         done: 0,
-        limit: 4,        // 多线程并行删除；引用冲突自动降档（最低 1），
-        maxLimit: 4,     // 连续成功自动升档（最高 4）
+        limit: delLimit,
+        maxLimit: delLimit,
         okStreak: 0,
         failed: false,
         stopped: false,
@@ -4893,89 +4920,164 @@ function batchDownload() {
     var keys = Object.keys(selectedKeys);
     if (!keys.length) return;
     var models = keys.map(function(k) { return selectedKeys[k]; });
-    runSequentialDownload(models, '');
+    runParallelDownload(models, '');
 }
 
-// 通用串行下载管线：批量下载与文件夹下载共用。
-// 一次一个（并发触发会被浏览器拦截多文件下载，且互相抢占带宽）；
-// 全局进度条按字节汇总总进度，可点 ✕ 或批量栏“停止下载”随时中止当前传输。
-function runSequentialDownload(models, label) {
+// 文件级并行下载池：poolLimit 个文件并行、每个文件内部 perFileLimit 个连接，
+// 完成一个立即补位——并行数被持续吃满，不再等上一个文件整体跑完才分配新任务。
+// hooks: onFileBlob(idx, m, blob) / onFileFail(idx, m) / onFileProgress(idx, m, loaded)
+// / onSettle(failCount)；返回 { cancel() }
+function runFileDownloadPool(models, poolLimit, perFileLimit, hooks) {
+    var nextIdx = 0;
+    var active = 0;
+    var failCount = 0;
+    var cancelled = false;
+    var handles = {};
+
+    function pump() {
+        if (cancelled) return;
+        while (active < poolLimit && nextIdx < models.length) {
+            (function(idx) {
+                var m = models[idx];
+                active++;
+                var onBlob = function(blob) {
+                    if (!cancelled) hooks.onFileBlob(idx, m, blob);
+                    oneDone(idx, true);
+                };
+                var onFail = function() {
+                    if (!cancelled) hooks.onFileFail(idx, m);
+                    oneDone(idx, false);
+                };
+                var h;
+                if (m.chunked && m.parts) {
+                    h = fetchMergedBlob(m.parts, onBlob, onFail, function(pct) {
+                        hooks.onFileProgress(idx, m, (m.size && pct) ? m.size * pct / 100 : 0);
+                    }, null, true, perFileLimit);
+                } else {
+                    h = fetchFileBlobDual(m.path, m.size, function(loaded) {
+                        hooks.onFileProgress(idx, m, loaded);
+                    }, onBlob, onFail, perFileLimit);
+                }
+                handles[idx] = h;
+            })(nextIdx++);
+        }
+    }
+
+    function oneDone(idx, ok) {
+        active--;
+        delete handles[idx];
+        if (!ok) failCount++;
+        pump();
+        if (!cancelled && nextIdx >= models.length && active === 0) {
+            hooks.onSettle(failCount);
+        }
+    }
+
+    pump();
+    return {
+        cancel: function() {
+            cancelled = true;
+            for (var k in handles) {
+                try { handles[k].cancel(); } catch (e) {}
+            }
+        }
+    };
+}
+
+// 通用并行下载管线（批量下载）：并行数在多个文件间分摊——文件多时每文件
+// 1 个连接即可吃满并行数，文件少时每个文件多分几个连接；完成的文件经保存
+// 队列串行吐出（浏览器对连续自动下载限流）；全局进度条按字节汇总总进度。
+function runParallelDownload(models, label) {
     if (batchDownloadState) return;
     if (!models.length) return;
-    batchDownloadState = { cancelled: false, current: null };
+    batchDownloadState = { cancelled: false, pool: null };
     toggleBatchDownloadUI(true);
-    var i = 0;
     var totalBytes = 0;
-    var doneBytes = 0;
-    var curLoaded = 0;
     models.forEach(function(m) { totalBytes += (m.size || 0); });
-    var overallPct = function() {
-        if (!totalBytes) return Math.round((i - 1) / models.length * 100);
-        return Math.min(99, Math.round((doneBytes + curLoaded) / totalBytes * 100));
+    var limit = dlGetLimit();
+    var poolLimit = Math.min(models.length, limit);
+    var perFileLimit = Math.max(1, Math.floor(limit / poolLimit));
+    var loadedMap = {};
+    var doneCount = 0;
+    var lastLoaded = 0;
+    var lastTime = Date.now();
+    var speedText = '';
+    var saveQueue = [];
+    var saveTimer = null;
+
+    var sumLoaded = function() {
+        var s = 0;
+        for (var k in loadedMap) s += loadedMap[k];
+        return s;
+    };
+    var report = function() {
+        var now = Date.now();
+        if (now - lastTime >= 500) {
+            var sp = (sumLoaded() - lastLoaded) / ((now - lastTime) / 1000);
+            lastLoaded = sumLoaded();
+            lastTime = now;
+            speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+        }
+        var pct = totalBytes ? Math.min(99, Math.round(sumLoaded() / totalBytes * 100)) : Math.round(doneCount / models.length * 100);
+        updateTaskProgress('正在下载 (' + doneCount + '/' + models.length + ')' + (label ? ' · ' + label : '') + (speedText ? ' · ' + speedText : ''), pct);
+    };
+    // 保存队列：浏览器对连续自动下载有限流，串行吐出（间隔 400ms）
+    var pumpSave = function() {
+        if (saveTimer || !saveQueue.length) return;
+        var it = saveQueue.shift();
+        saveBlobAs(it.blob, it.name);
+        saveTimer = setTimeout(function() {
+            saveTimer = null;
+            pumpSave();
+        }, 400);
     };
     showTaskProgress('正在下载 (0/' + models.length + ')' + (label ? ' · ' + label : ''), 0, stopBatchDownload);
-    var next = function() {
-        if (!batchDownloadState || batchDownloadState.cancelled) {
-            finishBatchDownload(true);
-            return;
+    if (models.length > 1) {
+        showToast('已并行下载 ' + poolLimit + ' 个文件；若被浏览器拦截多文件下载，请点击地址栏下载图标允许');
+        setTimeout(hideToast, 4000);
+    }
+    var pool = runFileDownloadPool(models, poolLimit, perFileLimit, {
+        onFileBlob: function(idx, m, blob) {
+            loadedMap[idx] = m.size || blob.size;
+            doneCount++;
+            saveQueue.push({ blob: blob, name: m.name });
+            pumpSave();
+            report();
+        },
+        onFileFail: function(idx, m) {
+            doneCount++;
+            showToast('下载失败: ' + m.displayName);
+            setTimeout(hideToast, 2500);
+            report();
+        },
+        onFileProgress: function(idx, m, loaded) {
+            loadedMap[idx] = loaded;
+            report();
+        },
+        onSettle: function(failCount) {
+            finishBatchDownload(false, failCount);
         }
-        if (i >= models.length) {
-            finishBatchDownload(false);
-            return;
-        }
-        var m = models[i++];
-        curLoaded = 0;
-        // 首个文件提示一次：连续自动下载可能被浏览器拦截，需手动允许
-        if (i === 1 && models.length > 1) {
-            showToast('若被浏览器拦截多文件下载，请点击地址栏下载图标允许');
-            setTimeout(hideToast, 4000);
-        }
-        var head = '正在下载 (' + i + '/' + models.length + '): ' + m.displayName;
-        updateTaskProgress(head, overallPct());
-        var done = function(ok) {
-            doneBytes += (m.size || 0);
-            curLoaded = 0;
-            if (batchDownloadState) batchDownloadState.current = null;
-            // 失败的文件多停一会儿，让用户看清错误提示
-            setTimeout(next, ok ? 300 : 2000);
-        };
-        if (m.chunked && m.parts) {
-            batchDownloadState.current = downloadMergedFile(m.parts, m.name, done, function(pct, speed) {
-                curLoaded = (m.size && pct) ? m.size * pct / 100 : 0;
-                updateTaskProgress(head + (speed ? ' · ' + speed : ''), overallPct());
-            });
-        } else {
-            batchDownloadState.current = downloadFile(m.path, m.name, done, function(loaded, speed) {
-                curLoaded = loaded;
-                updateTaskProgress(head + (speed ? ' · ' + speed : ''), overallPct());
-            }, m.size);
-        }
-    };
-    next();
+    });
+    if (batchDownloadState) batchDownloadState.pool = pool;
 }
 
 function stopBatchDownload() {
     if (!batchDownloadState) return;
     batchDownloadState.cancelled = true;
-    // 中止正在传输的当前文件，而不是等它传完
-    var cur = batchDownloadState.current;
-    batchDownloadState.current = null;
-    if (cur) {
-        try {
-            if (cur.cancel) cur.cancel();
-            else if (cur.abort) cur.abort();
-        } catch (e) {}
-    }
+    // 中止全部在途传输，而不是等它们传完
+    var pool = batchDownloadState.pool;
+    batchDownloadState.pool = null;
+    if (pool) pool.cancel();
     finishBatchDownload(true);
 }
 
-function finishBatchDownload(stopped) {
+function finishBatchDownload(stopped, failCount) {
     if (!batchDownloadState) return;
     batchDownloadState = null;
     toggleBatchDownloadUI(false);
     hideTaskProgress();
-    showToast(stopped ? '已停止下载' : '下载已完成');
-    setTimeout(hideToast, 2000);
+    showToast(stopped ? '已停止下载' : (failCount ? ('下载已完成（' + failCount + ' 个失败）') : '下载已完成'));
+    setTimeout(hideToast, 2500);
 }
 
 function toggleBatchDownloadUI(downloading) {
@@ -5371,7 +5473,7 @@ function uploadFile() {
         if (cfOk) {
             showToast('上传双通道已启用（EO + CF）');
         } else {
-            showToast('CF 上传通道不可用（CF 侧未配置服务端 key 或不可达），本次仅经 EO 上传');
+            showToast('CF 上传通道不可用（' + (cfUploadHint || 'CF 侧未配置服务端 key 或不可达') + '），本次仅经 EO 上传');
         }
         setTimeout(hideToast, 4000);
         chunkSizeLevel = 0;

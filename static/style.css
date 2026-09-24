@@ -151,6 +151,9 @@ a:hover {
     color: #333;
     font-size: 14px;
     line-height: 1.6;
+    /* 内容增多后限制在视口内滚动，避免整体超出屏幕导致关闭按钮被顶出可视区 */
+    max-height: 88vh;
+    overflow-y: auto;
 }
 .modal-content h2 {
     margin: 0 0 16px;

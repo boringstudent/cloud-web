@@ -20,12 +20,16 @@ const whiteList = [] // 白名单，路径中包含白名单字符的请求才�
 // Authorization: Bearer <token> 头——写操作（创建 blob 等）因此可经
 // CF 通道完成。Token 只存在于 CF 服务端，客户端永远不接触；
 // 未配置时行为与原来一致（匿名代理，写请求会被 GitHub 返回 401）。
+// 注入成功时响应带 x-cf-auth-injected: 1 标记头（不含 key 本身），
+// 调用方据此区分"CF 未配置/未部署新版"与"key 无效或无权限"（后者 401 但带标记）。
 function injectGithubToken(reqHdrNew, urlStr, env) {
 	const tk = env && (env.GITHUB_TOKEN || env.TOKEN);
-	if (!tk) return;
+	if (!tk) return false;
 	if (/^https?:\/\/api\.github\.com(?:\/|$)/i.test(urlStr)) {
 		reqHdrNew.set('authorization', 'Bearer ' + tk);
+		return true;
 	}
+	return false;
 }
 
 /** @type {ResponseInit} */
@@ -262,7 +266,7 @@ function httpHandler(req, pathname, env) {
 
 	// 服务端 Token 注入：配置 GITHUB_TOKEN 环境变量后，api.github.com
 	// 请求在服务端附加鉴权头（写操作可经 CF 通道完成，客户端不接触 Token）
-	injectGithubToken(reqHdrNew, urlStr, env)
+	const authInjected = injectGithubToken(reqHdrNew, urlStr, env)
 
 	const urlObj = newUrl(urlStr)
 	if (!urlObj) return new Response('bad url', { status: 400 })
@@ -274,6 +278,7 @@ function httpHandler(req, pathname, env) {
 		redirect: 'manual',
 		body: req.body
 	}
+	if (authInjected) reqInit._authInjected = true
 	return proxy(urlObj, reqInit)
 }
 
@@ -304,6 +309,8 @@ async function proxy(urlObj, reqInit) {
 	}
 	resHdrNew.set('access-control-expose-headers', '*')
 	resHdrNew.set('access-control-allow-origin', '*')
+	// 注入标记回显（不含 key 本身），供调用方诊断 401 是"未注入"还是"key 无效"
+	if (reqInit._authInjected) resHdrNew.set('x-cf-auth-injected', '1')
 
 	resHdrNew.delete('content-security-policy')
 	resHdrNew.delete('content-security-policy-report-only')
