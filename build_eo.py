@@ -72,17 +72,57 @@ const GITHUB_KEY = '__GITHUB_KEY__';
 // 前端网盘的文件读写、下载中转全部限制在这些仓库内；其余仓库一律 403。
 const STORAGE_REPOS = ['__STORAGE_REPO__'];
 
+// ==================== 外部多代理下载候选池 ====================
+// 公共 ghproxy 镜像（仅用于匿名下载加速，写操作永不经过它们）。
+// /api/proxies 会逐个探测连通性，只返回当前可用的，供前端"外部多代理"模式使用。
+const EXT_PROXY_CANDIDATES = [
+  'ghproxy.felicity.land',
+  'gh.07150721.xyz',
+  'cfgh.ikgy.top',
+  'ghproxy.imciel.com',
+  'gh.xxooo.cf',
+  'github.mlmle.cn',
+  'github.cnxiaobai.com',
+  'gh.1k.ink',
+  'ghproxy.cxkpro.top',
+  'tvv.tw',
+  'proxy.baguoyuyan.com',
+  'gh-proxy.com',
+  'gh.dpik.top',
+  'gh.39.al',
+  'getgit.love8yun.eu.org',
+  'fastgit.cc',
+  'gp.871201.xyz',
+  'gh.chjina.com',
+  'gh.shiina-rimo.cafe',
+  'gh.198962.xyz',
+  '30006000.xyz',
+  'github.tianrld.top',
+  'github.880824.xyz',
+  'github.ihnic.com',
+  'github-proxy.lixxing.top',
+  'github.zzrbk.xyz',
+  'github.boringhex.top',
+  'github.ednovas.xyz',
+  'git.820828.xyz',
+  'kenyu.ggff.net'
+];
+// 探测结果实例级缓存：5 分钟内不重复探测（边缘实例随时可能重建，重建即重探）
+let extProxiesCache = { at: 0, list: null };
+const EXT_PROXIES_CACHE_MS = 5 * 60 * 1000;
+
 // ==================== 嵌入的前端资源（构建时烘焙） ====================
 const INDEX_HTML = `__INDEX_HTML__`;
 const APP_JS = `__APP_JS__`;
 const STYLE_CSS = `__STYLE_CSS__`;
 const FAVICON_B64 = '__FAVICON_B64__';
 
-// connect-src 放行 CF 下载/上传加速通道（cloud-ecr.pages.dev），
-// 否则浏览器会按 CSP 拦截页面到该域名的 fetch/XHR，导致 CF 通道永远没有流量
+// connect-src 放行 CF 下载/上传加速通道（cloud-ecr.pages.dev）与外部多代理
+// 下载通道（公共 ghproxy 镜像域名众多且动态筛选，故放行全部 https），
+// 否则浏览器会按 CSP 拦截页面到这些域名的 fetch/XHR，导致加速通道永远没有流量
 const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
             "img-src 'self' data: blob: https:; media-src 'self' blob: https:; " +
-            "connect-src 'self' https://cloud-ecr.pages.dev; " +
+            "connect-src 'self' https://cloud-ecr.pages.dev https:; " +
             "font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
 
 // ==================== 入口 ====================
@@ -113,6 +153,17 @@ async function handleRequest(request) {
         return json({ error: 'Params: type=password|key & value=<string>' }, 400);
       }
       return json({ type, value_sha512: await sha512(value) });
+    }
+
+    // ---------- 外部多代理候选（公开；探测后只返回当前可用的） ----------
+    if (path === '/api/proxies') {
+      if (request.method === 'HEAD') return new Response(null, { status: 200, headers: corsHeaders() });
+      // ?all=1 返回未探测的完整候选列表（不触网，供排查/测试）
+      if (url.searchParams.get('all') === '1') {
+        return json({ proxies: EXT_PROXY_CANDIDATES.map(h => 'https://' + h + '/') });
+      }
+      const usable = await listUsableExtProxies();
+      return json({ proxies: usable.map(h => 'https://' + h + '/') });
     }
 
     // ---------- 服务器自身 IP 信息（公开，数据源 cip.cc；HEAD 用于 RTT 测量） ----------
@@ -566,6 +617,40 @@ async function fetchText(url, headers, timeoutMs) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// 探测单个外部代理连通性：能建立连接且返回 <500 的 HTTP 响应即视为可用
+async function probeExtProxy(host, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 3500);
+  try {
+    const res = await fetch('https://' + host + '/', {
+      method: 'GET',
+      redirect: 'manual',
+      signal: ctrl.signal,
+      headers: { 'User-Agent': 'cloud-eo-proxy-probe' }
+    });
+    // 立刻取消 body，避免悬挂流占用连接
+    try { if (res.body) await res.body.cancel(); } catch (e) {}
+    return res.status > 0 && res.status < 500;
+  } catch (e) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 并发探测全部候选代理，只返回当前可用者（实例级缓存 5 分钟）
+async function listUsableExtProxies() {
+  if (extProxiesCache.list && Date.now() - extProxiesCache.at < EXT_PROXIES_CACHE_MS) {
+    return extProxiesCache.list;
+  }
+  const results = await Promise.all(EXT_PROXY_CANDIDATES.map(async h => {
+    return (await probeExtProxy(h)) ? h : null;
+  }));
+  const list = results.filter(Boolean);
+  extProxiesCache = { at: Date.now(), list };
+  return list;
 }
 
 // api.ip.sb：JSON 免 key，英文归属地

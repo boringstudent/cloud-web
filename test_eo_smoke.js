@@ -89,6 +89,13 @@ async function call(path, opts) {
   r = await call('/static/app.js', { method: 'HEAD' });
   check('HEAD /static/app.js -> 200 无 body', r.status === 200 && (await r.text()) === '');
 
+  // 9.5 外部多代理候选列表（?all=1 不触网）
+  r = await call('/api/proxies?all=1');
+  const pj = await r.json();
+  check('GET /api/proxies?all=1 -> 200 候选列表', r.status === 200 && Array.isArray(pj.proxies) && pj.proxies.length === 30 && pj.proxies[0] === 'https://ghproxy.felicity.land/');
+  r = await call('/api/proxies', { method: 'HEAD' });
+  check('HEAD /api/proxies -> 200', r.status === 200);
+
   // 10. 未知 API -> JSON 404；登录参数缺失 -> 400（不触网）
   r = await call('/api/nope');
   check('未知 /api/* -> JSON 404', r.status === 404 && (r.headers.get('Content-Type') || '').includes('application/json'));

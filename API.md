@@ -49,6 +49,18 @@ GET /api/my-ip
 → { "ip": "1.2.3.4", "location": "...", "isp": "...", "data2": "...", "data3": "..." }
 ```
 
+### `GET/HEAD /api/proxies`
+
+外部多代理下载的公共 ghproxy 镜像候选。默认逐个并发探测连通性（3.5 秒超时，返回 <500 即视为可用），**只返回当前可用的**；探测结果实例级缓存 5 分钟。`?all=1` 跳过探测返回完整候选列表（不触网）。`HEAD` 立即返回 200。
+
+```
+GET /api/proxies
+→ { "proxies": ["https://ghproxy.felicity.land/", "https://gh-proxy.com/", ...] }
+
+GET /api/proxies?all=1
+→ { "proxies": [全部 30 个候选，未探测] }
+```
+
 ### `GET/POST /api/login`
 
 用户登录。密码必须传 SHA-512 哈希，与存储哈希实时比对（登录强制实时读取，无缓存）；成功响应**只含角色信息**，不再返回任何 key 或 key 哈希。

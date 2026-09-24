@@ -12,12 +12,13 @@ function ghUrl(url) {
     return '/' + url.replace(/^https?:\/\//, '');
 }
 
-// ---- 下载双通道：EO（同源，服务端注入 key，稳定无限流）+ CF 代理（匿名公开仓库可访问） ----
-// 大文件分段并行下载时段在两通道间按在途均衡 + 实测速率加权分配，聚合两条链路的带宽；
-// 段失败自动换源重试，CF 连续失败即熔断，剩余段全部回退 EO，保证最终可用性。
-// 写操作默认只走 EO——GitHub key 永不下发浏览器；仅当 CF 侧配置了服务端 key，
-// 或用户在本机填写了自己的 GitHub Token 时，blob 传输才会分流到 CF 通道，
-// 引用类操作（提交/删除）始终固定走 EO；提交冲突由 409/sha 竞争重试算法保证安全。
+// ---- 下载多通道：EO（同源，服务端注入 key，稳定无限流）+ CF 代理（匿名公开仓库可访问）
+// + 可选外部多代理（公共 ghproxy 镜像，详见"外部多代理"区块） ----
+// 大文件分段并行下载时段在各通道间按在途均衡 + 实测速率加权分配，聚合多条链路的带宽；
+// 段失败自动换源重试，CF/外部代理连续失败即熔断，剩余段全部回退 EO，保证最终可用性。
+// 写操作默认只走 EO——GitHub key 永不下发浏览器；仅当 CF 侧配置了服务端 key 时，
+// blob 传输才会分流到 CF 通道，引用类操作（提交/删除）始终固定走 EO；
+// 提交冲突由 409/sha 竞争重试算法保证安全。
 var CF_PROXY_BASE = 'https://cloud-ecr.pages.dev/';
 var DUAL_DL_MIN = 2 * 1024 * 1024;   // 大于 2MB 才启用分段双通道
 var DUAL_DL_PARTS = 12;              // 分段数（多于并发数，调度器滚动补位）
@@ -31,38 +32,120 @@ function cfApiUrl(filePath) {
     return CF_PROXY_BASE + 'api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
 }
 
-// ---- CF 上传通道能力探测 ----
-// CF 代理本身不注入 GitHub key，写请求按两级探测：
-// 1) 部署方在 CF 侧配置了服务端 key：写请求直接被鉴权通过
-//    （浏览器不接触 key，key 只在 CF 服务端）；
-// 2) CF 侧无服务端 key 时，若用户在上传弹窗填写了自己的 GitHub Token
-//    （仅存本机浏览器 localStorage，不上传任何服务器），则以该 Token
-//    在用户端直接经 CF 代理鉴权上传。
-// 用必失败的请求体探测，不会创建任何提交。
-// 探测结果缓存于会话内；不可用时上传自动仅走 EO，功能无任何影响。
-var cfUploadState = null;      // null=未探测, true/false
-var cfUploadAuth = null;       // 'server'=CF 服务端 key / 'token'=用户端 Token
-var cfUploadProbedAt = 0;
-var GH_TOKEN_STORAGE_KEY = 'cloud_web_gh_token';
+// ---- 外部多代理下载通道（可选，公共 ghproxy 镜像，仅匿名下载加速） ----
+// 候选列表由同源 /api/proxies 动态下发（EO 探测后只返回当前可用的）；
+// 在下载进度卡片上开启"多代理"后启用：段/片在 EO / CF / 外部代理间
+// 按在途均衡 + 实测速率加权分配；单个代理连续失败 2 次即熔断轮换，
+// 全部外部代理熔断后外部通道整体退出，剩余任务回退 EO/CF。
+var EXT_PROXY_API = '/api/proxies';
+var EXT_PROXY_STORAGE_KEY = 'cloud_web_ext_proxy';
+var extProxyState = {
+    enabled: false,   // 用户开关（持久化于 localStorage）
+    list: [],         // 可用代理 base 数组（'https://host/'）
+    loading: null,    // 进行中的拉取回调队列（null=空闲）
+    rr: 0,            // 代理轮询游标
+    fails: {}         // base -> 连续失败次数（>=2 熔断）
+};
 
-function getUserGhToken() {
+function extDlAvailable() {
+    if (!extProxyState.enabled || !extProxyState.list.length) return false;
+    for (var i = 0; i < extProxyState.list.length; i++) {
+        if ((extProxyState.fails[extProxyState.list[i]] || 0) < 2) return true;
+    }
+    return false;
+}
+
+// 轮询挑选一个未熔断的代理；全部熔断返回 null
+function extPickBase() {
+    var n = extProxyState.list.length;
+    for (var k = 0; k < n; k++) {
+        var i = (extProxyState.rr + k) % n;
+        var base = extProxyState.list[i];
+        if ((extProxyState.fails[base] || 0) < 2) {
+            extProxyState.rr = (i + 1) % n;
+            return base;
+        }
+    }
+    return null;
+}
+
+function extNoteFail(base) {
+    if (!base) return;
+    extProxyState.fails[base] = (extProxyState.fails[base] || 0) + 1;
+}
+
+function extRawUrl(base, filePath) {
+    return base + 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
+}
+
+function extProxyLoad(cb) {
+    if (extProxyState.list.length) {
+        cb(extProxyState.list);
+        return;
+    }
+    if (extProxyState.loading) {
+        extProxyState.loading.push(cb);
+        return;
+    }
+    var cbs = [cb];
+    extProxyState.loading = cbs;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', EXT_PROXY_API, true);
+    xhr.onload = function() {
+        var list = [];
+        try {
+            var j = JSON.parse(xhr.responseText);
+            if (j && j.proxies && j.proxies.length) list = j.proxies;
+        } catch (e) {}
+        extProxyState.list = list;
+        extProxyState.fails = {};
+        extProxyState.loading = null;
+        cbs.forEach(function(f) { f(list); });
+    };
+    xhr.onerror = function() {
+        extProxyState.loading = null;
+        cbs.forEach(function(f) { f([]); });
+    };
+    xhr.send();
+}
+
+function extProxySetEnabled(on, quiet) {
+    extProxyState.enabled = on;
     try {
-        return (localStorage.getItem(GH_TOKEN_STORAGE_KEY) || '').trim();
-    } catch (e) {
-        return '';
+        localStorage.setItem(EXT_PROXY_STORAGE_KEY, on ? '1' : '0');
+    } catch (e) {}
+    if (!on) {
+        updateDlLegendExtVisibility();
+        return;
+    }
+    extProxyLoad(function(list) {
+        updateDlLegendExtVisibility();
+        if (!quiet && extProxyState.enabled) {
+            showToast(list.length ? ('外部多代理已启用（' + list.length + ' 个可用）') : '暂无可用外部代理，仍走 EO/CF 通道');
+            setTimeout(hideToast, 3000);
+        }
+    });
+}
+
+function extProxyRestore() {
+    var saved = '0';
+    try {
+        saved = localStorage.getItem(EXT_PROXY_STORAGE_KEY) || '0';
+    } catch (e) {}
+    if (saved === '1') {
+        var btn = document.getElementById('taskDlExtBtn');
+        if (btn) btn.classList.add('active');
+        extProxySetEnabled(true, true);
     }
 }
 
-function saveUserGhToken(token) {
-    try {
-        token = (token || '').trim();
-        if (token) localStorage.setItem(GH_TOKEN_STORAGE_KEY, token);
-        else localStorage.removeItem(GH_TOKEN_STORAGE_KEY);
-    } catch (e) {}
-    // Token 变化后重探 CF 通道（可能从不可用变为可用，或反之）
-    cfUploadState = null;
-    cfUploadAuth = null;
-}
+// ---- CF 上传通道能力探测 ----
+// CF 代理本身不注入 GitHub key：若部署方在 CF 侧配置了服务端 key，
+// 写请求会被鉴权通过（此时浏览器同样不接触 key，key 只在 CF 服务端）；
+// 否则 GitHub 返回 401。用必失败的请求体探测，不会创建任何提交。
+// 探测结果缓存于会话内；不可用时上传自动仅走 EO，功能无任何影响。
+var cfUploadState = null;   // null=未探测, true/false
+var cfUploadProbedAt = 0;
 
 function probeCfUpload(cb) {
     // 失败结果 60 秒后重探（CF 侧可能后来才配置服务端 key）
@@ -70,44 +153,21 @@ function probeCfUpload(cb) {
         cb(cfUploadState);
         return;
     }
-    // 第一级：不带任何凭据，探测 CF 是否有服务端 key
-    doProbe(null, function(ok) {
-        if (ok) {
-            cfUploadState = true;
-            cfUploadAuth = 'server';
-            cfUploadProbedAt = Date.now();
-            cb(true);
-            return;
-        }
-        // 第二级：CF 无服务端 key，改用用户端 Token 探测
-        var tok = getUserGhToken();
-        if (!tok) {
-            cfUploadState = false;
-            cfUploadAuth = null;
-            cfUploadProbedAt = Date.now();
-            cb(false);
-            return;
-        }
-        doProbe(tok, function(ok2) {
-            cfUploadState = ok2;
-            cfUploadAuth = ok2 ? 'token' : null;
-            cfUploadProbedAt = Date.now();
-            cb(ok2);
-        });
-    });
-
-    function doProbe(tok, done) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('PUT', cfApiUrl('.cf-write-probe'), true);
-        xhr.setRequestHeader('Content-Type', 'application/json');
-        if (tok) xhr.setRequestHeader('Authorization', 'token ' + tok);
-        xhr.onload = function() {
-            // 401/403 = 该级鉴权不可用；400/422 等 = 鉴权通过（请求体无效被拒）
-            done(xhr.status !== 401 && xhr.status !== 403 && xhr.status !== 0);
-        };
-        xhr.onerror = function() { done(false); };
-        xhr.send('not-json');
-    }
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', cfApiUrl('.cf-write-probe'), true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.onload = function() {
+        // 401/403 = CF 无服务端写鉴权；400/422 等 = CF 能鉴权（请求体无效被拒）
+        cfUploadState = xhr.status !== 401 && xhr.status !== 403 && xhr.status !== 0;
+        cfUploadProbedAt = Date.now();
+        cb(cfUploadState);
+    };
+    xhr.onerror = function() {
+        cfUploadState = false;
+        cfUploadProbedAt = Date.now();
+        cb(false);
+    };
+    xhr.send('not-json');
 }
 
 // 写操作（上传/编辑/删除）附加登录凭据头，EO 校验通过后才代理写 GitHub；
@@ -1471,19 +1531,25 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
 
     function fetchSeg(seg, attempt) {
         if (state.failed || state.cancelled) return;
-        // 通道：首次按两通道实测速率比例加权分配（无数据时交替），
-        // 重试换源；CF 熔断后强制 EO
-        var useCf;
-        if (state.cfDown) {
-            useCf = false;
-        } else if (attempt > 0) {
-            useCf = !(seg._lastCf === true);
+        // 通道：首次按各通道在途均衡 + 实测速率加权分配（无数据时轮询），
+        // 重试在上次失败的通道之外换源；CF 熔断后排除 CF 通道
+        var chan;
+        if (attempt > 0) {
+            var ex = seg._lastChan;
+            chan = pickDlChannel(ex) || pickDlFallback(ex);
+        } else if (state.cfDown) {
+            chan = pickDlChannel('cf') || pickDlFallback('cf');
         } else {
-            var picked = pickDlChannel();
-            useCf = picked === null ? pickDlFallback() : picked;
+            chan = pickDlChannel() || pickDlFallback();
         }
-        seg._lastCf = useCf;
-        dlChanInc(useCf);
+        // 外部代理：先锁定所用代理（记录以便按代理熔断）；
+        // 挑选期间全部熔断的极端情况直接回退 EO
+        if (chan === 'ext') {
+            seg._extBase = extPickBase();
+            if (!seg._extBase) chan = 'eo';
+        }
+        seg._lastChan = chan;
+        dlChanInc(chan);
         var ctrl = new AbortController();
         state.controllers.push(ctrl);
         var headers = {};
@@ -1494,7 +1560,14 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
         } else if (from > 0) {
             headers['Range'] = 'bytes=' + from + '-';
         }
-        var url = useCf ? cfRawUrl(filePath) : rawUrlFor(filePath);
+        var url;
+        if (chan === 'cf') {
+            url = cfRawUrl(filePath);
+        } else if (chan === 'ext') {
+            url = extRawUrl(seg._extBase, filePath);
+        } else {
+            url = rawUrlFor(filePath);
+        }
         fetch(url, { signal: ctrl.signal, cache: 'no-store', headers: headers }).then(function(resp) {
             if (state.failed || state.cancelled) return;
             var ranged = headers['Range'] !== undefined;
@@ -1502,7 +1575,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
             // 整文件单段且从头开始：200/206 均可
             if (seg.end === null && seg.received === 0) ok = resp.ok || resp.status === 206;
             if (!ok || !resp.body) {
-                retrySeg(seg, attempt, useCf);
+                retrySeg(seg, attempt, chan);
                 return;
             }
             // 整文件单段响应：从 Content-Length 补出总大小（免单独探测请求）
@@ -1517,7 +1590,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
                     if (r.done) {
                         seg.done = true;
                         activeSegs--;
-                        dlChanDec(useCf);
+                        dlChanDec(chan);
                         dlAdaptiveSuccess(Date.now() - (seg.t0 || Date.now()));
                         checkAll();
                         pumpSegs();
@@ -1526,29 +1599,32 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
                     seg.chunks.push(r.value);
                     seg.received += r.value.byteLength;
                     loaded += r.value.byteLength;
-                    dlTrackAdd(useCf, r.value.byteLength);
+                    dlTrackAdd(chan, r.value.byteLength);
                     report();
                     pump();
                 }, function(err) {
                     if (isAbort(err)) return;
-                    retrySeg(seg, attempt, useCf);
+                    retrySeg(seg, attempt, chan);
                 });
             };
             pump();
         }, function(err) {
             if (isAbort(err)) return;
-            retrySeg(seg, attempt, useCf);
+            retrySeg(seg, attempt, chan);
         });
     }
 
-    function retrySeg(seg, attempt, wasCf) {
+    function retrySeg(seg, attempt, chan) {
         if (state.failed || state.cancelled) return;
-        dlChanDec(wasCf);
-        if (wasCf) {
+        dlChanDec(chan);
+        if (chan === 'cf') {
             state.cfFails++;
             if (state.cfFails >= 2) state.cfDown = true;
+        } else if (chan === 'ext') {
+            // 外部代理按代理熔断：单个代理连续失败 2 次即轮换下一个
+            extNoteFail(seg._extBase);
         } else {
-            // EO 段失败暗示链路饱和，自适应降低下载并发（CF 失败只熔断通道）
+            // EO 段失败暗示链路饱和，自适应降低下载并发（CF/外部失败只熔断通道）
             dlAdaptiveFail();
         }
         if (attempt + 1 >= DUAL_SEG_MAX_ATTEMPTS) {
@@ -2287,27 +2363,38 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
         }
         if (nextIndex >= parts.length) return;
         var i = nextIndex++;
-        // 每片在 EO/CF 两通道间交替分配；失败换源重试（最多 3 次），
-        // CF 连续失败 2 次熔断，剩余片全部回退 EO
+        // 每片在 EO/CF/外部代理间按在途均衡 + 实测速率加权分配；失败换源
+        // 重试（最多 3 次），CF 连续失败 2 次熔断，外部代理按代理熔断轮换
         var attempt = 0;
         var startPart = function() {
             if (failed || cancelled) return;
             parts[i]._t0 = Date.now();
-            // 通道：首次按两通道实测速率比例加权分配（无数据时交替），重试换源
-            var useCf;
-            if (mergeCfDown) {
-                useCf = false;
-            } else if (attempt > 0) {
-                useCf = !parts[i]._lastCf;
+            // 通道：重试在上次失败的通道之外换源；CF 熔断后排除 CF 通道
+            var chan;
+            if (attempt > 0) {
+                var ex = parts[i]._lastChan;
+                chan = pickDlChannel(ex) || pickDlFallback(ex);
+            } else if (mergeCfDown) {
+                chan = pickDlChannel('cf') || pickDlFallback('cf');
             } else {
-                var picked = pickDlChannel();
-                useCf = picked === null ? pickDlFallback() : picked;
+                chan = pickDlChannel() || pickDlFallback();
             }
-            parts[i]._lastCf = useCf;
-            dlChanInc(useCf);
-            var url = useCf
-                ? cfRawUrl(parts[i].path)
-                : ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[i].path));
+            // 外部代理：先锁定所用代理（记录以便按代理熔断）；
+            // 挑选期间全部熔断的极端情况直接回退 EO
+            if (chan === 'ext') {
+                parts[i]._extBase = extPickBase();
+                if (!parts[i]._extBase) chan = 'eo';
+            }
+            parts[i]._lastChan = chan;
+            dlChanInc(chan);
+            var url;
+            if (chan === 'cf') {
+                url = cfRawUrl(parts[i].path);
+            } else if (chan === 'ext') {
+                url = extRawUrl(parts[i]._extBase, parts[i].path);
+            } else {
+                url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[i].path));
+            }
             var xhr = new XMLHttpRequest();
             actives.push(xhr);
             xhr.open('GET', url, true);
@@ -2316,7 +2403,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
                 var delta = e.loaded - (parts[i]._loaded || 0);
                 parts[i]._loaded = e.loaded;
                 loadedBytes += delta;
-                if (quiet) dlTrackAdd(useCf, delta);
+                if (quiet) dlTrackAdd(chan, delta);
                 sample();
                 report();
             };
@@ -2325,7 +2412,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
                 if (cancelled) return;
                 if (xhr.status === 200) {
                     buffers[i] = xhr.response;
-                    dlChanDec(useCf);
+                    dlChanDec(chan);
                     loadedBytes += (parts[i].size || 0) - (parts[i]._loaded || 0);
                     doneCount++;
                     dlAdaptiveSuccess(Date.now() - (parts[i]._t0 || Date.now()));
@@ -2342,21 +2429,24 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
                     next();
                     pumpMerge();
                 } else {
-                    retryPart(useCf);
+                    retryPart(chan);
                 }
             };
             xhr.onerror = function() {
                 actives.splice(actives.indexOf(xhr), 1);
-                retryPart(useCf);
+                retryPart(chan);
             };
             xhr.send();
         };
-        var retryPart = function(fromCf) {
+        var retryPart = function(chan) {
             if (failed || cancelled) return;
-            dlChanDec(fromCf);
-            if (fromCf) {
+            dlChanDec(chan);
+            if (chan === 'cf') {
                 mergeCfFails++;
                 if (mergeCfFails >= 2) mergeCfDown = true;
+            } else if (chan === 'ext') {
+                // 外部代理按代理熔断：单个代理连续失败 2 次即轮换下一个
+                extNoteFail(parts[i]._extBase);
             } else {
                 // EO 片失败暗示链路饱和，自适应降低下载并发
                 dlAdaptiveFail();
@@ -5066,12 +5156,10 @@ function uploadFile() {
     // 探测 CF 上传通道（CF 侧有服务端 key 时启用双通道上传），探测完成前不开始；
     // 探测结果明示给用户，通道状态不再是个谜
     probeCfUpload(function(cfOk) {
-        if (cfOk && cfUploadAuth === 'token') {
-            showToast('上传双通道已启用（EO + CF，CF 侧使用您的 GitHub Token）');
-        } else if (cfOk) {
+        if (cfOk) {
             showToast('上传双通道已启用（EO + CF）');
         } else {
-            showToast('CF 上传通道不可用（CF 侧未配置服务端 key），本次仅经 EO 上传；如需 CF 加速可在上方填写 GitHub Token');
+            showToast('CF 上传通道不可用（CF 侧未配置服务端 key 或不可达），本次仅经 EO 上传');
         }
         setTimeout(hideToast, 4000);
         chunkSizeLevel = 0;
@@ -5166,19 +5254,16 @@ function dlAdaptiveFail() {
     dlLimit._fast = 0;
 }
 
-// ---- 通道负载分配（下载）：在途均衡优先，再按两通道最近 5 秒实测速率
-// 比例加权（带概率地板/天花板），无数据时全局交替兜底 ----
-var dlActiveEo = 0;
-var dlActiveCf = 0;
+// ---- 通道负载分配（下载）：在途均衡优先，再按各通道最近 5 秒实测速率
+// 比例加权（带概率地板），无数据时轮询兜底。通道：'eo' / 'cf' / 'ext' ----
+var dlActive = { eo: 0, cf: 0, ext: 0 };
 
-function dlChanInc(useCf) {
-    if (useCf) dlActiveCf++;
-    else dlActiveEo++;
+function dlChanInc(chan) {
+    dlActive[chan] = (dlActive[chan] || 0) + 1;
 }
 
-function dlChanDec(useCf) {
-    if (useCf) dlActiveCf = Math.max(0, dlActiveCf - 1);
-    else dlActiveEo = Math.max(0, dlActiveEo - 1);
+function dlChanDec(chan) {
+    dlActive[chan] = Math.max(0, (dlActive[chan] || 0) - 1);
 }
 
 function dlRecentRates() {
@@ -5189,38 +5274,67 @@ function dlRecentRates() {
         for (var i = 0; i < tail.length; i++) sum += tail[i];
         return sum / tail.length;
     };
-    return { eo: avg(dlTracker.eo), cf: avg(dlTracker.cf) };
+    return { eo: avg(dlTracker.eo), cf: avg(dlTracker.cf), ext: avg(dlTracker.ext) };
 }
 
-// 无速率数据时的交替兜底：全局翻转而非按段序号奇偶，保证跨文件/跨批次
-// 也严格交替——单段小文件批量下载时两通道同样能均衡分到任务
-var dlChanFlip = false;
-
-function pickDlFallback() {
-    dlChanFlip = !dlChanFlip;
-    return dlChanFlip;
+// 当前可用下载通道（exclude 用于重试换源时排除上次失败的通道）
+function dlChannels(exclude) {
+    var chans = [];
+    if (exclude !== 'eo') chans.push('eo');
+    if (exclude !== 'cf') chans.push('cf');
+    if (exclude !== 'ext' && extDlAvailable()) chans.push('ext');
+    return chans;
 }
 
-// 返回 true=CF / false=EO / null=无速率数据（调用方交替兜底）
-function pickDlChannel() {
-    // 在途均衡优先：某通道在途任务数明显更多时先补给另一通道，
+// 无速率数据时的轮询兜底：在可用通道间依次轮转而非按段序号奇偶，
+// 保证跨文件/跨批次也严格均衡——单段小文件批量下载时各通道同样均衡分到任务
+var dlChanRr = 0;
+
+function pickDlFallback(exclude) {
+    var chans = dlChannels(exclude);
+    dlChanRr = (dlChanRr + 1) % chans.length;
+    return chans[dlChanRr];
+}
+
+// 返回 'eo'/'cf'/'ext' / null=无速率数据（调用方轮询兜底）
+function pickDlChannel(exclude) {
+    var chans = dlChannels(exclude);
+    // 在途均衡优先：把新任务补给在途最少的通道（相差 2 以上才干预），
     // 避免起始几段的轻微失衡被加权随机放大成单通道独占
-    var diff = dlActiveCf - dlActiveEo;
-    if (diff >= 2) return false;
-    if (diff <= -2) return true;
+    var minAct = Infinity, maxAct = -1, minChan = chans[0];
+    for (var i = 0; i < chans.length; i++) {
+        var a = dlActive[chans[i]] || 0;
+        if (a < minAct) { minAct = a; minChan = chans[i]; }
+        if (a > maxAct) maxAct = a;
+    }
+    if (maxAct - minAct >= 2) return minChan;
     var r = dlRecentRates();
-    if (r.eo < 1024 && r.cf < 1024) return null;
-    // 概率地板/天花板：任一通道至少保留 15% 选中概率——零速率通道也能
-    // 持续分到探测任务，打破"分不到段→测不到速率→永远分不到段"的死锁
-    var p = r.cf / (r.eo + r.cf);
-    if (p < 0.15) p = 0.15;
-    else if (p > 0.85) p = 0.85;
-    return Math.random() < p;
+    var totalRate = 0, anyRate = false;
+    for (var j = 0; j < chans.length; j++) {
+        totalRate += r[chans[j]];
+        if (r[chans[j]] >= 1024) anyRate = true;
+    }
+    if (!anyRate) return null;
+    // 概率地板：每个通道至少保留约 15% 选中概率（三通道时 10%）——
+    // 零速率通道也能持续分到探测任务，打破"分不到段→测不到速率→永远分不到段"的死锁
+    var floor = chans.length > 2 ? 0.10 : 0.15;
+    var weights = [], sum = 0;
+    for (var k = 0; k < chans.length; k++) {
+        var w = Math.max((r[chans[k]] || 0) / (totalRate || 1), floor);
+        weights.push(w);
+        sum += w;
+    }
+    var x = Math.random() * sum;
+    for (var m = 0; m < chans.length; m++) {
+        x -= weights[m];
+        if (x <= 0) return chans[m];
+    }
+    return chans[chans.length - 1];
 }
 
-// ---- 下载速度跟踪：按通道（EO/CF）分桶统计，每秒采样一次供三曲线使用 ----
+// ---- 下载速度跟踪：按通道（EO/CF/外部）分桶统计，每秒采样一次供曲线使用 ----
 var DL_HISTORY_MAX = 150;
-var dlTracker = { active: 0, timer: null, eoAcc: 0, cfAcc: 0, eo: [], cf: [], tot: [], lastActive: 0 };
+var dlTracker = { active: 0, timer: null, eoAcc: 0, cfAcc: 0, extAcc: 0, eo: [], cf: [], ext: [], tot: [], lastActive: 0 };
 
 function dlTrackStart() {
     dlTracker.active++;
@@ -5229,19 +5343,24 @@ function dlTrackStart() {
     if (Date.now() - dlTracker.lastActive > 8000) {
         dlTracker.eo = [];
         dlTracker.cf = [];
+        dlTracker.ext = [];
         dlTracker.tot = [];
     }
     dlTracker.eoAcc = 0;
     dlTracker.cfAcc = 0;
+    dlTracker.extAcc = 0;
     dlTracker.timer = setInterval(function() {
         dlTracker.eo.push(dlTracker.eoAcc);
         dlTracker.cf.push(dlTracker.cfAcc);
-        dlTracker.tot.push(dlTracker.eoAcc + dlTracker.cfAcc);
+        dlTracker.ext.push(dlTracker.extAcc);
+        dlTracker.tot.push(dlTracker.eoAcc + dlTracker.cfAcc + dlTracker.extAcc);
         dlTracker.eoAcc = 0;
         dlTracker.cfAcc = 0;
+        dlTracker.extAcc = 0;
         if (dlTracker.eo.length > DL_HISTORY_MAX) {
             dlTracker.eo.shift();
             dlTracker.cf.shift();
+            dlTracker.ext.shift();
             dlTracker.tot.shift();
         }
         drawDlGraph();
@@ -5259,27 +5378,28 @@ function dlTrackStop() {
     }
 }
 
-function dlTrackAdd(useCf, bytes) {
+function dlTrackAdd(chan, bytes) {
     if (!dlTracker.active || bytes <= 0) return;
-    if (useCf) dlTracker.cfAcc += bytes;
+    if (chan === 'cf') dlTracker.cfAcc += bytes;
+    else if (chan === 'ext') dlTracker.extAcc += bytes;
     else dlTracker.eoAcc += bytes;
 }
 
-// 绘制下载三曲线：总（蓝，面积填充）/ EO（绿）/ CF（橙），Y 轴带刻度
+// 绘制下载曲线：总（蓝，面积填充）/ EO（绿）/ CF（橙）/ 外部代理（紫），Y 轴带刻度
 function drawDlGraph() {
     var canvas = document.getElementById('taskDlGraph');
     if (!canvas || canvas.style.display === 'none') return;
     var ctxBox = prepareGraphCanvas(canvas, 34);
     if (!ctxBox) return;
     var ctx = ctxBox.ctx, W = ctxBox.plotW, H = ctxBox.plotH, x0 = ctxBox.x0;
-    var tot = dlTracker.tot, eo = dlTracker.eo, cf = dlTracker.cf;
+    var tot = dlTracker.tot, eo = dlTracker.eo, cf = dlTracker.cf, ext = dlTracker.ext;
     var peak = 0;
     for (var p = 0; p < tot.length; p++) {
         if (tot[p] > peak) peak = tot[p];
     }
     drawGraphGrid(ctx, ctxBox, peak);
     if (!tot.length || peak <= 0) {
-        updateDlLegend(0, 0, 0);
+        updateDlLegend(0, 0, 0, 0);
         return;
     }
     var max = peak * 1.15;
@@ -5310,16 +5430,29 @@ function drawDlGraph() {
     plot(tot, '#2c82c9', true);
     plot(eo, '#28a745', false);
     plot(cf, '#e67e22', false);
-    updateDlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0);
+    if (extProxyState.enabled) plot(ext, '#9b59b6', false);
+    updateDlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0, ext[n - 1] || 0);
 }
 
-function updateDlLegend(totV, eoV, cfV) {
+function updateDlLegend(totV, eoV, cfV, extV) {
     var f = function(v) { return v > 1024 ? formatSize(Math.round(v)) + '/s' : '0/s'; };
     var el;
     if ((el = document.getElementById('taskDlLegendTot'))) el.textContent = '总 ' + f(totV);
     // 附带各通道在途段/片数，负载分配一目了然
-    if ((el = document.getElementById('taskDlLegendEo'))) el.textContent = 'EO ' + f(eoV) + ' ×' + dlActiveEo;
-    if ((el = document.getElementById('taskDlLegendCf'))) el.textContent = 'CF ' + f(cfV) + ' ×' + dlActiveCf;
+    if ((el = document.getElementById('taskDlLegendEo'))) el.textContent = 'EO ' + f(eoV) + ' ×' + dlActive.eo;
+    if ((el = document.getElementById('taskDlLegendCf'))) el.textContent = 'CF ' + f(cfV) + ' ×' + dlActive.cf;
+    if ((el = document.getElementById('taskDlLegendExt'))) el.textContent = '外部 ' + f(extV || 0) + ' ×' + dlActive.ext;
+    updateDlLegendExtVisibility();
+}
+
+// 外部代理图例只在多代理模式开启时显示（连同前面的色块）
+function updateDlLegendExtVisibility() {
+    var span = document.getElementById('taskDlLegendExt');
+    if (!span) return;
+    var icon = span.previousElementSibling;
+    var disp = extProxyState.enabled ? '' : 'none';
+    span.style.display = disp;
+    if (icon && icon.tagName === 'I') icon.style.display = disp;
 }
 
 // ---- 曲线图公共：Y 轴刻度 + 网格 + 实时速度 ----
@@ -5996,10 +6129,6 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
     var xhr = new XMLHttpRequest();
     xhr.open('POST', gitApiUrl('/git/blobs', useCf), true);
     if (!useCf) applyEoAuth(xhr);
-    // CF 无服务端 key 时，以用户本机保存的 GitHub Token 在用户端鉴权直传
-    if (useCf && cfUploadAuth === 'token') {
-        xhr.setRequestHeader('Authorization', 'token ' + getUserGhToken());
-    }
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.upload.onprogress = function(e) {
         if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
@@ -6148,15 +6277,6 @@ document.addEventListener('DOMContentLoaded', function() {
     updateAuthBtn();
     initPwdEyes();
 
-    // GitHub Token（可选，用户端 CF 上传用）：初始回填本机保存值，改动即保存
-    var ghTokenInput = document.getElementById('ghTokenInput');
-    if (ghTokenInput) {
-        ghTokenInput.value = getUserGhToken();
-        ghTokenInput.addEventListener('change', function() {
-            saveUserGhToken(ghTokenInput.value);
-        });
-    }
-
     // 后台任务浮泡：点击恢复任务界面；✕ 仅关闭提示（不中断任务）
     document.getElementById('bgTaskBubble').addEventListener('click', function(e) {
         if (e.target.id === 'bgTaskClose') return;
@@ -6233,6 +6353,23 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('taskDlConcCustom').addEventListener('input', function() {
         dlSetMode(this.value);
     });
+    // 外部多代理开关：开启时从 /api/proxies 拉取可用代理列表（只含探测可用的），
+    // 状态持久化，下次打开自动恢复
+    document.getElementById('taskDlExtBtn').addEventListener('click', function() {
+        var btn = this;
+        if (extProxyState.enabled) {
+            extProxySetEnabled(false);
+            btn.classList.remove('active');
+            showToast('已关闭外部多代理下载');
+            setTimeout(hideToast, 2000);
+            return;
+        }
+        btn.classList.add('active');
+        showToast('正在获取可用外部代理...');
+        setTimeout(hideToast, 2000);
+        extProxySetEnabled(true);
+    });
+    extProxyRestore();
     document.getElementById('taskDlGraphToggle').addEventListener('click', function() {
         var graph = document.getElementById('taskDlGraph');
         var legend = document.getElementById('taskDlLegend');
