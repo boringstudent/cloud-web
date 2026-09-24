@@ -13,10 +13,11 @@ function ghUrl(url) {
 }
 
 // ---- 下载双通道：EO（同源，服务端注入 key，稳定无限流）+ CF 代理（匿名公开仓库可访问） ----
-// 大文件分段并行下载时段在两通道间交替分配，聚合两条链路的带宽；
+// 大文件分段并行下载时段在两通道间按在途均衡 + 实测速率加权分配，聚合两条链路的带宽；
 // 段失败自动换源重试，CF 连续失败即熔断，剩余段全部回退 EO，保证最终可用性。
-// 注意：写操作（上传/编辑/删除）只走 EO——GitHub key 永不下发浏览器，
-// 第三方代理无法鉴权写请求；提交冲突由 409/sha 竞争重试算法保证安全。
+// 写操作默认只走 EO——GitHub key 永不下发浏览器；仅当 CF 侧配置了服务端 key，
+// 或用户在本机填写了自己的 GitHub Token 时，blob 传输才会分流到 CF 通道，
+// 引用类操作（提交/删除）始终固定走 EO；提交冲突由 409/sha 竞争重试算法保证安全。
 var CF_PROXY_BASE = 'https://cloud-ecr.pages.dev/';
 var DUAL_DL_MIN = 2 * 1024 * 1024;   // 大于 2MB 才启用分段双通道
 var DUAL_DL_PARTS = 12;              // 分段数（多于并发数，调度器滚动补位）
@@ -31,12 +32,37 @@ function cfApiUrl(filePath) {
 }
 
 // ---- CF 上传通道能力探测 ----
-// CF 代理本身不注入 GitHub key：若部署方在 CF 侧配置了服务端 key，
-// 写请求会被鉴权通过（此时浏览器同样不接触 key，key 只在 CF 服务端）；
-// 否则 GitHub 返回 401。用必失败的请求体探测，不会创建任何提交。
+// CF 代理本身不注入 GitHub key，写请求按两级探测：
+// 1) 部署方在 CF 侧配置了服务端 key：写请求直接被鉴权通过
+//    （浏览器不接触 key，key 只在 CF 服务端）；
+// 2) CF 侧无服务端 key 时，若用户在上传弹窗填写了自己的 GitHub Token
+//    （仅存本机浏览器 localStorage，不上传任何服务器），则以该 Token
+//    在用户端直接经 CF 代理鉴权上传。
+// 用必失败的请求体探测，不会创建任何提交。
 // 探测结果缓存于会话内；不可用时上传自动仅走 EO，功能无任何影响。
-var cfUploadState = null;   // null=未探测, true/false
+var cfUploadState = null;      // null=未探测, true/false
+var cfUploadAuth = null;       // 'server'=CF 服务端 key / 'token'=用户端 Token
 var cfUploadProbedAt = 0;
+var GH_TOKEN_STORAGE_KEY = 'cloud_web_gh_token';
+
+function getUserGhToken() {
+    try {
+        return (localStorage.getItem(GH_TOKEN_STORAGE_KEY) || '').trim();
+    } catch (e) {
+        return '';
+    }
+}
+
+function saveUserGhToken(token) {
+    try {
+        token = (token || '').trim();
+        if (token) localStorage.setItem(GH_TOKEN_STORAGE_KEY, token);
+        else localStorage.removeItem(GH_TOKEN_STORAGE_KEY);
+    } catch (e) {}
+    // Token 变化后重探 CF 通道（可能从不可用变为可用，或反之）
+    cfUploadState = null;
+    cfUploadAuth = null;
+}
 
 function probeCfUpload(cb) {
     // 失败结果 60 秒后重探（CF 侧可能后来才配置服务端 key）
@@ -44,21 +70,44 @@ function probeCfUpload(cb) {
         cb(cfUploadState);
         return;
     }
-    var xhr = new XMLHttpRequest();
-    xhr.open('PUT', cfApiUrl('.cf-write-probe'), true);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.onload = function() {
-        // 401/403 = CF 无服务端写鉴权；400/422 等 = CF 能鉴权（请求体无效被拒）
-        cfUploadState = xhr.status !== 401 && xhr.status !== 403 && xhr.status !== 0;
-        cfUploadProbedAt = Date.now();
-        cb(cfUploadState);
-    };
-    xhr.onerror = function() {
-        cfUploadState = false;
-        cfUploadProbedAt = Date.now();
-        cb(false);
-    };
-    xhr.send('not-json');
+    // 第一级：不带任何凭据，探测 CF 是否有服务端 key
+    doProbe(null, function(ok) {
+        if (ok) {
+            cfUploadState = true;
+            cfUploadAuth = 'server';
+            cfUploadProbedAt = Date.now();
+            cb(true);
+            return;
+        }
+        // 第二级：CF 无服务端 key，改用用户端 Token 探测
+        var tok = getUserGhToken();
+        if (!tok) {
+            cfUploadState = false;
+            cfUploadAuth = null;
+            cfUploadProbedAt = Date.now();
+            cb(false);
+            return;
+        }
+        doProbe(tok, function(ok2) {
+            cfUploadState = ok2;
+            cfUploadAuth = ok2 ? 'token' : null;
+            cfUploadProbedAt = Date.now();
+            cb(ok2);
+        });
+    });
+
+    function doProbe(tok, done) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('PUT', cfApiUrl('.cf-write-probe'), true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        if (tok) xhr.setRequestHeader('Authorization', 'token ' + tok);
+        xhr.onload = function() {
+            // 401/403 = 该级鉴权不可用；400/422 等 = 鉴权通过（请求体无效被拒）
+            done(xhr.status !== 401 && xhr.status !== 403 && xhr.status !== 0);
+        };
+        xhr.onerror = function() { done(false); };
+        xhr.send('not-json');
+    }
 }
 
 // 写操作（上传/编辑/删除）附加登录凭据头，EO 校验通过后才代理写 GitHub；
@@ -1431,7 +1480,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail) {
             useCf = !(seg._lastCf === true);
         } else {
             var picked = pickDlChannel();
-            useCf = picked === null ? (seg.index % 2 === 1) : picked;
+            useCf = picked === null ? pickDlFallback() : picked;
         }
         seg._lastCf = useCf;
         dlChanInc(useCf);
@@ -2252,7 +2301,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
                 useCf = !parts[i]._lastCf;
             } else {
                 var picked = pickDlChannel();
-                useCf = picked === null ? (i % 2 === 1) : picked;
+                useCf = picked === null ? pickDlFallback() : picked;
             }
             parts[i]._lastCf = useCf;
             dlChanInc(useCf);
@@ -5017,10 +5066,12 @@ function uploadFile() {
     // 探测 CF 上传通道（CF 侧有服务端 key 时启用双通道上传），探测完成前不开始；
     // 探测结果明示给用户，通道状态不再是个谜
     probeCfUpload(function(cfOk) {
-        if (cfOk) {
+        if (cfOk && cfUploadAuth === 'token') {
+            showToast('上传双通道已启用（EO + CF，CF 侧使用您的 GitHub Token）');
+        } else if (cfOk) {
             showToast('上传双通道已启用（EO + CF）');
         } else {
-            showToast('CF 上传通道不可用（CF 侧未配置服务端 key 或不可达），本次仅经 EO 上传');
+            showToast('CF 上传通道不可用（CF 侧未配置服务端 key），本次仅经 EO 上传；如需 CF 加速可在上方填写 GitHub Token');
         }
         setTimeout(hideToast, 4000);
         chunkSizeLevel = 0;
@@ -5115,7 +5166,8 @@ function dlAdaptiveFail() {
     dlLimit._fast = 0;
 }
 
-// ---- 通道负载分配（下载）：按两通道最近 5 秒实测速率比例加权 ----
+// ---- 通道负载分配（下载）：在途均衡优先，再按两通道最近 5 秒实测速率
+// 比例加权（带概率地板/天花板），无数据时全局交替兜底 ----
 var dlActiveEo = 0;
 var dlActiveCf = 0;
 
@@ -5140,11 +5192,30 @@ function dlRecentRates() {
     return { eo: avg(dlTracker.eo), cf: avg(dlTracker.cf) };
 }
 
+// 无速率数据时的交替兜底：全局翻转而非按段序号奇偶，保证跨文件/跨批次
+// 也严格交替——单段小文件批量下载时两通道同样能均衡分到任务
+var dlChanFlip = false;
+
+function pickDlFallback() {
+    dlChanFlip = !dlChanFlip;
+    return dlChanFlip;
+}
+
 // 返回 true=CF / false=EO / null=无速率数据（调用方交替兜底）
 function pickDlChannel() {
+    // 在途均衡优先：某通道在途任务数明显更多时先补给另一通道，
+    // 避免起始几段的轻微失衡被加权随机放大成单通道独占
+    var diff = dlActiveCf - dlActiveEo;
+    if (diff >= 2) return false;
+    if (diff <= -2) return true;
     var r = dlRecentRates();
     if (r.eo < 1024 && r.cf < 1024) return null;
-    return Math.random() < (r.cf / (r.eo + r.cf));
+    // 概率地板/天花板：任一通道至少保留 15% 选中概率——零速率通道也能
+    // 持续分到探测任务，打破"分不到段→测不到速率→永远分不到段"的死锁
+    var p = r.cf / (r.eo + r.cf);
+    if (p < 0.15) p = 0.15;
+    else if (p > 0.85) p = 0.85;
+    return Math.random() < p;
 }
 
 // ---- 下载速度跟踪：按通道（EO/CF）分桶统计，每秒采样一次供三曲线使用 ----
@@ -5466,18 +5537,36 @@ function applyConcurrencyChange() {
     fillUploads();
 }
 
-// 按通道负载分配上传任务：尚无速率数据时简单交替；
-// 有数据后按两通道实测速率比例加权（快的通道分得更多任务），并统计各自任务数
+// 按通道负载分配上传任务：在途任务数均衡优先；尚无速率数据时简单交替；
+// 有数据后按两通道实测速率比例加权（带概率地板/天花板，避免零速率通道
+// 被永久饿死），快的通道分得更多任务，并统计各自任务数
 function pickUploadChannel(size) {
     var st = uploadState;
     if (cfUploadState !== true || !st) return false;
     var useCf;
-    var eoRate = st._eoRate || 0;
-    var cfRate = st._cfRate || 0;
-    if (eoRate < 1024 && cfRate < 1024) {
-        useCf = (st.chanFlip = !st.chanFlip);
+    // 在途均衡优先：某通道在途任务明显更多时先补给另一通道
+    var eoAct = 0, cfAct = 0;
+    for (var key in st.activeTasks) {
+        if (st.activeTasks[key].useCf) cfAct++;
+        else eoAct++;
+    }
+    var diff = cfAct - eoAct;
+    if (diff >= 2) {
+        useCf = false;
+    } else if (diff <= -2) {
+        useCf = true;
     } else {
-        useCf = Math.random() < (cfRate / (eoRate + cfRate));
+        var eoRate = st._eoRate || 0;
+        var cfRate = st._cfRate || 0;
+        if (eoRate < 1024 && cfRate < 1024) {
+            useCf = (st.chanFlip = !st.chanFlip);
+        } else {
+            // 概率地板/天花板：零速率通道保留 15% 机会持续获得探测任务
+            var p = cfRate / (eoRate + cfRate);
+            if (p < 0.15) p = 0.15;
+            else if (p > 0.85) p = 0.85;
+            useCf = Math.random() < p;
+        }
     }
     if (useCf) st.cfTasks++;
     else st.eoTasks++;
@@ -5679,7 +5768,9 @@ function stopUploadTimer() {
 }
 
 // 全部 blob 传完后进入批量提交阶段：每 COMMIT_GROUP_SIZE 个 blob 合成
-// 一个 tree + commit，引用移动次数从任务数降到组数，冲突概率趋近于零
+// 一个 tree + commit，引用移动次数从任务数降到组数，冲突概率趋近于零；
+// 组间以 sessionRef 链式推进（上一组的新引用直接作为下一组基点），
+// 杜绝组间读到过期引用导致的非快进失败
 function finishUpload() {
     stopUploadTimer();
     document.getElementById('stopUploadBtn').style.display = 'none';
@@ -5694,6 +5785,7 @@ function finishUpload() {
         groups.push(blobs.slice(i, i + COMMIT_GROUP_SIZE));
     }
     var gi = 0;
+    var sessionRef = null;   // 上一组提交成功后的新引用，作为下一组的链式基点
     var commitNext = function() {
         if (gi >= groups.length) {
             fileTreeCache = null;
@@ -5708,7 +5800,7 @@ function finishUpload() {
             return;
         }
         setMsg('uploadMessage', '传输完成，正在批量提交 (' + (gi + 1) + '/' + groups.length + ')...', 'success');
-        commitBlobGroup(groups[gi], 'Upload ' + groups[gi].length + ' file(s) via cloud-web', function(ok, err) {
+        commitBlobGroup(groups[gi], 'Upload ' + groups[gi].length + ' file(s) via cloud-web', sessionRef, function(ok, err, newRef) {
             if (!ok) {
                 fileTreeCache = null;
                 bypassHttpCache();
@@ -5717,6 +5809,7 @@ function finishUpload() {
                 loadFileList();
                 return;
             }
+            sessionRef = newRef || sessionRef;
             gi++;
             commitNext();
         });
@@ -5903,6 +5996,10 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
     var xhr = new XMLHttpRequest();
     xhr.open('POST', gitApiUrl('/git/blobs', useCf), true);
     if (!useCf) applyEoAuth(xhr);
+    // CF 无服务端 key 时，以用户本机保存的 GitHub Token 在用户端鉴权直传
+    if (useCf && cfUploadAuth === 'token') {
+        xhr.setRequestHeader('Authorization', 'token ' + getUserGhToken());
+    }
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.upload.onprogress = function(e) {
         if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
@@ -5941,12 +6038,17 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
 }
 
 // 批量提交：把一组 {path, sha} blob 作为一个 tree + commit 落盘并移动分支引用。
-// 引用移动失败（被其他写入者抢先后 422/409）时从最新引用重来，最多 5 次——
+// 同一批上传的多个组之间链式推进：knownBase 传入上一组提交成功后的新引用，
+// 直接以其为基点建树，跳过重新读引用——彻底消除"上一组刚移动引用、下一组
+// 却读到旧引用"导致的非快进（non-fast-forward）失败。
+// 仅在与其他写入者发生真实竞争（422/409）时才重新读最新引用重来，最多 8 次——
 // 每轮重新读取 base tree 再建树，不会丢失他人的并发提交（与 git rebase 同理）。
-// 引用类操作固定走 EO（最可靠通道）。onDone(ok, errMsg)
-function commitBlobGroup(blobs, message, onDone) {
-    var MAX_ATTEMPTS = 5;
+// 引用类操作固定走 EO（最可靠通道）。onDone(ok, errMsg, newCommitSha)
+function commitBlobGroup(blobs, message, knownBase, onDone) {
+    var MAX_ATTEMPTS = 8;
     var attempt = 0;
+    // 链式基点只用一次：任何失败后的重试都重新读最新引用，保证不基于过期基点空转
+    var baseOverride = knownBase || null;
 
     function api(method, apiPath, body, cb) {
         var xhr = new XMLHttpRequest();
@@ -5960,41 +6062,51 @@ function commitBlobGroup(blobs, message, onDone) {
 
     function tryOnce() {
         attempt++;
-        // 1. 读最新分支引用
-        api('GET', '/git/ref/heads/' + DEFAULT_BRANCH, null, function(st1, body1) {
+        if (baseOverride) {
+            var chained = baseOverride;
+            baseOverride = null;
+            withBase(chained);
+            return;
+        }
+        // 1. 读最新分支引用（追加时间戳参数，防止任何中间缓存返回过期引用）
+        api('GET', '/git/ref/heads/' + DEFAULT_BRANCH + '?_=' + Date.now(), null, function(st1, body1) {
             if (st1 !== 200) return retry(st1, body1, '读取分支引用失败');
             var baseCommit;
             try { baseCommit = JSON.parse(body1).object.sha; } catch (e) {}
             if (!baseCommit) return retry(st1, body1, '解析分支引用失败');
-            // 2. 读该提交的 base tree
-            api('GET', '/git/commits/' + baseCommit, null, function(st2, body2) {
-                if (st2 !== 200) return retry(st2, body2, '读取提交失败');
-                var baseTree;
-                try { baseTree = JSON.parse(body2).tree.sha; } catch (e) {}
-                if (!baseTree) return retry(st2, body2, '解析提交失败');
-                // 3. 基于最新 tree 建树（同路径自动覆盖旧 blob）
-                var treeEntries = blobs.map(function(b) {
-                    return { path: b.path, mode: '100644', type: 'blob', sha: b.sha };
-                });
-                api('POST', '/git/trees', { base_tree: baseTree, tree: treeEntries }, function(st3, body3) {
-                    if (st3 !== 201) return retry(st3, body3, '创建 tree 失败');
-                    var newTree;
-                    try { newTree = JSON.parse(body3).sha; } catch (e) {}
-                    if (!newTree) return retry(st3, body3, '解析 tree 失败');
-                    // 4. 创建提交
-                    api('POST', '/git/commits', { message: message, tree: newTree, parents: [baseCommit] }, function(st4, body4) {
-                        if (st4 !== 201) return retry(st4, body4, '创建提交失败');
-                        var newCommit;
-                        try { newCommit = JSON.parse(body4).sha; } catch (e) {}
-                        if (!newCommit) return retry(st4, body4, '解析提交失败');
-                        // 5. 移动分支引用（全程唯一的引用竞争点）
-                        api('PATCH', '/git/refs/heads/' + DEFAULT_BRANCH, { sha: newCommit }, function(st5, body5) {
-                            if (st5 === 200) {
-                                onDone(true);
-                                return;
-                            }
-                            retry(st5, body5, '更新分支引用失败');
-                        });
+            withBase(baseCommit);
+        });
+    }
+
+    function withBase(baseCommit) {
+        // 2. 读该提交的 base tree
+        api('GET', '/git/commits/' + baseCommit, null, function(st2, body2) {
+            if (st2 !== 200) return retry(st2, body2, '读取提交失败');
+            var baseTree;
+            try { baseTree = JSON.parse(body2).tree.sha; } catch (e) {}
+            if (!baseTree) return retry(st2, body2, '解析提交失败');
+            // 3. 基于最新 tree 建树（同路径自动覆盖旧 blob）
+            var treeEntries = blobs.map(function(b) {
+                return { path: b.path, mode: '100644', type: 'blob', sha: b.sha };
+            });
+            api('POST', '/git/trees', { base_tree: baseTree, tree: treeEntries }, function(st3, body3) {
+                if (st3 !== 201) return retry(st3, body3, '创建 tree 失败');
+                var newTree;
+                try { newTree = JSON.parse(body3).sha; } catch (e) {}
+                if (!newTree) return retry(st3, body3, '解析 tree 失败');
+                // 4. 创建提交
+                api('POST', '/git/commits', { message: message, tree: newTree, parents: [baseCommit] }, function(st4, body4) {
+                    if (st4 !== 201) return retry(st4, body4, '创建提交失败');
+                    var newCommit;
+                    try { newCommit = JSON.parse(body4).sha; } catch (e) {}
+                    if (!newCommit) return retry(st4, body4, '解析提交失败');
+                    // 5. 移动分支引用（全程唯一的引用竞争点）
+                    api('PATCH', '/git/refs/heads/' + DEFAULT_BRANCH, { sha: newCommit }, function(st5, body5) {
+                        if (st5 === 200) {
+                            onDone(true, null, newCommit);
+                            return;
+                        }
+                        retry(st5, body5, '更新分支引用失败');
                     });
                 });
             });
@@ -6004,7 +6116,7 @@ function commitBlobGroup(blobs, message, onDone) {
     function retry(status, body, stepLabel) {
         var refMoved = status === 422 || status === 409;
         if ((refMoved || status === 0 || status >= 500) && attempt < MAX_ATTEMPTS) {
-            setTimeout(tryOnce, 800 * attempt + Math.floor(Math.random() * 600));
+            setTimeout(tryOnce, 1000 * attempt + Math.floor(Math.random() * 800));
             return;
         }
         var msg = stepLabel + '（状态码 ' + status + '）';
@@ -6035,6 +6147,15 @@ document.addEventListener('DOMContentLoaded', function() {
     updateBreadcrumbs();
     updateAuthBtn();
     initPwdEyes();
+
+    // GitHub Token（可选，用户端 CF 上传用）：初始回填本机保存值，改动即保存
+    var ghTokenInput = document.getElementById('ghTokenInput');
+    if (ghTokenInput) {
+        ghTokenInput.value = getUserGhToken();
+        ghTokenInput.addEventListener('change', function() {
+            saveUserGhToken(ghTokenInput.value);
+        });
+    }
 
     // 后台任务浮泡：点击恢复任务界面；✕ 仅关闭提示（不中断任务）
     document.getElementById('bgTaskBubble').addEventListener('click', function(e) {

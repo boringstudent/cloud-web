@@ -364,6 +364,14 @@ a:hover {
     border-radius: 8px;
     font-size: 14px;
 }
+.concurrency-row input[type="password"] {
+    flex: 1;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 14px;
+}
 #selectedFiles {
     margin-top: 10px;
     font-size: 13px;
