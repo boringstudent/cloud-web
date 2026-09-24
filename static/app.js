@@ -44,38 +44,33 @@ var extProxyState = {
     list: [],         // 可用代理 base 数组（'https://host/'）
     loading: null,    // 进行中的拉取回调队列（null=空闲）
     rr: 0,            // 代理轮询游标
-    fails: {},        // base -> 连续失败次数（>=2 熔断，下载/网络级，上传共用）
-    ul404: {}         // base -> 上传 404 次数（>=5 停止用它上传；部分镜像不支持 api 写请求）
+    fails: {},        // base -> 连续失败次数（>=2 熔断）
+    ul404: {}         // base -> 上传 404 累计次数（>=5 永久封禁该代理的上传）
 };
+// 部分外部镜像只代理 raw 下载、不代理 api.github.com：blob 上传会持续 404，
+// 累计 5 次即判定该代理不支持 API，永久移出上传通道（下载不受影响）
+var EXT_UL_404_BAN = 5;
 
-// 上传专用熔断判断：网络级连败 >=2 或上传 404 >=5（部分外部镜像不支持
-// api.github.com 写请求会稳定 404，只停止其上传用途，不影响下载）
-function extFused(base, forUpload) {
-    if ((extProxyState.fails[base] || 0) >= 2) return true;
-    if (forUpload && (extProxyState.ul404[base] || 0) >= 5) return true;
-    return false;
-}
-
-// 代理池是否有未熔断的可用代理（forUpload 时额外排除上传 404 熔断的）
-function extProxiesUsable(forUpload) {
+// 代理池是否有未熔断的可用代理（不区分下载/上传开关）
+function extProxiesUsable() {
     if (!extProxyState.list.length) return false;
     for (var i = 0; i < extProxyState.list.length; i++) {
-        if (!extFused(extProxyState.list[i], forUpload)) return true;
+        if ((extProxyState.fails[extProxyState.list[i]] || 0) < 2) return true;
     }
     return false;
 }
 
 function extDlAvailable() {
-    return extProxyState.enabled && extProxiesUsable(false);
+    return extProxyState.enabled && extProxiesUsable();
 }
 
 // 轮询挑选一个未熔断的代理；全部熔断返回 null
-function extPickBase(forUpload) {
+function extPickBase() {
     var n = extProxyState.list.length;
     for (var k = 0; k < n; k++) {
         var i = (extProxyState.rr + k) % n;
         var base = extProxyState.list[i];
-        if (!extFused(base, forUpload)) {
+        if ((extProxyState.fails[base] || 0) < 2) {
             extProxyState.rr = (i + 1) % n;
             return base;
         }
@@ -88,10 +83,40 @@ function extNoteFail(base) {
     extProxyState.fails[base] = (extProxyState.fails[base] || 0) + 1;
 }
 
-// 上传 404 计数：达 5 次该代理即被上传通道熔断（extFused 判断）
-function extUploadNote404(base) {
-    if (!base) return;
-    extProxyState.ul404[base] = (extProxyState.ul404[base] || 0) + 1;
+// 上传 404 计数：达到阈值即封禁该代理的上传能力（返回是否已封禁）
+function extNoteUpload404(base) {
+    if (!base) return false;
+    var n = (extProxyState.ul404[base] || 0) + 1;
+    extProxyState.ul404[base] = n;
+    return n >= EXT_UL_404_BAN;
+}
+
+function extUlBanned(base) {
+    return (extProxyState.ul404[base] || 0) >= EXT_UL_404_BAN;
+}
+
+// 上传通道视角的代理可用性：未熔断且未因 404 被封禁
+function extUploadProxiesUsable() {
+    if (!extProxyState.list.length) return false;
+    for (var i = 0; i < extProxyState.list.length; i++) {
+        var base = extProxyState.list[i];
+        if ((extProxyState.fails[base] || 0) < 2 && !extUlBanned(base)) return true;
+    }
+    return false;
+}
+
+// 轮询挑选一个可用于上传的代理（跳过熔断与 404 封禁）；无可用返回 null
+function extPickUploadBase() {
+    var n = extProxyState.list.length;
+    for (var k = 0; k < n; k++) {
+        var i = (extProxyState.rr + k) % n;
+        var base = extProxyState.list[i];
+        if ((extProxyState.fails[base] || 0) < 2 && !extUlBanned(base)) {
+            extProxyState.rr = (i + 1) % n;
+            return base;
+        }
+    }
+    return null;
 }
 
 function extRawUrl(base, filePath) {
@@ -119,7 +144,6 @@ function extProxyLoad(cb) {
         } catch (e) {}
         extProxyState.list = list;
         extProxyState.fails = {};
-        extProxyState.ul404 = {};
         extProxyState.loading = null;
         cbs.forEach(function(f) { f(list); });
     };
@@ -1654,7 +1678,10 @@ function fetchAudioTags(fileInfo, cb) {
 // 大文件分 6 段并行，EO/CF 交替分配，段失败换源续传（从已收位置继续 Range）。
 // limitOverride>0 时限制本下载器的并发（多文件并行池内分摊连接数用）；
 // 否则跟随全局并行数 dlGetLimit()
-function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limitOverride) {
+// budget：多文件并行池的共享连接预算 {active}——池内所有文件共同竞争
+// dlGetLimit() 个全局槽位（工作窃取），空闲文件让出的连接立即被其他文件
+// 抢占，消除"每文件固定配额"在文件尾段/批次尾部造成的并行数跑不满
+function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limitOverride, budget) {
     var state = {
         cancelled: false,
         controllers: [],
@@ -1679,6 +1706,8 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
     function failAll() {
         if (state.failed || state.cancelled) return;
         state.failed = true;
+        // 在途段回调将因 failed 提前返回、不再自行释放，统一归还预算槽位
+        if (segments) segments.forEach(function(s) { releaseBudget(s); });
         dlUnregisterScheduler(pumpSegs);
         dlTrackStop();
         onFail();
@@ -1687,6 +1716,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
     function cancel() {
         if (state.cancelled) return;
         state.cancelled = true;
+        if (segments) segments.forEach(function(s) { releaseBudget(s); });
         dlUnregisterScheduler(pumpSegs);
         state.controllers.forEach(function(c) { try { c.abort(); } catch (e) {} });
         // 中止的在途段不会回调 dlChanDec，直接清零在途计数避免负载均衡失真
@@ -1710,13 +1740,27 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
         onDone(new Blob(parts));
     }
 
-    // 段调度器：在途段数不超过当前下载并发限制（自适应动态调整）
+    // 段占用的共享预算槽位只释放一次（重试不释放：槽位随段换源保留）
+    function releaseBudget(seg) {
+        if (budget && seg && seg._budgetHeld) {
+            seg._budgetHeld = false;
+            budget.active = Math.max(0, budget.active - 1);
+        }
+    }
+
+    // 段调度器：在途段数不超过当前下载并发限制（自适应动态调整）；
+    // 预算模式下另受池级全局槽位约束，耗尽即停，由 dlNotify 唤醒补位
     function pumpSegs() {
         if (state.failed || state.cancelled || !segments) return;
         while (activeSegs < getLimit() && nextSeg < segments.length) {
+            if (budget && budget.active >= dlGetLimit()) return;
             var seg = segments[nextSeg++];
             seg.t0 = Date.now();
             activeSegs++;
+            if (budget) {
+                budget.active++;
+                seg._budgetHeld = true;
+            }
             fetchSeg(seg, 0);
         }
     }
@@ -1793,6 +1837,8 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
                         seg.done = true;
                         activeSegs--;
                         dlChanDec(chan);
+                        releaseBudget(seg);
+                        if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
                         dlAdaptiveSuccess(Date.now() - (seg.t0 || Date.now()));
                         checkAll();
                         pumpSegs();
@@ -1847,8 +1893,9 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
             segments = [{ index: 0, start: 0, end: total ? total - 1 : null, chunks: [], received: 0, done: false }];
             if (!total) segments[0].end = null;
         } else {
-            // 段数多于并发数：小步快跑，配合调度器按当前并发限制滚动补位
-            var count = Math.min(DUAL_DL_PARTS, Math.ceil(total / (1024 * 1024)));
+            // 段数多于并发数：小步快跑，配合调度器按当前并发限制滚动补位；
+            // 段数下限随当前限制抬升（最小 1MB/段），单文件也能吃满高并行数
+            var count = Math.min(Math.max(DUAL_DL_PARTS, getLimit()), Math.ceil(total / (1024 * 1024)));
             var segSize = Math.ceil(total / count);
             segments = [];
             for (var i = 0; i < count; i++) {
@@ -2150,8 +2197,7 @@ function downloadFolderZip(models, folderLabel) {
 
     var limit = dlGetLimit();
     var poolLimit = Math.min(models.length, limit);
-    var perFileLimit = Math.max(1, Math.floor(limit / poolLimit));
-    pool = runFileDownloadPool(models, poolLimit, perFileLimit, {
+    pool = runFileDownloadPool(models, poolLimit, {
         onFileBlob: function(idx, m, blob) {
             rawEntries.push({ name: m.zipName, blob: blob });
             loadedMap[idx] = m.size || blob.size;
@@ -2502,8 +2548,9 @@ function hideTaskProgress() {
 }
 
 // quiet=true 时不弹 toast（下载场景由全局进度条反馈，避免与 toast 叠在一起）；
-// limitOverride>0 时限制本合并下载的并发（多文件并行池内分摊连接数用）
-function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limitOverride) {
+// limitOverride>0 时限制本合并下载的并发；budget 为多文件并行池的共享连接
+// 预算（工作窃取，见 fetchFileBlobDual），传入后 per-file 配额失效、由全局槽位兜底
+function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limitOverride, budget) {
     var buffers = new Array(parts.length);
     var nextIndex = 0;
     var doneCount = 0;
@@ -2560,9 +2607,19 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
 
     if (!quiet) showToast('正在加载 0/' + parts.length + ' ...');
 
+    // 片占用的共享预算槽位只释放一次（重试不释放：槽位随片换源保留）
+    var releaseBudget = function(p) {
+        if (budget && p && p._budgetHeld) {
+            p._budgetHeld = false;
+            budget.active = Math.max(0, budget.active - 1);
+        }
+    };
+
     var fail = function() {
         if (failed || cancelled) return;
         failed = true;
+        // 在途片回调将因 failed 提前返回、不再自行释放，统一归还预算槽位
+        parts.forEach(function(p) { releaseBudget(p); });
         untrack();
         hideToast();
         if (onFail) onFail();
@@ -2579,6 +2636,10 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
         }
         if (nextIndex >= parts.length) return;
         var i = nextIndex++;
+        if (budget) {
+            budget.active++;
+            parts[i]._budgetHeld = true;
+        }
         // 每片在 EO/CF/外部代理间按在途均衡 + 实测速率加权分配；失败换源
         // 重试（最多 3 次），CF 连续失败 2 次熔断，外部代理按代理熔断轮换
         var attempt = 0;
@@ -2638,6 +2699,8 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 if (xhr.status === 200) {
                     buffers[i] = xhr.response;
                     dlChanDec(chan);
+                    releaseBudget(parts[i]);
+                    if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
                     loadedBytes += (parts[i].size || 0) - (parts[i]._loaded || 0);
                     doneCount++;
                     dlAdaptiveSuccess(Date.now() - (parts[i]._t0 || Date.now()));
@@ -2697,9 +2760,11 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
         startPart();
     };
 
-    // 片调度器：在途片数不超过当前下载并发限制（自适应动态调整）
+    // 片调度器：在途片数不超过当前下载并发限制（自适应动态调整）；
+    // 预算模式下另受池级全局槽位约束，耗尽即停，由 dlNotify 唤醒补位
     var pumpMerge = function() {
         while (!failed && !cancelled && actives.length < getLimit() && nextIndex < parts.length) {
+            if (budget && budget.active >= dlGetLimit()) return;
             next();
         }
     };
@@ -2710,6 +2775,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
     return {
         cancel: function() {
             cancelled = true;
+            parts.forEach(function(p) { releaseBudget(p); });
             untrack();
             actives.slice().forEach(function(x) { try { x.abort(); } catch (e) {} });
             // 中止的在途片不会回调 dlChanDec，直接清零在途计数避免负载均衡失真
@@ -4939,16 +5005,19 @@ function batchDownload() {
     runParallelDownload(models, '');
 }
 
-// 文件级并行下载池：poolLimit 个文件并行、每个文件内部 perFileLimit 个连接，
-// 完成一个立即补位——并行数被持续吃满，不再等上一个文件整体跑完才分配新任务。
+// 文件级并行下载池：poolLimit 个文件并行，池内所有文件共享一个全局连接
+// 预算（工作窃取：上限动态取 dlGetLimit()）——不再做"文件数×每文件连接数"
+// 的静态分摊，空闲文件让出的连接立即被其他文件抢占；完成一个文件立即补位，
+// 文件尾段与批次尾部的并行数同样被吃满。
 // hooks: onFileBlob(idx, m, blob) / onFileFail(idx, m) / onFileProgress(idx, m, loaded)
 // / onSettle(failCount)；返回 { cancel() }
-function runFileDownloadPool(models, poolLimit, perFileLimit, hooks) {
+function runFileDownloadPool(models, poolLimit, hooks) {
     var nextIdx = 0;
     var active = 0;
     var failCount = 0;
     var cancelled = false;
     var handles = {};
+    var budget = { active: 0 };   // 池级共享连接预算
 
     function pump() {
         if (cancelled) return;
@@ -4968,11 +5037,11 @@ function runFileDownloadPool(models, poolLimit, perFileLimit, hooks) {
                 if (m.chunked && m.parts) {
                     h = fetchMergedBlob(m.parts, onBlob, onFail, function(pct) {
                         hooks.onFileProgress(idx, m, (m.size && pct) ? m.size * pct / 100 : 0);
-                    }, null, true, perFileLimit);
+                    }, null, true, 0, budget);
                 } else {
                     h = fetchFileBlobDual(m.path, m.size, function(loaded) {
                         hooks.onFileProgress(idx, m, loaded);
-                    }, onBlob, onFail, perFileLimit);
+                    }, onBlob, onFail, 0, budget);
                 }
                 handles[idx] = h;
             })(nextIdx++);
@@ -5000,8 +5069,8 @@ function runFileDownloadPool(models, poolLimit, perFileLimit, hooks) {
     };
 }
 
-// 通用并行下载管线（批量下载）：并行数在多个文件间分摊——文件多时每文件
-// 1 个连接即可吃满并行数，文件少时每个文件多分几个连接；完成的文件经保存
+// 通用并行下载管线（批量下载）：文件级并行池 + 池内共享全局连接预算
+// （工作窃取），任何文件都能抢占空闲连接，并行数全程吃满；完成的文件经保存
 // 队列串行吐出（浏览器对连续自动下载限流）；全局进度条按字节汇总总进度。
 function runParallelDownload(models, label) {
     if (batchDownloadState) return;
@@ -5012,7 +5081,6 @@ function runParallelDownload(models, label) {
     models.forEach(function(m) { totalBytes += (m.size || 0); });
     var limit = dlGetLimit();
     var poolLimit = Math.min(models.length, limit);
-    var perFileLimit = Math.max(1, Math.floor(limit / poolLimit));
     var loadedMap = {};
     var doneCount = 0;
     var lastLoaded = 0;
@@ -5052,7 +5120,7 @@ function runParallelDownload(models, label) {
         showToast('已并行下载 ' + poolLimit + ' 个文件；若被浏览器拦截多文件下载，请点击地址栏下载图标允许');
         setTimeout(hideToast, 4000);
     }
-    var pool = runFileDownloadPool(models, poolLimit, perFileLimit, {
+    var pool = runFileDownloadPool(models, poolLimit, {
         onFileBlob: function(idx, m, blob) {
             loadedMap[idx] = m.size || blob.size;
             doneCount++;
@@ -5500,8 +5568,64 @@ function uploadFile() {
 // ---- Parallel chunked upload with per-chunk retry and live speed ----
 var UPLOAD_MAX_ATTEMPTS = 4;
 var UPLOAD_LIMIT_MIN = 1;
-var UPLOAD_LIMIT_MAX = 16;        // 自适应模式上限（手动/自定义不限，见 UPLOAD_LIMIT_MANUAL_MAX）
-var UPLOAD_LIMIT_MANUAL_MAX = 999;   // 手动/自定义上限：实际等同无上限
+var UPLOAD_LIMIT_MAX = 8;
+// 分片预读缓存深度：FileReader 读盘/base64 编码发生在网络槽位之外提前完成，
+// 槽位空出时下一个任务立即进入传输，读盘延迟不再拉低有效并行数
+var UPLOAD_READAHEAD = 2;
+
+// 读取任务内容（优先命中预读缓存）：cb(base64|null, err|null)
+function readTaskContent(st, task, cb) {
+    var key = task.relativePath;
+    var ent = st.readCache[key];
+    if (ent) {
+        if (ent.error) {
+            // 预读失败：丢弃缓存项，任务走自身重读（含错误处理）
+            delete st.readCache[key];
+            readTaskContent(st, task, cb);
+            return;
+        }
+        if (ent.data !== null) {
+            delete st.readCache[key];
+            cb(ent.data, null);
+        } else {
+            ent.cbs.push(cb);   // 预读进行中：挂到完成回调队列
+        }
+        return;
+    }
+    ent = st.readCache[key] = { data: null, error: false, cbs: [cb] };
+    startTaskRead(st, task, ent);
+}
+
+function startTaskRead(st, task, ent) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        ent.data = e.target.result.split(',')[1];
+        var cbs = ent.cbs;
+        ent.cbs = [];
+        if (cbs.length) delete st.readCache[task.relativePath];
+        cbs.forEach(function(f) { f(ent.data, null); });
+        // 无等待者（纯预读）：数据留在缓存中供后续任务直接消费
+    };
+    reader.onerror = function() {
+        ent.error = true;
+        var cbs = ent.cbs;
+        ent.cbs = [];
+        if (cbs.length) delete st.readCache[task.relativePath];
+        cbs.forEach(function(f) { f(null, 'read'); });
+    };
+    reader.readAsDataURL(task.blob);
+}
+
+// 让预读游标始终领先调度游标 UPLOAD_READAHEAD 个任务
+function prefetchUploadReads(st) {
+    if (!st || st.cancelled || st.failedMsg || st.downgrading) return;
+    while (st.cacheIdx < uploadTasks.length && st.cacheIdx < st.nextIndex + UPLOAD_READAHEAD) {
+        var t = uploadTasks[st.cacheIdx++];
+        if (st.readCache[t.relativePath]) continue;   // 已在缓存/读取中
+        var ent = st.readCache[t.relativePath] = { data: null, error: false, cbs: [] };
+        startTaskRead(st, t, ent);
+    }
+}
 var uploadState = null;
 var uploadSpeedHist = { eo: [], cf: [], ext: [], tot: [] };   // 每秒分通道采样的速度（bytes/s）
 var SPEED_HISTORY_MAX = 150;
@@ -5990,7 +6114,7 @@ function startUpload(doneBases) {
         speedTimer: null,
         activeTasks: {},
         adaptive: adaptive,
-        limit: adaptive ? 3 : Math.min(UPLOAD_LIMIT_MANUAL_MAX, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3)),
+        limit: adaptive ? 3 : Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3),
         startTime: Date.now(),
         smallDurSum: 0,
         smallDurCount: 0,
@@ -6008,7 +6132,9 @@ function startUpload(doneBases) {
         extTasks: 0,
         chanRr: 0,
         cancelled: false,
-        smallRatio: 0
+        smallRatio: 0,
+        readCache: {},   // 分片预读缓存 relativePath -> {data, error, cbs}
+        cacheIdx: 0      // 预读游标（领先 nextIndex 最多 UPLOAD_READAHEAD 个任务）
     };
     var smallCount = 0;
     uploadTasks.forEach(function(t) {
@@ -6049,7 +6175,7 @@ function applyConcurrencyChange() {
         } else {
             v = parseInt(mode, 10);
         }
-        st.limit = Math.min(UPLOAD_LIMIT_MANUAL_MAX, Math.max(UPLOAD_LIMIT_MIN, v || 3));
+        st.limit = Math.max(UPLOAD_LIMIT_MIN, v || 3);
     }
     renderChunkPanel();
     fillUploads();
@@ -6061,7 +6187,7 @@ function ulChannels(exclude) {
     var chans = [];
     if (ulChanSwitch.eo && exclude !== 'eo') chans.push('eo');
     if (ulChanSwitch.cf && exclude !== 'cf' && cfUploadState === true) chans.push('cf');
-    if (ulChanSwitch.ext && exclude !== 'ext' && isAdminUser() && ulGitKey && extProxiesUsable(true)) chans.push('ext');
+    if (ulChanSwitch.ext && exclude !== 'ext' && isAdminUser() && ulGitKey && extUploadProxiesUsable()) chans.push('ext');
     if (!chans.length) chans.push('eo');
     return chans;
 }
@@ -6190,6 +6316,7 @@ function fillUploads() {
             });
         })(task);
     }
+    prefetchUploadReads(st);   // 预读游标保持领先，下一批任务数据提前就绪
     checkUploadSettled();
 }
 
@@ -6226,13 +6353,23 @@ function runUploadTask(task, done) {
         attempt++;
         task.loadedBytes = 0;
         task.startTime = Date.now();
-        var reader = new FileReader();
-        reader.onload = function(e) {
+        // 优先消费预读缓存：读盘/base64 已提前完成，槽位全程用于网络传输
+        readTaskContent(st, task, function(base64Content, readErr) {
             if (st.cancelled) {
                 done(false);
                 return;
             }
-            var base64Content = e.target.result.split(',')[1];
+            if (readErr) {
+                if (attempt < UPLOAD_MAX_ATTEMPTS) {
+                    setTimeout(tryOnce, 1000 * attempt);
+                } else {
+                    if (!st.failedMsg) {
+                        st.failedMsg = '读取文件失败: ' + task.label;
+                    }
+                    done(false);
+                }
+                return;
+            }
             var currentPath = getCurrentPath();
             var filePath = currentPath ? currentPath + '/' + task.relativePath : task.relativePath;
 
@@ -6273,13 +6410,10 @@ function runUploadTask(task, done) {
                         return;
                     }
 
-                    // 外部代理失败按代理熔断：404 说明该镜像不支持 api 写请求，
-                    // 单独计数（5 次停止用它上传）；其余错误走通用连败熔断，
-                    // 并在失败通道之外换源重试
-                    if (task.chan === 'ext') {
-                        if (status === 404) extUploadNote404(task._extBase);
-                        else extNoteFail(task._extBase);
-                    }
+                    // 外部代理失败按代理熔断，并在失败通道之外换源重试；
+                    // 404 已在 putBlobToGitHub 按代理累计（API 不支持不代表
+                    // raw 下载也不可用），不再计入下载熔断
+                    if (task.chan === 'ext' && status !== 404) extNoteFail(task._extBase);
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
                         task.chan = pickUploadChannel(task.blob.size, task.chan, true);
                         // adaptive: failures hint the network is saturated, back off
@@ -6312,18 +6446,7 @@ function runUploadTask(task, done) {
                     updateUploadProgressUI();
                 },
                 undefined, task.chan, task);
-        };
-        reader.onerror = function() {
-            if (attempt < UPLOAD_MAX_ATTEMPTS) {
-                setTimeout(tryOnce, 1000 * attempt);
-            } else {
-                if (!st.failedMsg) {
-                    st.failedMsg = '读取文件失败: ' + task.label;
-                }
-                done(false);
-            }
-        };
-        reader.readAsDataURL(task.blob);
+        });
     };
     tryOnce();
 }
@@ -6570,8 +6693,8 @@ function gitApiUrl(apiPath, useCf) {
 function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries, chan, task) {
     if (retries === undefined) retries = 3;
     if (chan === 'ext') {
-        var base = extPickBase(true);   // 上传模式：排除上传 404 熔断的代理
-        if (!base) chan = 'eo';   // 外部代理全部熔断时兜底 EO
+        var base = extPickUploadBase();
+        if (!base) chan = 'eo';   // 外部代理全部熔断/404 封禁时兜底 EO
         else if (task) task._extBase = base;
     }
     var url;
@@ -6598,6 +6721,11 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
             }
             onError(xhr.status, xhr.responseText);
             return;
+        }
+        // 外部代理 404：该镜像大概率不代理 api.github.com，按代理累计计数，
+        // 满 5 次永久移出上传通道（只计上传 404，raw 下载 404 不影响）
+        if (chan === 'ext' && xhr.status === 404 && task && task._extBase) {
+            extNoteUpload404(task._extBase);
         }
         // 5xx/429 等服务端临时错误按网络错误重试；4xx 直接失败
         if ((xhr.status >= 500 || xhr.status === 429) && retries > 0) {
