@@ -26,6 +26,37 @@ function cfRawUrl(filePath) {
     return CF_PROXY_BASE + 'raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
 }
 
+function cfApiUrl(filePath) {
+    return CF_PROXY_BASE + 'api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
+}
+
+// ---- CF 上传通道能力探测 ----
+// CF 代理本身不注入 GitHub key：若部署方在 CF 侧配置了服务端 key，
+// 写请求会被鉴权通过（此时浏览器同样不接触 key，key 只在 CF 服务端）；
+// 否则 GitHub 返回 401。用必失败的请求体探测，不会创建任何提交。
+// 探测结果缓存于会话内；不可用时上传自动仅走 EO，功能无任何影响。
+var cfUploadState = null;   // null=未探测, true/false
+
+function probeCfUpload(cb) {
+    if (cfUploadState !== null) {
+        cb(cfUploadState);
+        return;
+    }
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', cfApiUrl('.cf-write-probe'), true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.onload = function() {
+        // 401/403 = CF 无服务端写鉴权；400/422 等 = CF 能鉴权（请求体无效被拒）
+        cfUploadState = xhr.status !== 401 && xhr.status !== 403 && xhr.status !== 0;
+        cb(cfUploadState);
+    };
+    xhr.onerror = function() {
+        cfUploadState = false;
+        cb(false);
+    };
+    xhr.send('not-json');
+}
+
 // 写操作（上传/编辑/删除）附加登录凭据头，EO 校验通过后才代理写 GitHub；
 // 只读 GET 请求不带凭据
 function applyEoAuth(xhr) {
@@ -1081,8 +1112,10 @@ function closeUploadModal() {
     document.getElementById('chunkPanelArrow').textContent = '▸';
     document.getElementById('speedPanel').style.display = 'none';
     document.getElementById('speedGraph').style.display = 'none';
+    document.getElementById('speedLegend').style.display = 'none';
     document.getElementById('speedPanelArrow').textContent = '▸';
-    uploadSpeedHistory = [];
+    document.getElementById('stopUploadBtn').style.display = 'none';
+    resetUploadSpeedHist();
     pendingFiles = [];
     document.getElementById('selectedFiles').textContent = '';
     document.getElementById('fileInput').value = '';
@@ -4829,17 +4862,27 @@ function uploadFile() {
     }
 
     uploadBtn.disabled = true;
-    chunkSizeLevel = 0;
-    startUpload();
+    setMsg('uploadMessage', '正在探测加速通道...', 'success');
+    // 探测 CF 上传通道（CF 侧有服务端 key 时启用双通道上传），探测完成前不开始
+    probeCfUpload(function() {
+        chunkSizeLevel = 0;
+        startUpload();
+    });
 }
 
 // ---- Parallel chunked upload with per-chunk retry and live speed ----
 var UPLOAD_MAX_ATTEMPTS = 4;
 var UPLOAD_LIMIT_MIN = 1;
-var UPLOAD_LIMIT_MAX = 6;
+var UPLOAD_LIMIT_MAX = 8;
 var uploadState = null;
-var uploadSpeedHistory = [];   // 每秒采样的总速度（bytes/s），供速度曲线使用
+var uploadSpeedHist = { eo: [], cf: [], tot: [] };   // 每秒分通道采样的速度（bytes/s）
 var SPEED_HISTORY_MAX = 150;
+
+function resetUploadSpeedHist() {
+    uploadSpeedHist.eo = [];
+    uploadSpeedHist.cf = [];
+    uploadSpeedHist.tot = [];
+}
 
 // ---- 下载并发控制（自适应算法针对下载修改：无提交冲突，按段完成速度升、
 // EO 段失败降；CF 失败只熔断通道不降并发） ----
@@ -4849,7 +4892,9 @@ var DL_LIMIT_ADAPTIVE_START = 3;
 var dlLimit = { adaptive: true, limit: DL_LIMIT_ADAPTIVE_START };
 
 function dlGetLimit() {
-    return Math.max(DL_LIMIT_MIN, Math.min(DL_LIMIT_MAX, dlLimit.limit));
+    // 自适应上限 DL_LIMIT_MAX；手动/自定义允许到 16
+    var cap = dlLimit.adaptive ? DL_LIMIT_MAX : 16;
+    return Math.max(DL_LIMIT_MIN, Math.min(cap, dlLimit.limit));
 }
 
 function dlSetMode(v) {
@@ -4952,20 +4997,22 @@ function drawDlGraph() {
     var dx = W / Math.max(1, DL_HISTORY_MAX - 1);
     var xStart = x0 + W - (n - 1) * dx;
     var plot = function(series, color, fill) {
-        ctx.beginPath();
-        if (fill) ctx.moveTo(xStart, ctxBox.y0 + H);
+        var pts = [];
         for (var i = 0; i < n; i++) {
-            var x = xStart + i * dx;
-            var y = ctxBox.y0 + H - (series[i] / max) * (H - 4);
-            if (i === 0 && !fill) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
+            pts.push([xStart + i * dx, ctxBox.y0 + H - (series[i] / max) * (H - 4)]);
         }
         if (fill) {
-            ctx.lineTo(xStart + (n - 1) * dx, ctxBox.y0 + H);
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0], ctxBox.y0 + H);
+            ctx.lineTo(pts[0][0], pts[0][1]);
+            traceSmoothPath(ctx, pts);
+            ctx.lineTo(pts[pts.length - 1][0], ctxBox.y0 + H);
             ctx.closePath();
             ctx.fillStyle = 'rgba(44, 130, 201, 0.12)';
             ctx.fill();
         }
+        ctx.beginPath();
+        traceSmoothPath(ctx, pts);
         ctx.strokeStyle = color;
         ctx.lineWidth = color === '#2c82c9' ? 1.8 : 1.2;
         ctx.stroke();
@@ -4985,6 +5032,21 @@ function updateDlLegend(totV, eoV, cfV) {
 }
 
 // ---- 曲线图公共：Y 轴刻度 + 网格 + 实时速度 ----
+// 平滑曲线路径（中点二次贝塞尔），pts = [[x, y], ...]
+function traceSmoothPath(ctx, pts) {
+    if (pts.length === 1) {
+        ctx.moveTo(pts[0][0] - 0.5, pts[0][1]);
+        ctx.lineTo(pts[0][0] + 0.5, pts[0][1]);
+        return;
+    }
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length - 1; i++) {
+        var xc = (pts[i][0] + pts[i + 1][0]) / 2;
+        var yc = (pts[i][1] + pts[i + 1][1]) / 2;
+        ctx.quadraticCurveTo(pts[i][0], pts[i][1], xc, yc);
+    }
+    ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+}
 // 返回 {ctx, x0, y0, plotW, plotH}；左侧 gutter 画 Y 轴刻度
 function prepareGraphCanvas(canvas, gutter) {
     var dpr = window.devicePixelRatio || 1;
@@ -5031,55 +5093,63 @@ function drawGraphGrid(ctx, box, peak) {
     ctx.stroke();
 }
 
-// Win10 资源管理器风格速度曲线：右对齐滚动折线 + 半透明面积填充 +
-// 网格参考线 + Y 轴刻度 + 右上角实时速度
+// Win10 资源管理器风格速度曲线：总（蓝+面积）/ EO（绿）/ CF（橙）三曲线，
+// 平滑路径 + 网格参考线 + Y 轴刻度，图例实时显示三路速度
 function drawSpeedGraph() {
     var canvas = document.getElementById('speedGraph');
     if (!canvas || canvas.style.display === 'none') return;
     var box = prepareGraphCanvas(canvas, 34);
     if (!box) return;
     var ctx = box.ctx, W = box.plotW, H = box.plotH, x0 = box.x0;
-    var hist = uploadSpeedHistory;
+    var tot = uploadSpeedHist.tot, eo = uploadSpeedHist.eo, cf = uploadSpeedHist.cf;
     var peak = 0;
-    for (var p = 0; p < hist.length; p++) {
-        if (hist[p] > peak) peak = hist[p];
+    for (var p = 0; p < tot.length; p++) {
+        if (tot[p] > peak) peak = tot[p];
     }
     drawGraphGrid(ctx, box, peak);
     var peakEl = document.getElementById('speedPanelPeak');
     if (peakEl) peakEl.textContent = peak > 1024 ? '峰值 ' + formatSize(Math.round(peak)) + '/s' : '';
-    if (!hist.length || peak <= 0) return;
-    // 实时速度（最新采样）画在绘图区右上角
-    var cur = hist[hist.length - 1];
-    if (cur > 1024) {
-        ctx.fillStyle = '#2c82c9';
-        ctx.font = '10px Arial';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'top';
-        ctx.fillText(formatSize(Math.round(cur)) + '/s', x0 + W - 2, box.y0 + 1);
+    if (!tot.length || peak <= 0) {
+        updateUlLegend(0, 0, 0);
+        return;
     }
     var max = peak * 1.15;
-    var n = hist.length;
+    var n = tot.length;
     var dx = W / Math.max(1, SPEED_HISTORY_MAX - 1);
     var xStart = x0 + W - (n - 1) * dx;
-    ctx.beginPath();
-    ctx.moveTo(xStart, box.y0 + H);
-    for (var i = 0; i < n; i++) {
-        ctx.lineTo(xStart + i * dx, box.y0 + H - (hist[i] / max) * (H - 4));
-    }
-    ctx.lineTo(xStart + (n - 1) * dx, box.y0 + H);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(44, 130, 201, 0.15)';
-    ctx.fill();
-    ctx.beginPath();
-    for (var j = 0; j < n; j++) {
-        var x = xStart + j * dx;
-        var y = box.y0 + H - (hist[j] / max) * (H - 4);
-        if (j === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = '#2c82c9';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    var plot = function(series, color, fill, width) {
+        var pts = [];
+        for (var i = 0; i < n; i++) {
+            pts.push([xStart + i * dx, box.y0 + H - (series[i] / max) * (H - 4)]);
+        }
+        if (fill) {
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0], box.y0 + H);
+            ctx.lineTo(pts[0][0], pts[0][1]);
+            traceSmoothPath(ctx, pts);
+            ctx.lineTo(pts[pts.length - 1][0], box.y0 + H);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(44, 130, 201, 0.15)';
+            ctx.fill();
+        }
+        ctx.beginPath();
+        traceSmoothPath(ctx, pts);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.stroke();
+    };
+    plot(tot, '#2c82c9', true, 1.8);
+    plot(eo, '#28a745', false, 1.2);
+    plot(cf, '#e67e22', false, 1.2);
+    updateUlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0);
+}
+
+function updateUlLegend(totV, eoV, cfV) {
+    var f = function(v) { return v > 1024 ? formatSize(Math.round(v)) + '/s' : '0/s'; };
+    var el;
+    if ((el = document.getElementById('ulLegendTot'))) el.textContent = '总 ' + f(totV);
+    if ((el = document.getElementById('ulLegendEo'))) el.textContent = 'EO ' + f(eoV);
+    if ((el = document.getElementById('ulLegendCf'))) el.textContent = 'CF ' + f(cfV);
 }
 
 function startUpload(doneBases) {
@@ -5117,13 +5187,19 @@ function startUpload(doneBases) {
         speedTimer: null,
         activeTasks: {},
         adaptive: adaptive,
-        limit: adaptive ? 2 : Math.min(10, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3)),
+        limit: adaptive ? 3 : Math.min(10, Math.max(UPLOAD_LIMIT_MIN, parseInt(mode, 10) || 3)),
         startTime: Date.now(),
         smallDurSum: 0,
         smallDurCount: 0,
         conflictCount: 0,
         sinceConflict: 0,
         commitPhase: 0,
+        eoBytes: 0,
+        cfBytes: 0,
+        lastEoBytes: 0,
+        lastCfBytes: 0,
+        chanFlip: false,
+        cancelled: false,
         smallRatio: 0
     };
     var smallCount = 0;
@@ -5135,8 +5211,9 @@ function startUpload(doneBases) {
         uploadState.baseTotals[t.base] = (uploadState.baseTotals[t.base] || 0) + 1;
     });
     document.querySelector('.progress-container').style.display = 'block';
+    document.getElementById('stopUploadBtn').style.display = '';
     // 重置并显示速度曲线面板（保持用户上次的展开/折叠状态）
-    uploadSpeedHistory = [];
+    resetUploadSpeedHist();
     document.getElementById('speedPanel').style.display = 'block';
     document.getElementById('speedPanelPeak').textContent = '';
     drawSpeedGraph();
@@ -5179,6 +5256,8 @@ function fillUploads() {
     // 引用竞争发生在提交时刻，同时处于提交阶段的任务越多越容易 409
     while (!st.failedMsg && !st.downgrading && st.commitPhase < 2 && st.active < st.limit && st.nextIndex < uploadTasks.length) {
         var task = uploadTasks[st.nextIndex++];
+        // CF 写通道可用时任务在 EO/CF 间交替分配，聚合两条上传链路
+        task.useCf = cfUploadState === true && (st.chanFlip = !st.chanFlip);
         st.active++;
         st.activeTasks[task.relativePath] = task;
         renderChunkPanel();
@@ -5204,14 +5283,16 @@ function fillUploads() {
                             st2.smallDurCount++;
                         }
                         if (st2.adaptive) {
-                            if (dur < 10000 && st2.limit < UPLOAD_LIMIT_MAX) {
+                            // 激进策略：更快的升档阈值与更高的上限，
+                            // 只在明确拥堵（超慢分片/失败/冲突）时才降档
+                            if (dur < 15000 && st2.limit < UPLOAD_LIMIT_MAX) {
                                 st2.limit++;
-                            } else if (dur > 30000 && st2.limit > UPLOAD_LIMIT_MIN) {
+                            } else if (dur > 45000 && st2.limit > UPLOAD_LIMIT_MIN) {
                                 st2.limit--;
                             }
-                            // 低冲突率奖励：连续 12 个任务无提交冲突，说明引用竞争
+                            // 低冲突率奖励：连续 8 个任务无提交冲突，说明引用竞争
                             // 压力小，自动提高并发进一步提速
-                            if (st2.sinceConflict >= 12 && st2.limit < UPLOAD_LIMIT_MAX) {
+                            if (st2.sinceConflict >= 8 && st2.limit < UPLOAD_LIMIT_MAX) {
                                 st2.limit++;
                                 st2.sinceConflict = 0;
                             }
@@ -5257,7 +5338,7 @@ function runUploadTask(task, done) {
     var conflicts = 0;
 
     var tryOnce = function() {
-        if (!uploadState) {
+        if (!uploadState || st.cancelled) {
             done(false);
             return;
         }
@@ -5266,22 +5347,32 @@ function runUploadTask(task, done) {
         task.startTime = Date.now();
         var reader = new FileReader();
         reader.onload = function(e) {
+            if (st.cancelled) {
+                done(false);
+                return;
+            }
             var base64Content = e.target.result.split(',')[1];
             var currentPath = getCurrentPath();
             var filePath = currentPath ? currentPath + '/' + task.relativePath : task.relativePath;
 
-            putFileToGitHub(filePath, base64Content, null,
+            task.xhr = putFileToGitHub(filePath, base64Content, null,
                 function(newSha) {
                     if (task.commitPending) {
                         task.commitPending = false;
                         st.commitPhase--;
+                    }
+                    if (st.cancelled) {
+                        done(false);
+                        return;
                     }
                     if (PART_SUFFIX.test(task.relativePath) && newSha) {
                         uploadedParts.push({ path: filePath, sha: newSha, base: task.base });
                     }
                     st.fractionSum -= (task.fraction || 0);
                     task.fraction = 0;
-                    st.bytesDone += task.blob.size - (task.loadedBytes || 0);
+                    var doneDelta = task.blob.size - (task.loadedBytes || 0);
+                    st.bytesDone += doneDelta;
+                    if (task.useCf) st.cfBytes += doneDelta; else st.eoBytes += doneDelta;
                     done(true);
                 },
                 function(status, responseText) {
@@ -5289,9 +5380,14 @@ function runUploadTask(task, done) {
                         task.commitPending = false;
                         st.commitPhase--;
                     }
+                    if (st.cancelled) {
+                        done(false);
+                        return;
+                    }
                     st.fractionSum -= (task.fraction || 0);
                     task.fraction = 0;
                     st.bytesDone -= (task.loadedBytes || 0);
+                    if (task.useCf) st.cfBytes -= (task.loadedBytes || 0); else st.eoBytes -= (task.loadedBytes || 0);
                     task.loadedBytes = 0;
 
                     if (/too large/i.test(responseText || '') && chunkSizeLevel < CHUNK_SIZE_LEVELS.length - 1) {
@@ -5353,11 +5449,13 @@ function runUploadTask(task, done) {
                     st.fractionSum += fraction - (task.fraction || 0);
                     task.fraction = fraction;
                     var loaded = Math.round(task.blob.size * fraction);
-                    st.bytesDone += loaded - (task.loadedBytes || 0);
+                    var delta = loaded - (task.loadedBytes || 0);
+                    st.bytesDone += delta;
+                    if (task.useCf) st.cfBytes += delta; else st.eoBytes += delta;
                     task.loadedBytes = loaded;
                     updateUploadProgressUI();
-                }
-            );
+                },
+                undefined, task.useCf);
         };
         reader.onerror = function() {
             if (attempt < UPLOAD_MAX_ATTEMPTS) {
@@ -5388,6 +5486,7 @@ function finishUpload() {
     fileTreeCache = null;
     bypassHttpCache();
     updateUploadProgressText(100, '');
+    document.getElementById('stopUploadBtn').style.display = 'none';
     setMsg('uploadMessage', '全部上传成功！', 'success');
     setTimeout(function() {
         closeUploadModal();
@@ -5396,11 +5495,42 @@ function finishUpload() {
     }, 1500);
 }
 
+// 停止上传并回退：中止全部在途传输，清理已上传的残留分片（回到上传前状态）
+function stopUploadRollback() {
+    var st = uploadState;
+    if (!st) return;
+    st.cancelled = true;
+    stopUploadTimer();
+    uploadState = null;
+    for (var key in st.activeTasks) {
+        var t = st.activeTasks[key];
+        if (t.xhr) {
+            try { t.xhr.abort(); } catch (e) {}
+        }
+    }
+    renderChunkPanel();
+    document.getElementById('stopUploadBtn').style.display = 'none';
+    var stale = uploadedParts.slice();
+    if (stale.length) {
+        setMsg('uploadMessage', '已停止上传，正在回退（清理 ' + stale.length + ' 个已传分片）...', 'error');
+        deletePartsQuietly(stale, 0, function() {
+            fileTreeCache = null;
+            uploadedParts = [];
+            setMsg('uploadMessage', '已停止上传并完成回退（残留分片已清理）', 'error');
+            document.getElementById('uploadBtn').disabled = false;
+        });
+    } else {
+        setMsg('uploadMessage', '已停止上传（没有已上传的分片需要回退）', 'error');
+        document.getElementById('uploadBtn').disabled = false;
+    }
+}
+
 function failUpload(finalMsg) {
     var st = uploadState;
     stopUploadTimer();
     uploadState = null;
     renderChunkPanel();
+    document.getElementById('stopUploadBtn').style.display = 'none';
     var staleParts = uploadedParts.filter(function(p) { return !st.doneBases[p.base]; });
     if (staleParts.length > 0) {
         uploadedParts = staleParts;
@@ -5418,12 +5548,22 @@ function sampleUploadSpeed() {
     var dt = (now - st.lastSampleTime) / 1000;
     if (dt <= 0) return;
     var speed = (st.bytesDone - st.lastSampleBytes) / dt;
+    var eoSpeed = (st.eoBytes - st.lastEoBytes) / dt;
+    var cfSpeed = (st.cfBytes - st.lastCfBytes) / dt;
     st.lastSampleBytes = st.bytesDone;
+    st.lastEoBytes = st.eoBytes;
+    st.lastCfBytes = st.cfBytes;
     st.lastSampleTime = now;
     st.speedText = speed > 1024 ? formatSize(Math.round(speed)) + '/s' : '';
-    // 速度曲线采样（保留最近 SPEED_HISTORY_MAX 秒）
-    uploadSpeedHistory.push(speed);
-    if (uploadSpeedHistory.length > SPEED_HISTORY_MAX) uploadSpeedHistory.shift();
+    // 速度曲线采样：总/EO/CF 三序列（保留最近 SPEED_HISTORY_MAX 秒）
+    uploadSpeedHist.tot.push(speed);
+    uploadSpeedHist.eo.push(eoSpeed);
+    uploadSpeedHist.cf.push(cfSpeed);
+    if (uploadSpeedHist.tot.length > SPEED_HISTORY_MAX) {
+        uploadSpeedHist.tot.shift();
+        uploadSpeedHist.eo.shift();
+        uploadSpeedHist.cf.shift();
+    }
     drawSpeedGraph();
     // per-chunk speeds
     for (var key in st.activeTasks) {
@@ -5509,7 +5649,9 @@ function updateUploadProgressText(percent, speedText, etaText) {
     document.getElementById('progressText').textContent = text;
 }
 
-function putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries) {
+// useCf=true 时经 CF 代理中转上传（CF 侧持有服务端 key 时可用，浏览器不接触 key）；
+// 否则经 EO 同源代理（key 由 EO 注入）。返回 XHR 供停止上传时中止。
+function putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries, useCf) {
     if (retries === undefined) retries = 2;
 
     var data = {
@@ -5519,9 +5661,11 @@ function putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onPro
     if (sha) data.sha = sha;
 
     var uploadXhr = new XMLHttpRequest();
-    var uploadUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
+    var uploadUrl = useCf
+        ? cfApiUrl(filePath)
+        : ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
     uploadXhr.open('PUT', uploadUrl, true);
-    applyEoAuth(uploadXhr);
+    if (!useCf) applyEoAuth(uploadXhr);
     uploadXhr.setRequestHeader('Content-Type', 'application/json');
 
     uploadXhr.upload.onprogress = function(e) {
@@ -5546,7 +5690,7 @@ function putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onPro
                 if (shaXhr.status === 200) {
                     try {
                         var info = JSON.parse(shaXhr.responseText);
-                        putFileToGitHub(filePath, base64Content, info.sha, onSuccess, onError, onProgress);
+                        putFileToGitHub(filePath, base64Content, info.sha, onSuccess, onError, onProgress, undefined, useCf);
                         return;
                     } catch (e) {}
                 }
@@ -5563,13 +5707,14 @@ function putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onPro
 
     uploadXhr.onerror = function() {
         if (retries > 0) {
-            putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries - 1);
+            putFileToGitHub(filePath, base64Content, sha, onSuccess, onError, onProgress, retries - 1, useCf);
             return;
         }
         onError(0, '');
     };
 
     uploadXhr.send(JSON.stringify(data));
+    return uploadXhr;
 }
 
 function cleanupUploadedParts(finalMsg) {
@@ -5652,8 +5797,10 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     document.getElementById('speedPanelToggle').addEventListener('click', function() {
         var graph = document.getElementById('speedGraph');
+        var legend = document.getElementById('speedLegend');
         var open = graph.style.display !== 'none';
         graph.style.display = open ? 'none' : 'block';
+        legend.style.display = open ? 'none' : 'flex';
         document.getElementById('speedPanelArrow').textContent = open ? '▸' : '▾';
         if (!open) drawSpeedGraph();
     });
@@ -5661,6 +5808,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (taskProgressCancelFn) taskProgressCancelFn();
     });
     document.getElementById('taskDlConc').addEventListener('change', function() {
+        var custom = this.value === 'custom';
+        document.getElementById('taskDlConcCustom').style.display = custom ? '' : 'none';
+        dlSetMode(custom ? document.getElementById('taskDlConcCustom').value : this.value);
+    });
+    document.getElementById('taskDlConcCustom').addEventListener('input', function() {
         dlSetMode(this.value);
     });
     document.getElementById('taskDlGraphToggle').addEventListener('click', function() {

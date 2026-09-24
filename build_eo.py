@@ -78,8 +78,11 @@ const APP_JS = `__APP_JS__`;
 const STYLE_CSS = `__STYLE_CSS__`;
 const FAVICON_B64 = '__FAVICON_B64__';
 
+// connect-src 放行 CF 下载/上传加速通道（cloud-ecr.pages.dev），
+// 否则浏览器会按 CSP 拦截页面到该域名的 fetch/XHR，导致 CF 通道永远没有流量
 const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-            "img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self'; " +
+            "img-src 'self' data: blob: https:; media-src 'self' blob: https:; " +
+            "connect-src 'self' https://cloud-ecr.pages.dev; " +
             "font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
 
 // ==================== 入口 ====================

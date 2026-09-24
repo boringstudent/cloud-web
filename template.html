@@ -97,7 +97,13 @@
                         <span id="speedPanelArrow">▸</span> 速度曲线 <span id="speedPanelPeak"></span>
                     </div>
                     <canvas id="speedGraph" style="display: none;"></canvas>
+                    <div id="speedLegend" style="display: none;">
+                        <i style="background: #2c82c9;"></i><span id="ulLegendTot">总</span>
+                        <i style="background: #28a745;"></i><span id="ulLegendEo">EO</span>
+                        <i style="background: #e67e22;"></i><span id="ulLegendCf">CF</span>
+                    </div>
                 </div>
+                <button class="btn" onclick="stopUploadRollback()" id="stopUploadBtn" style="width: 100%; margin-top: 10px; display: none; background: #e67e22;">停止上传并回退</button>
                 <button class="btn" onclick="uploadFile()" id="uploadBtn" style="width: 100%; margin-top: 15px;">开始上传</button>
                 <div id="uploadMessage" class="message"></div>
             </div>
@@ -222,7 +228,9 @@
                     <option value="4">并行: 4</option>
                     <option value="6">并行: 6</option>
                     <option value="8">并行: 8</option>
+                    <option value="custom">并行: 自定义</option>
                 </select>
+                <input type="number" id="taskDlConcCustom" min="1" max="16" value="5" title="自定义并行数 (1-16)" style="display: none;">
                 <button type="button" id="taskDlGraphToggle" class="task-progress-graph-btn" title="速度曲线">曲线</button>
                 <button type="button" id="taskProgressCancel" class="task-progress-cancel" title="停止" style="display: none;">&times;</button>
             </div>

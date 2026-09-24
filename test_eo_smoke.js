@@ -27,6 +27,7 @@ async function call(path, opts) {
   check('HTML 注入 __APP__', body.includes('window.__APP__') && body.includes("repoOwner: 'boringstudent'") && body.includes("repoName: 'cloud-storage'"));
   check('HTML 无外部 preconnect', !body.includes('api.github.com') && !body.includes('boring-student.cn') && !body.includes('loliapi.com'));
   check('HTML 有 CSP 头', !!r.headers.get('Content-Security-Policy'));
+  check('CSP connect-src 放行 CF 加速通道', (r.headers.get('Content-Security-Policy') || '').includes('https://cloud-ecr.pages.dev'));
 
   // 2. 静态资源逐字还原
   r = await call('/static/app.js?v=1');

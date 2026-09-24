@@ -995,6 +995,15 @@ h1 {
     background: white;
     cursor: pointer;
 }
+#taskDlConcCustom {
+    flex-shrink: 0;
+    width: 48px;
+    padding: 3px 4px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #666;
+}
 .task-progress-graph-btn {
     flex-shrink: 0;
     background: none;
@@ -1019,7 +1028,8 @@ h1 {
     border-radius: 8px;
     background: #fafafa;
 }
-#taskDlLegend {
+#taskDlLegend,
+#speedLegend {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -1028,14 +1038,16 @@ h1 {
     color: #666;
     font-variant-numeric: tabular-nums;
 }
-#taskDlLegend i {
+#taskDlLegend i,
+#speedLegend i {
     display: inline-block;
     width: 10px;
     height: 3px;
     border-radius: 2px;
     margin-left: 8px;
 }
-#taskDlLegend i:first-child {
+#taskDlLegend i:first-child,
+#speedLegend i:first-child {
     margin-left: 0;
 }
 
