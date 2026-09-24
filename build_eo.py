@@ -166,6 +166,18 @@ async function handleRequest(request) {
       return json({ proxies: usable.map(h => 'https://' + h + '/') });
     }
 
+    // ---------- 管理员获取 GitHub 写 key（仅 admin） ----------
+    // 前端管理员开启"外部上传"通道后调用：外部 ghproxy 镜像不会注入任何鉴权，
+    // blob 直传需要客户端自带 key。key 仅经本接口下发给通过密码哈希校验且
+    // role=admin 的账号（普通用户 403、未登录 401）；引用类操作仍固定走 EO，
+    // key 即使泄露面也被限制在管理员本人浏览器内。
+    if (path === '/api/gitkey') {
+      const auth = await requireLogin(request);
+      if (!auth.ok) return json({ error: auth.error }, auth.status);
+      if (auth.role !== 'admin') return json({ error: 'Permission denied: not an admin' }, 403);
+      return json({ key: GITHUB_KEY });
+    }
+
     // ---------- 服务器自身 IP 信息（公开，数据源 cip.cc；HEAD 用于 RTT 测量） ----------
     if (path === '/api/my-ip' || path === '/ip') {
       if (request.method === 'HEAD') return new Response(null, { status: 200, headers: corsHeaders() });

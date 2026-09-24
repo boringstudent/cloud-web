@@ -83,6 +83,12 @@ async function call(path, opts) {
   r = await call('/api.github.com/repos/boringstudent/cloud-storage/contents/a.txt', { method: 'PUT', headers: { 'X-Auth-User': 'x', 'X-Auth-Pass': 'nothex' } });
   check('代理写操作非法哈希 -> 400', r.status === 400);
 
+  // 8.5 管理员取 key 接口鉴权（不触网）
+  r = await call('/api/gitkey');
+  check('/api/gitkey 缺凭据 -> 401', r.status === 401);
+  r = await call('/api/gitkey', { headers: { 'X-Auth-User': 'x', 'X-Auth-Pass': 'nothex' } });
+  check('/api/gitkey 非法哈希 -> 400', r.status === 400);
+
   // 9. HEAD 轻量检查（不触网）
   r = await call('/api/my-ip', { method: 'HEAD' });
   check('HEAD /api/my-ip -> 200', r.status === 200);

@@ -61,6 +61,15 @@ GET /api/proxies?all=1
 → { "proxies": [全部 30 个候选，未探测] }
 ```
 
+### `GET /api/gitkey`
+
+获取 GitHub 写 key（**仅 admin**），用于管理员开启"外部代理上传通道"后在外部 ghproxy 镜像上直传 blob（外部代理不注入鉴权）。鉴权方式与代理写操作一致（请求头 `X-Auth-User` / `X-Auth-Pass`），且账号 role 必须为 `admin`：未登录 401、哈希非法 400、非管理员 403。key 只应保存在客户端内存中；引用类操作（提交/删除）仍必须走 EO 代理。
+
+```
+GET /api/gitkey        （带 X-Auth-User / X-Auth-Pass 头，admin）
+→ { "key": "<GitHub 写 key>" }
+```
+
 ### `GET/POST /api/login`
 
 用户登录。密码必须传 SHA-512 哈希，与存储哈希实时比对（登录强制实时读取，无缓存）；成功响应**只含角色信息**，不再返回任何 key 或 key 哈希。

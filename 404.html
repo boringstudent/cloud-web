@@ -79,6 +79,12 @@
                     </select>
                     <input type="number" id="concurrencyCustom" min="1" max="10" value="4" style="display: none;">
                 </div>
+                <div class="btn-row concurrency-row">
+                    <label>上传通道</label>
+                    <button type="button" id="ulEoBtn" class="task-progress-graph-btn active" title="EO 上传通道开关（实时生效）">EO</button>
+                    <button type="button" id="ulCfBtn" class="task-progress-graph-btn active" title="CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）">CF</button>
+                    <button type="button" id="ulExtBtn" class="task-progress-graph-btn" title="外部代理上传通道（仅管理员，blob 直传不动引用零冲突）">外部</button>
+                </div>
                 <div id="selectedFiles"></div>
                 <div class="progress-container" style="display: none;">
                     <div class="progress-bar">
@@ -101,6 +107,7 @@
                         <i style="background: #2c82c9;"></i><span id="ulLegendTot">总</span>
                         <i style="background: #28a745;"></i><span id="ulLegendEo">EO</span>
                         <i style="background: #e67e22;"></i><span id="ulLegendCf">CF</span>
+                        <i style="background: #9b59b6; display: none;"></i><span id="ulLegendExt" style="display: none;">外部</span>
                     </div>
                 </div>
                 <button class="btn" onclick="stopUploadRollback()" id="stopUploadBtn" style="width: 100%; margin-top: 10px; display: none; background: #e67e22;">停止上传并回退</button>
@@ -238,6 +245,8 @@
                     <option value="custom">并行: 自定义</option>
                 </select>
                 <input type="number" id="taskDlConcCustom" min="1" max="16" value="5" title="自定义并行数 (1-16)" style="display: none;">
+                <button type="button" id="taskDlEoBtn" class="task-progress-graph-btn active" title="EO 下载通道开关（实时生效）">EO</button>
+                <button type="button" id="taskDlCfBtn" class="task-progress-graph-btn active" title="CF 下载通道开关（实时生效）">CF</button>
                 <button type="button" id="taskDlExtBtn" class="task-progress-graph-btn" title="外部多代理下载（公共镜像加速，仅下载）">多代理</button>
                 <button type="button" id="taskDlGraphToggle" class="task-progress-graph-btn" title="速度曲线">曲线</button>
                 <button type="button" id="taskProgressCancel" class="task-progress-cancel" title="停止" style="display: none;">&times;</button>
