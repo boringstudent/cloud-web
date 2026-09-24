@@ -5,8 +5,9 @@ html, body {
     min-height: 100vh;
 }
 body {
-    /* loliapi 按 UA 返回 PC/移动端适配图；center/cover no-repeat 防止小图平铺拼接 */
-    background: url('/api/bg') center / cover no-repeat fixed;
+    /* 背景图由浏览器直连图床（loliapi 按 UA 返回 PC/移动端适配图，302 到真实图片），
+       不再经 EO 中转，减轻边缘函数流量；深色兜底保证白底容器加载前不闪白 */
+    background: #3a4a5a url('https://www.loliapi.com/acg/') center / cover no-repeat fixed;
     font-family: Arial, sans-serif;
 }
 .container {
@@ -485,7 +486,7 @@ a:hover {
 .toast {
     display: none;
     position: fixed;
-    bottom: 90px;
+    bottom: 156px;
     left: 50%;
     transform: translateX(-50%);
     background: rgba(51, 51, 51, 0.9);
@@ -817,6 +818,14 @@ h1 {
     box-shadow: 0 0 10px rgba(0,0,0,0.1);
     cursor: pointer;
     user-select: none;
+    transition: opacity 0.6s ease;
+}
+/* 检测完成后角标淡出为半透明，减少视觉干扰；悬停/点击时恢复 */
+.svc-status.faded {
+    opacity: 0.3;
+}
+.svc-status.faded:hover {
+    opacity: 1;
 }
 .svc-status.ok #svcStatusText {
     color: #28a745;
@@ -879,4 +888,217 @@ h1 {
     .entry {
         padding: 10px;
     }
+}
+
+/* ---- 总用量（h1 右侧，与刷新倒计时并排） ---- */
+.total-usage {
+    float: right;
+    font-size: 13px;
+    color: #999;
+    font-weight: normal;
+    line-height: 2.4;
+    margin-left: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.total-usage:empty {
+    display: none;
+}
+
+/* ---- 全局任务进度条（下载/批量下载/文件夹下载） ---- */
+.task-progress {
+    display: none;
+    position: fixed;
+    bottom: 90px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(420px, 86vw);
+    background: rgba(255, 255, 255, 0.96);
+    border-radius: 12px;
+    box-shadow: 0 2px 16px rgba(0, 0, 0, 0.25);
+    padding: 10px 14px 12px;
+    z-index: 2500;
+    box-sizing: border-box;
+}
+.task-progress.show {
+    display: block;
+    animation: taskProgressIn 0.25s ease;
+}
+@keyframes taskProgressIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.task-progress-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: #333;
+}
+.task-progress-top span {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+.task-progress-cancel {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: #999;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 6px;
+}
+.task-progress-cancel:hover {
+    color: #dc3545;
+    background: rgba(220, 53, 69, 0.08);
+}
+
+/* ---- 图片查看器（缩放/平移/缩略图条） ---- */
+.img-viewer {
+    width: 100%;
+}
+.img-viewer-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: #666;
+}
+.img-viewer-toolbar .btn {
+    padding: 4px 10px;
+    font-size: 13px;
+    border-radius: 6px;
+}
+.img-viewer-zoom-label {
+    min-width: 44px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.img-viewer-pos {
+    margin-left: auto;
+    color: #999;
+    font-variant-numeric: tabular-nums;
+}
+.img-viewer-stage {
+    overflow: auto;
+    max-height: 62vh;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.04);
+    text-align: center;
+    line-height: 0;
+}
+.img-viewer-stage img {
+    max-width: 100%;
+    border-radius: 8px;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+.img-viewer-stage img.dragging {
+    cursor: grabbing;
+}
+.img-thumbs {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 8px 2px 2px;
+    line-height: 0;
+}
+.img-thumbs img {
+    height: 52px;
+    border-radius: 6px;
+    cursor: pointer;
+    opacity: 0.55;
+    flex-shrink: 0;
+    transition: opacity 0.2s, box-shadow 0.2s;
+}
+.img-thumbs img:hover {
+    opacity: 0.85;
+}
+.img-thumbs img.active {
+    opacity: 1;
+    box-shadow: 0 0 0 2px #2c82c9;
+}
+
+/* ---- 外观细节优化（保持原有风格） ---- */
+/* 细滚动条 */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+/* 弹窗入场动画 */
+.modal-overlay.show .modal-content {
+    animation: modalIn 0.22s ease;
+}
+@keyframes modalIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* 右键菜单入场动画与圆角统一 */
+.context-menu.show {
+    animation: menuIn 0.15s ease;
+}
+@keyframes menuIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+}
+.context-menu-item:first-child {
+    border-radius: 8px 8px 0 0;
+}
+.context-menu-item:last-child {
+    border-radius: 0 0 8px 8px;
+}
+/* 输入框聚焦态 */
+.form-group input[type="text"]:focus,
+.form-group input[type="password"]:focus {
+    outline: none;
+    border-color: #2c82c9;
+    box-shadow: 0 0 0 3px rgba(44, 130, 201, 0.15);
+}
+/* 按钮按压反馈与悬停阴影 */
+.btn {
+    transition: background 0.3s, box-shadow 0.3s, transform 0.1s;
+}
+.btn:hover:not(:disabled) {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+.btn:active:not(:disabled) {
+    transform: scale(0.97);
+}
+/* toast 入场动画 */
+.toast.show {
+    animation: toastIn 0.2s ease;
+}
+@keyframes toastIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+/* 批量操作栏入场动画 */
+.batch-bar {
+    animation: menuIn 0.18s ease;
+}
+/* 模态关闭按钮 hover 反馈更明确 */
+.modal-close {
+    transition: color 0.2s, transform 0.2s;
+}
+.modal-close:hover {
+    transform: scale(1.15);
 }

@@ -80,14 +80,20 @@ var previewAbort = null; // 图片流式预览的 AbortController
 var previewProbe = null; // 音/视频预览的测速探测请求
 var previewMerge = null; // 分片合并预览的取消句柄
 var previewAudioVolume = null; // 跨预览记忆用户调节的音量/静音状态
+var DEFAULT_AUDIO_VOLUME = 0.2; // 首次预览的默认音量（20%）
 
-// 新建的音频元素应用记忆中的音量，并持续跟踪用户调节
+// 新建的音频元素应用记忆中的音量（无记忆时用默认 20%），并持续跟踪用户调节
 function bindAudioVolume(audioEl) {
     if (previewAudioVolume) {
         try {
             audioEl.volume = previewAudioVolume.v;
             audioEl.muted = previewAudioVolume.m;
         } catch (e) {}
+    } else {
+        try {
+            audioEl.volume = DEFAULT_AUDIO_VOLUME;
+        } catch (e) {}
+        previewAudioVolume = { v: DEFAULT_AUDIO_VOLUME, m: false };
     }
     audioEl.addEventListener('volumechange', function() {
         previewAudioVolume = { v: audioEl.volume, m: audioEl.muted };
@@ -170,9 +176,15 @@ function clearAuth() {
     } catch (e) {}
 }
 
-function saveRemember(username, password) {
+// “记住密码”只存 SHA-512 哈希（v2），不再保存明文：登录时若密码框未被修改，
+// 直接用缓存哈希完成登录；明文始终只存在于用户输入的瞬间
+var REMEMBER_PWD_PLACEHOLDER = '••••••••••';
+
+function saveRemember(username, pwHash) {
     try {
-        localStorage.setItem(REMEMBER_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({ u: username, p: password })))));
+        localStorage.setItem(REMEMBER_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({
+            v: 2, u: username, h: pwHash
+        })))));
     } catch (e) {}
 }
 
@@ -181,7 +193,13 @@ function getRemember() {
         var data = localStorage.getItem(REMEMBER_STORAGE_KEY);
         if (!data) return null;
         var obj = JSON.parse(decodeURIComponent(escape(atob(data))));
-        if (obj && obj.u && obj.p) return obj;
+        if (obj && obj.v === 2 && obj.u && obj.h) return obj;
+        // 旧格式（明文）：哈希一次后迁移为 v2，明文随即丢弃
+        if (obj && obj.u && obj.p) {
+            sha512Hex(obj.p, function(err, hash) {
+                if (!err && hash) saveRemember(obj.u, hash);
+            });
+        }
         return null;
     } catch (e) {
         return null;
@@ -291,29 +309,45 @@ function apiSendJson(method, url, body, cb) {
 function loginUser(username, password, persist, cb) {
     sha512Hex(password, function(err, pwHash) {
         if (err || !pwHash) { cb(err || '密码加密失败'); return; }
-        apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(pwHash), function(err2, data) {
-            if (err2 || !data || !data.success) {
-                cb(err2 || '用户名或密码错误');
-                return;
-            }
-            var role = data.role || 'user';
-            if (persist) {
-                saveAuth(username, pwHash, role);
-            } else {
-                sessionAuth = { v: 2, u: username, h: pwHash, role: role };
-            }
-            updateAuthBtn();
-            cb(null);
-        });
+        loginWithHash(username, pwHash, persist, cb);
+    });
+}
+
+// 已持有密码哈希时直接登录（“记住密码”自动填充的场景）；
+// 成功回调为 cb(null, pwHash)，便于调用方缓存哈希
+function loginWithHash(username, pwHash, persist, cb) {
+    apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(pwHash), function(err2, data) {
+        if (err2 || !data || !data.success) {
+            cb(err2 || '用户名或密码错误');
+            return;
+        }
+        var role = data.role || 'user';
+        if (persist) {
+            saveAuth(username, pwHash, role);
+        } else {
+            sessionAuth = { v: 2, u: username, h: pwHash, role: role };
+        }
+        updateAuthBtn();
+        cb(null, pwHash);
     });
 }
 
 
+// 自动填充记住的账号：密码框填入占位符并把缓存哈希挂在输入框上，
+// 用户一旦修改密码框即视为输入了新密码，缓存哈希失效
 function fillAuthInputs(usernameId, passwordId, checkboxId) {
     var remembered = getRemember();
     if (remembered) {
         document.getElementById(usernameId).value = remembered.u;
-        document.getElementById(passwordId).value = remembered.p;
+        var pwdInput = document.getElementById(passwordId);
+        pwdInput.value = REMEMBER_PWD_PLACEHOLDER;
+        pwdInput._rememberedHash = remembered.h;
+        if (!pwdInput._rememberBound) {
+            pwdInput._rememberBound = true;
+            pwdInput.addEventListener('input', function() {
+                pwdInput._rememberedHash = null;
+            });
+        }
         if (checkboxId) document.getElementById(checkboxId).checked = true;
     }
 }
@@ -407,15 +441,22 @@ function doLogin() {
     loginBtn.disabled = true;
     setMsg('loginMessage', '正在登录...', 'success');
 
+    // 密码框未被修改且挂着缓存哈希：直接哈希登录；否则按新输入的明文哈希后登录
+    var pwdInput = document.getElementById('loginPassword');
+    var rememberedHash = (password === REMEMBER_PWD_PLACEHOLDER && pwdInput._rememberedHash) || null;
+    var doAuth = rememberedHash
+        ? function(cb) { loginWithHash(username, rememberedHash, true, cb); }
+        : function(cb) { loginUser(username, password, true, cb); };
+
     // Sessions are always persisted ("保持登录" is the default, no UI toggle)
-    loginUser(username, password, true, function(err) {
+    doAuth(function(err, pwHash) {
         if (err) {
             setMsg('loginMessage', '登录失败: ' + err, 'error');
             loginBtn.disabled = false;
             return;
         }
         if (rememberPwd) {
-            saveRemember(username, password);
+            saveRemember(username, pwHash || rememberedHash);
         } else {
             clearRemember();
         }
@@ -433,7 +474,9 @@ function logout() {
     document.getElementById('deleteUsername').value = '';
     document.getElementById('deletePassword').value = '';
     document.getElementById('loginUsername').value = '';
-    document.getElementById('loginPassword').value = '';
+    var loginPwd = document.getElementById('loginPassword');
+    loginPwd.value = '';
+    loginPwd._rememberedHash = null;
 }
 
 // ---- Self-service account (change password / delete account) ----
@@ -514,7 +557,7 @@ function changeOwnPassword() {
                     saveAuth(auth.u, newHash, auth.role);
                 }
                 if (getRemember()) {
-                    saveRemember(auth.u, newPwd);
+                    saveRemember(auth.u, newHash);
                 }
                 setMsg('accountMessage', '密码修改成功！', 'success');
                 btn.disabled = false;
@@ -914,11 +957,17 @@ function checkOneService(url, cb) {
     return [rttXhr, xhr];
 }
 
+var svcFadeTimer = null;   // 检测完成后延迟淡出的计时器
+
 function renderSvcStatus() {
     var el = document.getElementById('svcStatus');
     var text = document.getElementById('svcStatusText');
     var tip = document.getElementById('svcStatusTip');
     var a = svcStatus.api;
+    if (svcFadeTimer) {
+        clearTimeout(svcFadeTimer);
+        svcFadeTimer = null;
+    }
     if (!a) {
         el.className = 'svc-status';
         text.textContent = '服务检测中…';
@@ -927,7 +976,7 @@ function renderSvcStatus() {
     el.className = 'svc-status ' + (a.ok ? 'ok' : 'fail');
     text.textContent = a.ok ? '服务正常' : '服务异常';
     tip.textContent = '';
-    addSvcTipLine(tip, 'EO 边缘函数', location.origin, a);
+    addSvcTipLine(tip, 'EO 边缘函数', '', a);
     var timeDiv = document.createElement('div');
     var timeLabel = document.createElement('span');
     timeLabel.className = 'svc-name';
@@ -935,6 +984,10 @@ function renderSvcStatus() {
     timeDiv.appendChild(timeLabel);
     timeDiv.appendChild(document.createTextNode(new Date().toLocaleTimeString()));
     tip.appendChild(timeDiv);
+    // 检测完成 4 秒后角标淡出为半透明（悬停恢复），减少常驻视觉干扰
+    svcFadeTimer = setTimeout(function() {
+        el.classList.add('faded');
+    }, 4000);
 }
 
 function addSvcTipLine(tip, name, addr, st) {
@@ -943,7 +996,7 @@ function addSvcTipLine(tip, name, addr, st) {
     label.className = 'svc-name';
     label.textContent = name;
     div.appendChild(label);
-    div.appendChild(document.createTextNode(addr + ' '));
+    if (addr) div.appendChild(document.createTextNode(addr + ' '));
     var state = document.createElement('span');
     if (st && st.ok) {
         state.className = 'svc-ok';
@@ -1072,9 +1125,11 @@ function updateFolderSizes() {
     if (!fileTreeCache) return;
     // Single pass over the tree: accumulate each blob's size into all ancestor dirs
     var dirSizes = {};
+    var rootTotal = 0;
     fileTreeCache.forEach(function(item) {
         if (item.type !== 'blob' || !item.path) return;
         var size = item.size || 0;
+        rootTotal += size;
         var p = item.path;
         var idx = p.lastIndexOf('/');
         while (idx > 0) {
@@ -1083,6 +1138,12 @@ function updateFolderSizes() {
             idx = p.lastIndexOf('/');
         }
     });
+    // 全仓总用量（数据量），显示在标题右侧
+    var usageEl = document.getElementById('totalUsage');
+    if (usageEl) {
+        var usageText = '总用量 ' + formatSize(rootTotal);
+        if (usageEl.textContent !== usageText) usageEl.textContent = usageText;
+    }
     var sizeSpans = document.querySelectorAll('.dir-size');
     sizeSpans.forEach(function(span) {
         var dirPath = span.getAttribute('data-path');
@@ -1102,6 +1163,130 @@ function escapeHtml(text) {
 
 function propRow(label, value, mono) {
     return '<div class="prop-row"><span class="prop-label">' + label + '</span><span class="prop-value' + (mono ? ' mono' : '') + '">' + value + '</span></div>';
+}
+
+// ---- 音频标签（ID3v1 / ID3v2）读取：经 Range 请求只取文件头尾，不下载整文件 ----
+function rawUrlFor(path) {
+    return ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(path));
+}
+
+function fetchRange(url, rangeHeader, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.setRequestHeader('Range', rangeHeader);
+    xhr.responseType = 'arraybuffer';
+    xhr.onload = function() {
+        if ((xhr.status === 200 || xhr.status === 206) && xhr.response) {
+            cb(new Uint8Array(xhr.response));
+        } else {
+            cb(null);
+        }
+    };
+    xhr.onerror = function() { cb(null); };
+    xhr.send();
+}
+
+function decodeId3Text(bytes, offset, length) {
+    if (length <= 0) return '';
+    var enc = bytes[offset];
+    var data = bytes.subarray(offset + 1, offset + length);
+    // 去掉末尾的 NUL 终止符
+    var end = data.length;
+    while (end > 0 && data[end - 1] === 0) end--;
+    data = data.subarray(0, end);
+    try {
+        if (enc === 0) return new TextDecoder('iso-8859-1').decode(data).trim();
+        if (enc === 1) return new TextDecoder('utf-16').decode(data).trim();
+        if (enc === 2) return new TextDecoder('utf-16be').decode(data).trim();
+        return new TextDecoder('utf-8').decode(data).trim();
+    } catch (e) {
+        try { return new TextDecoder('utf-8').decode(data).trim(); } catch (e2) { return ''; }
+    }
+}
+
+function syncsafe(b0, b1, b2, b3) {
+    return (b0 << 21) | (b1 << 14) | (b2 << 7) | b3;
+}
+
+// 解析 ID3v2（v2.3 / v2.4）常用文本帧：TIT2 标题 / TPE1 歌手 / TALB 专辑 / TYER、TDRC 年份
+function parseId3v2(bytes) {
+    var tags = {};
+    if (bytes.length < 10 || bytes[0] !== 0x49 || bytes[1] !== 0x44 || bytes[2] !== 0x33) return tags;
+    var verMajor = bytes[3];
+    var tagSize = syncsafe(bytes[6], bytes[7], bytes[8], bytes[9]);
+    var pos = 10;
+    var tagEnd = Math.min(bytes.length, 10 + tagSize);
+    var wanted = { TIT2: 'title', TPE1: 'artist', TALB: 'album', TYER: 'year', TDRC: 'year' };
+    while (pos + 10 <= tagEnd) {
+        var id = String.fromCharCode(bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]);
+        if (!/^[A-Z0-9]{4}$/.test(id)) break;
+        var size = (verMajor >= 4)
+            ? syncsafe(bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7])
+            : ((bytes[pos + 4] << 24) | (bytes[pos + 5] << 16) | (bytes[pos + 6] << 8) | bytes[pos + 7]);
+        if (size <= 0 || pos + 10 + size > bytes.length) break;
+        if (wanted[id] && !tags[wanted[id]]) {
+            var text = decodeId3Text(bytes, pos + 10, size);
+            if (text) tags[wanted[id]] = text;
+        }
+        pos += 10 + size;
+    }
+    return tags;
+}
+
+// 解析 ID3v1（文件末尾 128 字节，"TAG" 开头，字段为定长 GBK/拉丁文本）
+function parseId3v1(bytes) {
+    var tags = {};
+    if (bytes.length < 128) return tags;
+    var base = bytes.length - 128;
+    if (bytes[base] !== 0x54 || bytes[base + 1] !== 0x41 || bytes[base + 2] !== 0x47) return tags;
+    var field = function(off, len) {
+        var data = bytes.subarray(base + off, base + off + len);
+        var end = data.length;
+        while (end > 0 && (data[end - 1] === 0 || data[end - 1] === 0x20)) end--;
+        if (!end) return '';
+        try { return new TextDecoder('gbk').decode(data.subarray(0, end)).trim(); } catch (e) {
+            try { return new TextDecoder('iso-8859-1').decode(data.subarray(0, end)).trim(); } catch (e2) { return ''; }
+        }
+    };
+    var title = field(3, 30), artist = field(33, 30), album = field(63, 30), year = field(93, 4);
+    if (title) tags.title = title;
+    if (artist) tags.artist = artist;
+    if (album) tags.album = album;
+    if (year) tags.year = year;
+    return tags;
+}
+
+// 读取音频标签：ID3v2 在文件头（取首 256KB），ID3v1 在文件尾（取末 128 字节）；
+// 分片文件分别取首/尾分片。ID3v2 字段优先，缺失时用 ID3v1 补齐
+function fetchAudioTags(fileInfo, cb) {
+    var headPath = (fileInfo.chunked && fileInfo.parts && fileInfo.parts.length)
+        ? fileInfo.parts[0].path : fileInfo.path;
+    var tailPath = (fileInfo.chunked && fileInfo.parts && fileInfo.parts.length)
+        ? fileInfo.parts[fileInfo.parts.length - 1].path : fileInfo.path;
+    var headTags = null;
+    var tailTags = null;
+    var pending = 2;
+    var finish = function() {
+        pending--;
+        if (pending > 0) return;
+        if (!headTags && !tailTags) { cb(null); return; }
+        var tags = {};
+        var src = [tailTags || {}, headTags || {}];
+        src.forEach(function(t) {
+            ['title', 'artist', 'album', 'year'].forEach(function(k) {
+                if (!tags[k] && t[k]) tags[k] = t[k];
+            });
+        });
+        cb((tags.title || tags.artist || tags.album || tags.year) ? tags : null);
+    };
+    fetchRange(rawUrlFor(headPath), 'bytes=0-262143', function(bytes) {
+        headTags = bytes ? parseId3v2(bytes) : null;
+        finish();
+    });
+    fetchRange(rawUrlFor(tailPath), 'bytes=-128', function(bytes) {
+        tailTags = bytes ? parseId3v1(bytes) : null;
+        finish();
+    });
 }
 
 function showProperties(filePath, fileName, fileType) {
@@ -1132,14 +1317,104 @@ function showProperties(filePath, fileName, fileType) {
         propsHtml += propRow('大小', formatSize(menuFileInfo.size));
         propsHtml += propRow('SHA', menuFileInfo.sha || 'N/A', true);
     }
+    // 音频文件追加标签占位行，异步读取 ID3（歌手/标题/专辑/年份）后填充
+    var ext = getFileExtension(fileName);
+    var isAudio = fileType !== 'dir' && AUDIO_EXTS.indexOf(ext) !== -1;
+    if (isAudio) {
+        propsHtml += propRow('标签', '<span id="audioTagLoading">读取中...</span>');
+    }
     propsHtml += '</div>';
     content.innerHTML = propsHtml;
     document.getElementById('propertiesModal').classList.add('show');
+    if (isAudio) {
+        var info = {
+            path: filePath,
+            chunked: !!menuFileInfo.chunked,
+            parts: menuFileInfo.parts || null
+        };
+        fetchAudioTags(info, function(tags) {
+            var holder = document.getElementById('audioTagLoading');
+            if (!holder) return;
+            var row = holder.parentNode.parentNode;
+            if (!tags) {
+                row.parentNode.removeChild(row);
+                return;
+            }
+            row.parentNode.removeChild(row);
+            var list = content.querySelector('.props-list');
+            if (!list) return;
+            var html = '';
+            if (tags.artist) html += propRow('歌手', escapeHtml(tags.artist));
+            if (tags.title) html += propRow('标题', escapeHtml(tags.title));
+            if (tags.album) html += propRow('专辑', escapeHtml(tags.album));
+            if (tags.year) html += propRow('年份', escapeHtml(tags.year));
+            list.insertAdjacentHTML('beforeend', html);
+        });
+    }
 }
 
+// 文件夹下载：经 git tree 收集全部文件后串行逐个下载（复用批量下载管线，
+// 带总进度条与停止按钮）；同名文件浏览器自动重命名，子目录结构不保留
 function downloadFolder(filePath, fileName) {
-    var url = ghUrl('https://github.com/' + REPO_OWNER + '/' + REPO_NAME + '/archive/refs/heads/' + DEFAULT_BRANCH + '.zip');
-    window.open(url, '_blank', 'noopener');
+    showTaskProgress('正在获取文件夹内容: ' + displayName(fileName), null);
+    fetchFileTree(function() {
+        var prefix = filePath + '/';
+        var blobs = [];
+        fileTreeCache.forEach(function(item) {
+            if (item.type === 'blob' && item.path && item.path.indexOf(prefix) === 0) {
+                blobs.push(item);
+            }
+        });
+        // 分片文件（.partN）按组归并为一个虚拟文件，下载时合并还原
+        var partGroups = {};
+        var normal = [];
+        blobs.forEach(function(item) {
+            var name = item.path.substring(prefix.length);
+            if (PART_SUFFIX.test(name)) {
+                var base = name.replace(PART_SUFFIX, '');
+                if (!partGroups[base]) partGroups[base] = [];
+                partGroups[base].push(item);
+            } else {
+                normal.push({ name: name, path: item.path, size: item.size });
+            }
+        });
+        for (var base in partGroups) {
+            var parts = partGroups[base];
+            parts.sort(function(a, b) {
+                return getPartNumber(a.path.substring(prefix.length)) - getPartNumber(b.path.substring(prefix.length));
+            });
+            var total = 0;
+            parts.forEach(function(p) { total += (p.size || 0); });
+            normal.push({ name: base, size: total, chunked: true, parts: parts });
+        }
+        normal.sort(function(a, b) { return a.name.localeCompare(b.name); });
+        var models = [];
+        var seen = {};
+        normal.forEach(function(m) {
+            var name = m.name;
+            if (seen[name]) name = name.replace(/\//g, '_');
+            seen[name] = true;
+            models.push({
+                name: name,
+                displayName: displayName(name),
+                path: m.path,
+                size: m.size,
+                chunked: m.chunked || false,
+                parts: m.parts || null
+            });
+        });
+        if (!models.length) {
+            hideTaskProgress();
+            showToast('文件夹为空');
+            setTimeout(hideToast, 2000);
+            return;
+        }
+        runSequentialDownload(models, '文件夹 ' + displayName(fileName));
+    }, function() {
+        hideTaskProgress();
+        showToast('获取文件夹内容失败');
+        setTimeout(hideToast, 2500);
+    });
 }
 
 var deleteFilePath = '';
@@ -1157,6 +1432,7 @@ function openDeleteModal(filePath, fileSha, fileName, fileType) {
     var deleteMsg = document.getElementById('deleteMessage');
     deleteMsg.className = 'message';
     deleteMsg.textContent = '';
+    setDeleteProgress(null);
     var confirmP = document.getElementById('deleteConfirmText');
     confirmP.textContent = '';
     confirmP.appendChild(document.createTextNode('确定要删除' + (deleteFileType === 'dir' ? '文件夹 ' : '')));
@@ -1178,6 +1454,21 @@ function closeDeleteModal() {
     document.getElementById('deleteMessage').textContent = '';
     document.getElementById('deleteUsername').value = '';
     document.getElementById('deletePassword').value = '';
+    setDeleteProgress(null);
+}
+
+// 删除进度条（删除弹窗内）：done=null 隐藏
+function setDeleteProgress(done, total) {
+    var wrap = document.getElementById('deleteProgress');
+    if (!wrap) return;
+    if (done === null) {
+        wrap.style.display = 'none';
+        return;
+    }
+    wrap.style.display = 'block';
+    var pct = total ? Math.round(done / total * 100) : 0;
+    document.getElementById('deleteProgressFill').style.width = pct + '%';
+    document.getElementById('deleteProgressText').textContent = done + ' / ' + total + ' · ' + pct + '%';
 }
 
 function bindEntryEvents(entry) {
@@ -1230,7 +1521,7 @@ function openContextMenu(x, y, fileInfo) {
 
     document.getElementById('menuPreview').style.display = fileInfo.type === 'dir' ? 'none' : '';
     document.getElementById('menuEdit').style.display = (fileInfo.type === 'dir' || fileInfo.chunked) ? 'none' : '';
-    document.getElementById('menuDownload').style.display = fileInfo.type === 'dir' ? 'none' : '';
+    document.getElementById('menuDownload').style.display = '';
     document.getElementById('menuDelete').style.display = '';
 
     var menu = document.getElementById('contextMenu');
@@ -1300,11 +1591,15 @@ function saveBlobAs(blob, fileName) {
 
 // Fetch as Blob first: the download attribute is ignored cross-origin,
 // which made previewable files (jpg/mp4/...) open in the tab instead of saving.
-// onprogress 实时反馈已下载大小/百分比/速度；onDone(ok) 供批量下载串行调度。
-function downloadFile(filePath, fileName, onDone) {
+// 单独下载时驱动全局进度条（可点 ✕ 中止）；批量下载时经 onProgress(loaded, speed, total)
+// 汇报字节进度，由调度器汇总为总进度条；onDone(ok) 供串行调度。
+function downloadFile(filePath, fileName, onDone, onProgress) {
     var url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
-    showToast('正在下载: ' + fileName);
+    var standalone = !onProgress;
     var xhr = new XMLHttpRequest();
+    if (standalone) {
+        showTaskProgress('正在下载: ' + fileName, 0, function() { xhr.abort(); });
+    }
     xhr.open('GET', url, true);
     xhr.responseType = 'blob';
     var lastLoaded = 0;
@@ -1318,15 +1613,19 @@ function downloadFile(filePath, fileName, onDone) {
             lastTime = now;
             speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
         }
-        var pct = (e.lengthComputable && e.total) ? ' · ' + Math.round(e.loaded / e.total * 100) + '%' : '';
-        showToast('正在下载: ' + fileName + ' · ' + formatSize(e.loaded) + pct + (speedText ? ' · ' + speedText : ''));
+        if (onProgress) {
+            onProgress(e.loaded, speedText, (e.lengthComputable && e.total) ? e.total : 0);
+        } else {
+            var pct = (e.lengthComputable && e.total) ? Math.round(e.loaded / e.total * 100) : null;
+            updateTaskProgress('正在下载: ' + fileName + ' · ' + formatSize(e.loaded) + (speedText ? ' · ' + speedText : ''), pct);
+        }
     };
     var finish = function(ok) {
+        if (standalone) hideTaskProgress();
         if (onDone) onDone(ok);
     };
     xhr.onload = function() {
         if (xhr.status === 200) {
-            hideToast();
             saveBlobAs(xhr.response, fileName);
             finish(true);
         } else {
@@ -1340,7 +1639,7 @@ function downloadFile(filePath, fileName, onDone) {
         setTimeout(hideToast, 2500);
         finish(false);
     };
-    // 批量下载点“停止”时中止当前传输；单独下载不会触发
+    // 点“停止”/进度条 ✕ 时中止当前传输
     xhr.onabort = function() { finish(false); };
     xhr.send();
     return xhr;
@@ -1362,10 +1661,41 @@ function hideToast() {
     document.getElementById('toast').classList.remove('show');
 }
 
+// ---- 全局任务进度条（单文件/批量/文件夹下载共用） ----
+var taskProgressCancelFn = null;
+
+function showTaskProgress(text, pct, onCancel) {
+    var el = document.getElementById('taskProgress');
+    el.classList.add('show');
+    taskProgressCancelFn = onCancel || null;
+    document.getElementById('taskProgressCancel').style.display = onCancel ? '' : 'none';
+    updateTaskProgress(text, pct);
+}
+
+function updateTaskProgress(text, pct) {
+    var el = document.getElementById('taskProgress');
+    if (!el.classList.contains('show')) return;
+    document.getElementById('taskProgressText').textContent = text;
+    var fill = document.getElementById('taskProgressFill');
+    if (pct === null || pct === undefined) {
+        fill.style.width = '100%';
+        fill.style.opacity = '0.35';
+    } else {
+        fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+        fill.style.opacity = '';
+    }
+}
+
+function hideTaskProgress() {
+    document.getElementById('taskProgress').classList.remove('show');
+    taskProgressCancelFn = null;
+}
+
 // Parallel chunk downloading (limited concurrency) for faster preview/download
 var MERGE_CONCURRENCY = 6;
 
-function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart) {
+// quiet=true 时不弹 toast（下载场景由全局进度条反馈，避免与 toast 叠在一起）
+function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet) {
     var buffers = new Array(parts.length);
     var nextIndex = 0;
     var doneCount = 0;
@@ -1386,7 +1716,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart) {
     };
 
     var report = function() {
-        showToast(progressText());
+        if (!quiet) showToast(progressText());
         if (onProgress) {
             onProgress(totalBytes ? Math.min(99, Math.round(loadedBytes / totalBytes * 100)) : null, speedText);
         }
@@ -1402,7 +1732,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart) {
         }
     };
 
-    showToast('正在加载 0/' + parts.length + ' ...');
+    if (!quiet) showToast('正在加载 0/' + parts.length + ' ...');
 
     var fail = function() {
         if (failed || cancelled) return;
@@ -1756,15 +2086,30 @@ function probeMediaSpeed(url, onSpeed) {
     xhr.send();
 }
 
-function downloadMergedFile(parts, fileName, onDone) {
-    return fetchMergedBlob(parts, function(blob) {
+// 分片文件合并下载：单独下载时驱动全局进度条（可点 ✕ 中止）；
+// 批量下载时经 onProgress(pct, speed) 汇报，由调度器换算字节进度
+function downloadMergedFile(parts, fileName, onDone, onProgress) {
+    var standalone = !onProgress;
+    var handle = fetchMergedBlob(parts, function(blob) {
+        if (standalone) hideTaskProgress();
         saveBlobAs(blob, fileName);
         if (onDone) onDone(true);
     }, function() {
+        if (standalone) hideTaskProgress();
         showToast('下载失败，请重试');
         setTimeout(hideToast, 2000);
         if (onDone) onDone(false);
-    });
+    }, function(pct, speed) {
+        if (onProgress) {
+            onProgress(pct, speed);
+        } else {
+            updateTaskProgress('正在下载: ' + fileName + (speed ? ' · ' + speed : ''), pct);
+        }
+    }, null, true);
+    if (standalone) {
+        showTaskProgress('正在下载: ' + fileName, 0, function() { handle.cancel(); });
+    }
+    return handle;
 }
 
 function getFileExtension(fileName) {
@@ -1775,6 +2120,233 @@ function getFileExtension(fileName) {
 var AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'aac', 'flac'];
 var VIDEO_EXTS = ['mp4', 'webm', 'ogg', 'avi', 'mov'];
 var IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp'];
+
+// ---- 图片查看器：缩放（按钮/滚轮/双击）、拖拽平移、缩略图条、前后切换 ----
+var imgViewer = null; // {stage, img, zoomLabel, posLabel, thumbs, list, index, zoom}
+
+// 收集当前目录的图片列表（分片文件无直链，不参与缩略图条）
+function collectImageModels() {
+    var list = [];
+    entryOrder.forEach(function(k) {
+        var rec = entryMap[k];
+        if (!rec || rec.model.kind !== 'file' || rec.model.chunked) return;
+        if (IMAGE_EXTS.indexOf(getFileExtension(rec.model.name)) === -1) return;
+        list.push(rec.model);
+    });
+    return list;
+}
+
+function buildImageViewer() {
+    var wrap = document.createElement('div');
+    wrap.className = 'img-viewer';
+
+    var toolbar = document.createElement('div');
+    toolbar.className = 'img-viewer-toolbar';
+    var mkBtn = function(text, title, fn) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn';
+        b.textContent = text;
+        b.title = title;
+        b.addEventListener('click', fn);
+        return b;
+    };
+    var zoomLabel = document.createElement('span');
+    zoomLabel.className = 'img-viewer-zoom-label';
+    var prevBtn = mkBtn('◀', '上一张 (←)', function() { imgViewerGo(imgViewer.index - 1); });
+    var nextBtn = mkBtn('▶', '下一张 (→)', function() { imgViewerGo(imgViewer.index + 1); });
+    var posLabel = document.createElement('span');
+    posLabel.className = 'img-viewer-pos';
+    toolbar.appendChild(mkBtn('－', '缩小', function() { imgViewerSetZoom(imgViewer.zoom / 1.25); }));
+    toolbar.appendChild(zoomLabel);
+    toolbar.appendChild(mkBtn('＋', '放大', function() { imgViewerSetZoom(imgViewer.zoom * 1.25); }));
+    toolbar.appendChild(mkBtn('适应', '适应窗口', function() { imgViewerSetZoom(1); }));
+    toolbar.appendChild(mkBtn('1:1', '实际大小', function() { imgViewerActualSize(); }));
+    toolbar.appendChild(prevBtn);
+    toolbar.appendChild(nextBtn);
+    toolbar.appendChild(posLabel);
+    wrap.appendChild(toolbar);
+
+    var stage = document.createElement('div');
+    stage.className = 'img-viewer-stage';
+    var img = document.createElement('img');
+    img.alt = '';
+    stage.appendChild(img);
+    wrap.appendChild(stage);
+
+    var thumbs = document.createElement('div');
+    thumbs.className = 'img-thumbs';
+
+    imgViewer = {
+        stage: stage,
+        img: img,
+        zoomLabel: zoomLabel,
+        posLabel: posLabel,
+        prevBtn: prevBtn,
+        nextBtn: nextBtn,
+        thumbs: thumbs,
+        list: [],
+        index: -1,
+        zoom: 1
+    };
+    bindImageViewerEvents();
+    return wrap;
+}
+
+function bindImageViewerEvents() {
+    var v = imgViewer;
+    var img = v.img;
+    var stage = v.stage;
+    // 滚轮缩放
+    stage.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        imgViewerSetZoom(v.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    }, { passive: false });
+    // 双击在“适应”与“实际大小”之间切换
+    img.addEventListener('dblclick', function() {
+        if (v.zoom === 1) imgViewerActualSize();
+        else imgViewerSetZoom(1);
+    });
+    // 拖拽平移（拖动滚动条区域）
+    var dragging = false;
+    var startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    img.addEventListener('mousedown', function(e) {
+        if (v.zoom <= 1) return;
+        e.preventDefault();
+        dragging = true;
+        img.classList.add('dragging');
+        startX = e.clientX;
+        startY = e.clientY;
+        startLeft = stage.scrollLeft;
+        startTop = stage.scrollTop;
+    });
+    document.addEventListener('mousemove', function(e) {
+        if (!dragging || imgViewer !== v) return;
+        stage.scrollLeft = startLeft - (e.clientX - startX);
+        stage.scrollTop = startTop - (e.clientY - startY);
+    });
+    document.addEventListener('mouseup', function() {
+        dragging = false;
+        img.classList.remove('dragging');
+    });
+}
+
+// 应用缩放：以“适应宽度”为基准按倍数设定显示宽度，平移由容器滚动承担
+function imgViewerApply() {
+    var v = imgViewer;
+    if (!v) return;
+    var fitW = v.stage.clientWidth - 4;
+    if (fitW < 50) fitW = 50;
+    if (Math.abs(v.zoom - 1) < 0.001) {
+        v.img.style.width = '';
+        v.img.style.maxWidth = '100%';
+        v.zoomLabel.textContent = '适应';
+    } else {
+        v.img.style.maxWidth = 'none';
+        v.img.style.width = Math.round(fitW * v.zoom) + 'px';
+        v.zoomLabel.textContent = Math.round(v.zoom * 100) + '%';
+    }
+}
+
+function imgViewerSetZoom(z) {
+    var v = imgViewer;
+    if (!v) return;
+    v.zoom = Math.max(0.2, Math.min(8, z));
+    imgViewerApply();
+}
+
+function imgViewerActualSize() {
+    var v = imgViewer;
+    if (!v) return;
+    var fitW = v.stage.clientWidth - 4;
+    var natW = v.img.naturalWidth || fitW;
+    v.zoom = Math.max(0.2, Math.min(8, natW / Math.max(50, fitW)));
+    imgViewerApply();
+}
+
+// 填充缩略图条并同步前后切换按钮与位置显示
+function imgViewerSetList(models, currentPath) {
+    var v = imgViewer;
+    if (!v) return;
+    v.list = models.map(function(m) {
+        return { name: m.displayName || m.name, url: rawUrlFor(m.path) };
+    });
+    v.index = -1;
+    for (var i = 0; i < v.list.length; i++) {
+        if (models[i].path === currentPath) {
+            v.index = i;
+            break;
+        }
+    }
+    v.thumbs.innerHTML = '';
+    if (v.list.length > 1) {
+        v.list.forEach(function(item, i) {
+            var t = document.createElement('img');
+            t.src = item.url;
+            t.alt = item.name;
+            t.title = item.name;
+            t.loading = 'lazy';
+            if (i === v.index) t.className = 'active';
+            t.addEventListener('click', function() { imgViewerGo(i); });
+            v.thumbs.appendChild(t);
+        });
+        if (v.thumbs.parentNode !== v.stage.parentNode) {
+            v.stage.parentNode.appendChild(v.thumbs);
+        }
+    } else if (v.thumbs.parentNode) {
+        v.thumbs.parentNode.removeChild(v.thumbs);
+    }
+    imgViewerSyncNav();
+}
+
+function imgViewerSyncNav() {
+    var v = imgViewer;
+    if (!v) return;
+    var hasNav = v.index !== -1 && v.list.length > 1;
+    v.prevBtn.style.display = hasNav ? '' : 'none';
+    v.nextBtn.style.display = hasNav ? '' : 'none';
+    v.posLabel.textContent = hasNav ? (v.index + 1) + ' / ' + v.list.length : '';
+    var thumbs = v.thumbs.children;
+    for (var i = 0; i < thumbs.length; i++) {
+        thumbs[i].className = (i === v.index) ? 'active' : '';
+    }
+    if (hasNav && thumbs[v.index] && thumbs[v.index].scrollIntoView) {
+        thumbs[v.index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+}
+
+// 切换图片（缩略图/前后按钮/方向键）：中断当前流式加载，直接换源（直链可走浏览器缓存）
+function imgViewerGo(i) {
+    var v = imgViewer;
+    if (!v || i < 0 || i >= v.list.length || i === v.index) return;
+    if (previewAbort) {
+        try { previewAbort.abort(); } catch (e) {}
+        previewAbort = null;
+    }
+    v.index = i;
+    v.zoom = 1;
+    imgViewerApply();
+    v.img.src = v.list[i].url;
+    document.getElementById('previewTitle').textContent = '预览: ' + v.list[i].name;
+    imgViewerSyncNav();
+}
+
+function destroyImageViewer() {
+    imgViewer = null;
+}
+
+// 预览打开期间 ← → 切换图片
+document.addEventListener('keydown', function(e) {
+    if (!imgViewer || imgViewer.index === -1 || imgViewer.list.length < 2) return;
+    if (!document.getElementById('previewModal').classList.contains('show')) return;
+    if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        imgViewerGo(imgViewer.index - 1);
+    } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        imgViewerGo(imgViewer.index + 1);
+    }
+});
 
 // ---- Lightweight syntax highlighting for text preview/edit ----
 var LANG_KEYWORDS = {
@@ -2140,6 +2712,7 @@ function previewFile(filePath, fileName) {
     document.getElementById('previewTitle').textContent = '预览: ' + fileName;
     var content = document.getElementById('previewContent');
     stopPreviewMedia();
+    destroyImageViewer();
     content.innerHTML = '';
     var loadingDiv = document.createElement('div');
     loadingDiv.className = 'loading';
@@ -2225,13 +2798,11 @@ function previewFile(filePath, fileName) {
                 video.className = 'preview-video';
                 content.appendChild(video);
             } else if (IMAGE_EXTS.indexOf(ext) !== -1) {
-                var img = document.createElement('img');
-                img.src = mediaUrl;
-                img.alt = fileName;
-                img.style.maxWidth = '100%';
-                img.style.maxHeight = '60vh';
-                img.style.borderRadius = '8px';
-                content.appendChild(img);
+                var viewerWrapC = buildImageViewer();
+                imgViewer.img.src = mediaUrl;
+                imgViewer.img.alt = fileName;
+                content.appendChild(viewerWrapC);
+                imgViewerSetList(collectImageModels(), filePath);
             } else {
                 var textReader = new FileReader();
                 textReader.onload = function() {
@@ -2261,12 +2832,14 @@ function previewFile(filePath, fileName) {
         return;
     }
 
-    if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
+    var isImagePreview = IMAGE_EXTS.indexOf(ext) !== -1;
+    if (AUDIO_EXTS.indexOf(ext) !== -1 || VIDEO_EXTS.indexOf(ext) !== -1 || isImagePreview) {
         // 流式加载：音/视频 URL 直接交给媒体元素按 Range 边下边播；
         // 图片走 fetch 分块读取，部分数据渐进渲染；角落实时显示加载速度
         content.innerHTML = '';
         content.appendChild(loadingDiv);
         var mediaEl;
+        var viewerWrap = null;
         if (AUDIO_EXTS.indexOf(ext) !== -1) {
             mediaEl = document.createElement('audio');
             mediaEl.className = 'preview-audio';
@@ -2275,17 +2848,16 @@ function previewFile(filePath, fileName) {
             mediaEl = document.createElement('video');
             mediaEl.className = 'preview-video';
         } else {
-            mediaEl = document.createElement('img');
+            // 图片：查看器（缩放/平移/缩略图），img 由查看器持有
+            viewerWrap = buildImageViewer();
+            mediaEl = imgViewer.img;
             mediaEl.alt = fileName;
-            mediaEl.style.maxWidth = '100%';
-            mediaEl.style.maxHeight = '60vh';
-            mediaEl.style.borderRadius = '8px';
         }
         var rateTag = document.createElement('div');
         // 音频条太矮，叠加标签会遮挡控制按钮，改放在播放器下方右对齐
         rateTag.className = (AUDIO_EXTS.indexOf(ext) !== -1) ? 'media-rate-below' : 'media-rate';
         var rateBox = document.createElement('div');
-        rateBox.className = (AUDIO_EXTS.indexOf(ext) !== -1) ? 'media-wrap media-wrap-audio' : 'media-wrap';
+        rateBox.className = (AUDIO_EXTS.indexOf(ext) !== -1 || isImagePreview) ? 'media-wrap media-wrap-audio' : 'media-wrap';
         rateBox.style.position = 'relative';
         var abortProbe = function() {
             if (previewProbe) {
@@ -2299,9 +2871,12 @@ function previewFile(filePath, fileName) {
             loadingDiv.textContent = '加载失败，无法播放该文件';
             rateTag.textContent = '';
         };
-        if (mediaEl.tagName === 'IMG') {
+        if (isImagePreview) {
             // 首帧部分数据成功解码即隐藏 loading，后续持续渐进刷新
-            mediaEl.onload = function() { loadingDiv.style.display = 'none'; };
+            mediaEl.onload = function() {
+                loadingDiv.style.display = 'none';
+                imgViewerApply();
+            };
             mediaEl.onerror = function() {
                 // 部分数据无法解码属正常（图片未收完），仅最终直连失败才报错
                 if (!previewAbort) showMediaError();
@@ -2362,9 +2937,16 @@ function previewFile(filePath, fileName) {
             mediaEl.addEventListener('emptied', clearBufTimer); // stopPreviewMedia 清 src 时触发
             mediaEl.addEventListener('error', clearBufTimer);
         }
-        rateBox.appendChild(mediaEl);
+        if (viewerWrap) {
+            rateBox.appendChild(viewerWrap);
+        } else {
+            rateBox.appendChild(mediaEl);
+        }
         rateBox.appendChild(rateTag);
         content.appendChild(rateBox);
+        if (viewerWrap) {
+            imgViewerSetList(collectImageModels(), filePath);
+        }
     } else {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', previewUrl, true);
@@ -2403,6 +2985,7 @@ function editFile(filePath, fileName) {
     document.getElementById('previewTitle').textContent = '编辑: ' + fileName;
     var content = document.getElementById('previewContent');
     stopPreviewMedia();
+    destroyImageViewer();
     content.innerHTML = '';
     var loadingDiv = document.createElement('div');
     loadingDiv.className = 'loading';
@@ -2441,6 +3024,7 @@ function editFile(filePath, fileName) {
 function closePreviewModal() {
     document.getElementById('previewModal').classList.remove('show');
     stopPreviewMedia();
+    destroyImageViewer();
     setPreviewBlobUrl(null);
 }
 
@@ -2668,6 +3252,7 @@ function deleteFolderFiles(files) {
         errMsg: ''
     };
     setMsg('deleteMessage', '正在删除 (0/' + files.length + ')', 'success');
+    setDeleteProgress(0, files.length);
 
     function settle() {
         if (state.active > 0) return;
@@ -2710,10 +3295,12 @@ function deleteFolderFiles(files) {
                         if (status === 200 || status === 201) {
                             state.done++;
                             setMsg('deleteMessage', '正在删除 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
+                            setDeleteProgress(state.done, files.length);
                         } else if (status === 404) {
                             // already gone (e.g. removed by an earlier attempt): count as done
                             state.done++;
                             setMsg('deleteMessage', '已不存在，跳过 (' + state.done + '/' + files.length + '): ' + file.path, 'success');
+                            setDeleteProgress(state.done, files.length);
                         } else {
                             state.failed = true;
                             try {
@@ -2839,6 +3426,8 @@ var entryMap = {};
 var entryOrder = [];
 var hasRenderedList = false;
 var listLoading = false;
+var LIST_RENDER_BATCH = 40;  // 首屏懒加载每批渲染的条目数
+var listRenderToken = 0;     // 分批渲染令牌：新一轮渲染使旧批次失效
 
 function showRefreshIndicator() {
     var el = document.getElementById('refreshIndicator');
@@ -3134,14 +3723,30 @@ function invertSelection() {
 var batchDownloadState = null;
 
 function batchDownload() {
-    if (batchDownloadState) return;
     var keys = Object.keys(selectedKeys);
     if (!keys.length) return;
     var models = keys.map(function(k) { return selectedKeys[k]; });
+    runSequentialDownload(models, '');
+}
+
+// 通用串行下载管线：批量下载与文件夹下载共用。
+// 一次一个（并发触发会被浏览器拦截多文件下载，且互相抢占带宽）；
+// 全局进度条按字节汇总总进度，可点 ✕ 或批量栏“停止下载”随时中止当前传输。
+function runSequentialDownload(models, label) {
+    if (batchDownloadState) return;
+    if (!models.length) return;
     batchDownloadState = { cancelled: false, current: null };
     toggleBatchDownloadUI(true);
     var i = 0;
-    // 串行下载：一次一个。并发触发会被浏览器拦截多文件下载，且互相抢占带宽
+    var totalBytes = 0;
+    var doneBytes = 0;
+    var curLoaded = 0;
+    models.forEach(function(m) { totalBytes += (m.size || 0); });
+    var overallPct = function() {
+        if (!totalBytes) return Math.round((i - 1) / models.length * 100);
+        return Math.min(99, Math.round((doneBytes + curLoaded) / totalBytes * 100));
+    };
+    showTaskProgress('正在下载 (0/' + models.length + ')' + (label ? ' · ' + label : ''), 0, stopBatchDownload);
     var next = function() {
         if (!batchDownloadState || batchDownloadState.cancelled) {
             finishBatchDownload(true);
@@ -3152,18 +3757,31 @@ function batchDownload() {
             return;
         }
         var m = models[i++];
+        curLoaded = 0;
         // 首个文件提示一次：连续自动下载可能被浏览器拦截，需手动允许
-        showToast('正在下载 (' + i + '/' + models.length + '): ' + m.displayName +
-            (i === 1 && models.length > 1 ? ' · 若被浏览器拦截多文件下载，请点击地址栏下载图标允许' : ''));
+        if (i === 1 && models.length > 1) {
+            showToast('若被浏览器拦截多文件下载，请点击地址栏下载图标允许');
+            setTimeout(hideToast, 4000);
+        }
+        var head = '正在下载 (' + i + '/' + models.length + '): ' + m.displayName;
+        updateTaskProgress(head, overallPct());
         var done = function(ok) {
+            doneBytes += (m.size || 0);
+            curLoaded = 0;
             if (batchDownloadState) batchDownloadState.current = null;
             // 失败的文件多停一会儿，让用户看清错误提示
             setTimeout(next, ok ? 300 : 2000);
         };
         if (m.chunked && m.parts) {
-            batchDownloadState.current = downloadMergedFile(m.parts, m.name, done);
+            batchDownloadState.current = downloadMergedFile(m.parts, m.name, done, function(pct, speed) {
+                curLoaded = (m.size && pct) ? m.size * pct / 100 : 0;
+                updateTaskProgress(head + (speed ? ' · ' + speed : ''), overallPct());
+            });
         } else {
-            batchDownloadState.current = downloadFile(m.path, m.name, done);
+            batchDownloadState.current = downloadFile(m.path, m.name, done, function(loaded, speed) {
+                curLoaded = loaded;
+                updateTaskProgress(head + (speed ? ' · ' + speed : ''), overallPct());
+            });
         }
     };
     next();
@@ -3188,7 +3806,8 @@ function finishBatchDownload(stopped) {
     if (!batchDownloadState) return;
     batchDownloadState = null;
     toggleBatchDownloadUI(false);
-    showToast(stopped ? '已停止批量下载' : '批量下载已完成');
+    hideTaskProgress();
+    showToast(stopped ? '已停止下载' : '下载已完成');
     setTimeout(hideToast, 2000);
 }
 
@@ -3218,6 +3837,7 @@ function openBatchDeleteModal() {
     var deleteMsg = document.getElementById('deleteMessage');
     deleteMsg.className = 'message';
     deleteMsg.textContent = '';
+    setDeleteProgress(null);
     var confirmP = document.getElementById('deleteConfirmText');
     confirmP.textContent = '';
     confirmP.appendChild(document.createTextNode('确定要删除选中的 '));
@@ -3235,6 +3855,7 @@ function renderFileList(items) {
     var container = document.getElementById('fileListContainer');
 
     if (!models.length) {
+        listRenderToken++;   // 中止进行中的分批渲染（tail 已随 innerHTML 移除）
         container.innerHTML = '<div class="loading">此目录为空</div>';
         entryMap = {};
         entryOrder = [];
@@ -3248,7 +3869,42 @@ function renderFileList(items) {
     var listChanged = false;
 
     if (!hasRenderedList) {
+        // 首屏分批懒加载：条目逐个/逐批进入视野即渲染，大目录不再长时间白屏
         container.innerHTML = '';
+        entryMap = {};
+        entryOrder = [];
+        hasRenderedList = true;
+        var token = ++listRenderToken;
+        var tail = document.createElement('div');
+        tail.className = 'loading';
+        container.appendChild(tail);
+        var idx = 0;
+        var renderBatch = function() {
+            if (token !== listRenderToken) return;   // 已被新一轮渲染取代
+            var end = Math.min(idx + LIST_RENDER_BATCH, models.length);
+            for (; idx < end; idx++) {
+                var m = models[idx];
+                var el = createEntryElement(m);
+                el.classList.add('entry-enter');
+                container.insertBefore(el, tail);
+                entryMap[m.key] = { el: el, model: m, sizeText: m.sizeText };
+                entryOrder.push(m.key);
+            }
+            updateFolderSizes();
+            if (idx < models.length) {
+                tail.textContent = '正在加载 ' + idx + ' / ' + models.length + ' ...';
+                setTimeout(renderBatch, 10);
+                return;
+            }
+            container.removeChild(tail);
+            finishRenderFileList(models, newOrder, true);
+        };
+        if (models.length > LIST_RENDER_BATCH) {
+            renderBatch();
+            return;
+        }
+        // 小目录一次性渲染，不走分批
+        container.removeChild(tail);
         models.forEach(function(m) {
             var el = createEntryElement(m);
             container.appendChild(el);
@@ -3256,8 +3912,10 @@ function renderFileList(items) {
         });
         listChanged = true;
     } else {
+        listRenderToken++;   // 使进行中的分批渲染失效，由增量逻辑接管
         // removals (animated, only the affected entries)
-        entryOrder.forEach(function(k) {
+        // 遍历 entryMap 而非 entryOrder：被取代的分批渲染可能只登记了部分 key
+        Object.keys(entryMap).forEach(function(k) {
             if (!newOrderSet[k]) {
                 var rec = entryMap[k];
                 if (rec) {
@@ -3344,6 +4002,11 @@ function renderFileList(items) {
         }
     }
 
+    finishRenderFileList(models, newOrder, listChanged);
+}
+
+// 渲染收尾：登记顺序、修剪选中态、刷新目录大小（首屏分批渲染完成时也走这里）
+function finishRenderFileList(models, newOrder, listChanged) {
     entryOrder = newOrder;
     hasRenderedList = true;
 
@@ -4076,6 +4739,9 @@ document.addEventListener('DOMContentLoaded', function() {
         var open = list.style.display !== 'none';
         list.style.display = open ? 'none' : 'block';
         document.getElementById('chunkPanelArrow').textContent = open ? '▸' : '▾';
+    });
+    document.getElementById('taskProgressCancel').addEventListener('click', function() {
+        if (taskProgressCancelFn) taskProgressCancelFn();
     });
     document.getElementById('batchSelectAllBtn').addEventListener('click', selectAllFiles);
     document.getElementById('batchInvertBtn').addEventListener('click', invertSelection);

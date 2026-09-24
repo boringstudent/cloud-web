@@ -40,7 +40,7 @@ async function call(path, opts) {
   body = await r.text();
   const css = fs.readFileSync(__dirname + '/static/style.css', 'utf8');
   check('GET /static/style.css 与原文件逐字一致', body === css);
-  check('CSS 背景图走 /api/bg', body.includes("url('/api/bg')") && !body.includes('loliapi.com'));
+  check('CSS 背景图直连图床（不经 EO）', body.includes('loliapi.com') && !body.includes("url('/api/bg')"));
 
   // 3. favicon 字节一致
   r = await call('/favicon.ico');

@@ -17,7 +17,7 @@
     </head>
     <body>
         <div class="container">
-            <h1><span id="pageTitle">加载中...</span><span class="refresh-countdown" id="refreshCountdown">45s</span></h1>
+            <h1><span id="pageTitle">加载中...</span><span class="refresh-countdown" id="refreshCountdown">45s</span><span class="total-usage" id="totalUsage"></span></h1>
             <div id="breadcrumbs" style="margin: 20px 0; font-size: 1.1em;"></div>
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
@@ -113,6 +113,12 @@
                     </div>
                 </div>
                 <button class="btn" onclick="confirmDelete()" id="deleteBtn" style="width: 100%;">确认删除</button>
+                <div class="progress-container" id="deleteProgress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="deleteProgressFill"></div>
+                    </div>
+                    <div class="progress-text" id="deleteProgressText">0%</div>
+                </div>
                 <div id="deleteMessage" class="message"></div>
             </div>
         </div>
@@ -198,6 +204,16 @@
         </div>
 
         <div id="toast" class="toast"></div>
+
+        <div id="taskProgress" class="task-progress">
+            <div class="task-progress-top">
+                <span id="taskProgressText"></span>
+                <button type="button" id="taskProgressCancel" class="task-progress-cancel" title="停止" style="display: none;">&times;</button>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="taskProgressFill"></div>
+            </div>
+        </div>
 
         <div id="batchBar" class="batch-bar">
             <span id="batchCount"></span>
