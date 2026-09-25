@@ -102,6 +102,11 @@ async function call(path, opts) {
   r = await call('/api/proxies', { method: 'HEAD' });
   check('HEAD /api/proxies -> 200', r.status === 200);
 
+  // 9.6 外部代理探测目标：常量指向本仓库 raw 文件，且不再 ping 代理根路径
+  const eoSrc = fs.readFileSync(__dirname + '/eo.js', 'utf8');
+  check('eo.js 探测目标为 raw 文件常量', eoSrc.includes("const EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx'"));
+  check('eo.js 探测不再用代理根路径', !eoSrc.includes("host + '/',") && (eoSrc.match(/host \+ '\/' \+ EXT_PROBE_TARGET/g) || []).length === 2);
+
   // 10. 未知 API -> JSON 404；登录参数缺失 -> 400（不触网）
   r = await call('/api/nope');
   check('未知 /api/* -> JSON 404', r.status === 404 && (r.headers.get('Content-Type') || '').includes('application/json'));

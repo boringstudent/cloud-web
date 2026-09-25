@@ -76,6 +76,11 @@ const STORAGE_REPOS = ['__STORAGE_REPO__'];
 // ==================== 外部多代理下载候选池 ====================
 // 公共 ghproxy 镜像（仅用于匿名下载加速，写操作永不经过它们）。
 // /api/proxies 会逐个探测连通性，只返回当前可用的，供前端"外部多代理"模式使用。
+//
+// 探测目标：本仓库内的 raw 小文件（EXT_PROBE_TARGET，不再是根路径 /）。
+// 探测真实文件比 ping 代理首页更能反映其对 GitHub raw 的转发能力，
+// 也不会把"首页正常但转发已坏"的代理误判为可用。
+const EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx';
 const EXT_PROXY_CANDIDATES = [
   'ghproxy.felicity.land',
   'gh.07150721.xyz',
@@ -163,7 +168,8 @@ async function handleRequest(request) {
       if (url.searchParams.get('all') === '1') {
         return json({ proxies: EXT_PROXY_CANDIDATES.map(h => 'https://' + h + '/') });
       }
-      // ?probe=api 服务端逐个 ping 候选代理存活（能连上且返回 <500 即正常），
+      // ?probe=api 服务端逐个 ping 候选代理存活（经代理请求探测目标文件
+      // EXT_PROBE_TARGET，能连上且返回 <500 即正常），
       // 返回含失败站点的全量结果（前端服务检测用：浏览器直连会触发 CORS 预检
       // 被代理 403）
       if (url.searchParams.get('probe') === 'api') {
@@ -686,12 +692,13 @@ async function fetchText(url, headers, timeoutMs) {
   }
 }
 
-// 探测单个外部代理连通性：能建立连接且返回 <500 的 HTTP 响应即视为可用
+// 探测单个外部代理连通性：经代理请求探测目标文件（EXT_PROBE_TARGET），
+// 能建立连接且返回 <500 的 HTTP 响应即视为可用
 async function probeExtProxy(host, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs || 3500);
   try {
-    const res = await fetch('https://' + host + '/', {
+    const res = await fetch('https://' + host + '/' + EXT_PROBE_TARGET, {
       method: 'GET',
       redirect: 'manual',
       signal: ctrl.signal,
@@ -720,13 +727,14 @@ async function listUsableExtProxies() {
   return list;
 }
 
-// ping 单个代理存活：能建立连接且返回 <500 的 HTTP 响应即视为正常（带 RTT）
+// ping 单个代理存活：经代理请求探测目标文件（EXT_PROBE_TARGET），
+// 能建立连接且返回 <500 的 HTTP 响应即视为正常（带 RTT）
 async function probeExtProxyApi(host, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs || 6000);
   const start = Date.now();
   try {
-    const res = await fetch('https://' + host + '/', {
+    const res = await fetch('https://' + host + '/' + EXT_PROBE_TARGET, {
       method: 'GET',
       redirect: 'manual',
       signal: ctrl.signal,
