@@ -33,11 +33,15 @@ function cfApiUrl(filePath) {
 }
 
 // ---- 外部多代理下载通道（可选，公共 ghproxy 镜像，仅匿名下载加速） ----
-// 候选列表由同源 /api/proxies 动态下发（EO 探测后只返回当前可用的）；
+// 候选列表由同源 /api/proxies?all=1 下发（全量候选，即时返回），可用性由
+// 浏览器侧逐个实测（真实下载就发生在浏览器，EO 服务端探测对浏览器没有
+// 代表性——代理回源失败/CDN 缓存按节点分片会让 EO 视角出现大量 502 误报）；
 // 在下载进度卡片上开启"多代理"后启用：段/片在 EO / CF / 外部代理间
 // 按在途均衡 + 实测速率加权分配；单个代理连续失败 2 次即熔断轮换，
 // 全部外部代理熔断后外部通道整体退出，剩余任务回退 EO/CF。
 var EXT_PROXY_API = '/api/proxies';
+// 浏览器侧探测目标：本仓库根 xxx.json 的标准 raw 地址
+var EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/main/xxx.json';
 var EXT_PROXY_STORAGE_KEY = 'cloud_web_ext_proxy';
 var extProxyState = {
     enabled: false,   // 用户开关（持久化于 localStorage）
@@ -119,6 +123,60 @@ function extPickUploadBase() {
     return null;
 }
 
+// 浏览器侧分批探测候选代理：8 路并发，单个 6 秒超时；简单 GET（不带任何
+// 自定义头，避免 CORS 预检被代理 403），要求 2xx 且响应体确为探测文件内容
+// （防劫持/插页假 200），4xx 视为可达（与 EO 口径一致）；快速失败（非超时）
+// 300ms 后复测一次。done(results) 每条为 { site, ok, rtt, status, err }；
+// 返回全部 AbortController（供服务状态强制重检时中止）
+function probeExtProxiesBrowser(bases, done) {
+    var results = new Array(bases.length);
+    var ctrls = [];
+    var idx = 0, active = 0, finished = 0;
+    function attempt(base, timeoutMs, cb) {
+        var ctrl = new AbortController();
+        ctrls.push(ctrl);
+        var start = Date.now();
+        var timer = setTimeout(function() { ctrl.abort(); }, timeoutMs);
+        fetch(base + EXT_PROBE_TARGET, { signal: ctrl.signal, cache: 'no-store' }).then(function(res) {
+            clearTimeout(timer);
+            if (!res.ok) {
+                cb({ site: base, ok: res.status > 0 && res.status < 500, status: res.status, err: '', rtt: Date.now() - start });
+                return null;
+            }
+            return res.text().then(function(t) {
+                var good = t.indexOf('"probe"') >= 0;
+                cb({ site: base, ok: good, status: res.status, err: good ? '' : 'bad-content', rtt: Date.now() - start });
+            });
+        }).catch(function(e) {
+            clearTimeout(timer);
+            cb({ site: base, ok: false, status: 0, err: (e && e.name === 'AbortError') ? 'timeout' : 'network', rtt: Date.now() - start });
+        });
+    }
+    function probeOne(base, cb) {
+        attempt(base, 6000, function(r) {
+            if (r.ok || r.err === 'timeout') { cb(r); return; }
+            setTimeout(function() { attempt(base, 4000, function(r2) { cb(r2.ok ? r2 : r); }); }, 300);
+        });
+    }
+    function launch() {
+        while (active < 8 && idx < bases.length) {
+            (function(i) {
+                active++;
+                probeOne(bases[i], function(r) {
+                    results[i] = r;
+                    active--;
+                    finished++;
+                    if (finished === bases.length) done(results);
+                    else launch();
+                });
+            })(idx++);
+        }
+    }
+    if (!bases.length) { done([]); return ctrls; }
+    launch();
+    return ctrls;
+}
+
 function extRawUrl(base, filePath) {
     return base + 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
 }
@@ -135,17 +193,24 @@ function extProxyLoad(cb) {
     var cbs = [cb];
     extProxyState.loading = cbs;
     var xhr = new XMLHttpRequest();
-    xhr.open('GET', EXT_PROXY_API, true);
+    // ?all=1 拿全量候选（不触发 EO 探测、即时返回），可用性由浏览器侧实测决定
+    xhr.open('GET', EXT_PROXY_API + '?all=1', true);
     xhr.onload = function() {
-        var list = [];
+        var all = [];
         try {
             var j = JSON.parse(xhr.responseText);
-            if (j && j.proxies && j.proxies.length) list = j.proxies;
+            if (j && j.proxies && j.proxies.length) all = j.proxies;
         } catch (e) {}
-        extProxyState.list = list;
-        extProxyState.fails = {};
-        extProxyState.loading = null;
-        cbs.forEach(function(f) { f(list); });
+        probeExtProxiesBrowser(all, function(results) {
+            var usable = [];
+            results.forEach(function(r) { if (r && r.ok) usable.push(r.site); });
+            // 浏览器侧全灭时退回全量候选（下载层有按代理熔断兜底），避免误杀整个外部通道
+            var list = usable.length ? usable : all;
+            extProxyState.list = list;
+            extProxyState.fails = {};
+            extProxyState.loading = null;
+            cbs.forEach(function(f) { f(list); });
+        });
     };
     xhr.onerror = function() {
         extProxyState.loading = null;
@@ -1570,41 +1635,46 @@ function checkSvcStatus(force) {
     }).forEach(function(x) { svcCheckXhrs.push(x); });
 }
 
-// Git 外部检测：调用同源 /api/proxies?probe=api，由 EO 服务端逐个 ping 候选
-// 代理存活（浏览器直连会带自定义头触发 CORS 预检被代理 403）；
-// 汇总可用数（RTT 取最快者），只列出失败站点（附 HTTP 状态/超时/连接错误原因）。
-// 服务端分批限并发 + 快速失败复测，慢代理多时整轮可能超过 20 秒，故等待放宽到 45 秒
+// Git 外部检测：同源 /api/proxies?all=1 拿全量候选后由浏览器逐个实测
+// （真实下载就发生在浏览器，EO 服务端探测对浏览器没有代表性——代理回源
+// 失败/CDN 缓存按节点分片会让 EO 视角出现大量 502 误报；实测口径与真实
+// 下载完全一致）；
+// 汇总可用数（RTT 取最快者），只列出失败站点（附 HTTP 状态/超时/连接错误原因）
 function checkGitExtServices(gen, finish) {
     var xhr = new XMLHttpRequest();
-    var timer = setTimeout(function() { xhr.abort(); }, 45000);
-    xhr.open('GET', EXT_PROXY_API + '?probe=api&_=' + Date.now(), true);
+    var timer = setTimeout(function() { xhr.abort(); }, 15000);
+    xhr.open('GET', EXT_PROXY_API + '?all=1&_=' + Date.now(), true);
     xhr.setRequestHeader('Cache-Control', 'no-cache');
     xhr.onload = function() {
         clearTimeout(timer);
         if (gen !== svcCheckGen) return;
-        var results = [];
+        var all = [];
         try {
             var j = JSON.parse(xhr.responseText);
-            if (j && j.results && j.results.length) results = j.results;
+            if (j && j.proxies && j.proxies.length) all = j.proxies;
         } catch (e) {}
-        if (!results.length) {
+        if (!all.length) {
             svcStatus.git = { ok: false, okCount: 0, total: 0, badHosts: [] };
             finish();
             return;
         }
-        var okCount = 0, bestRtt = null, badHosts = [];
-        results.forEach(function(r) {
-            if (r && r.ok) {
-                okCount++;
-                if (typeof r.rtt === 'number' && (bestRtt === null || r.rtt < bestRtt)) bestRtt = r.rtt;
-            } else if (r && r.site) {
-                var host = String(r.site).replace(/^https?:\/\//, '').replace(/\/+$/, '');
-                var reason = r.err ? String(r.err) : (r.status ? 'HTTP ' + r.status : '失败');
-                badHosts.push(host + '（' + reason + '）');
-            }
+        var ctrls = probeExtProxiesBrowser(all, function(results) {
+            if (gen !== svcCheckGen) return;
+            var okCount = 0, bestRtt = null, badHosts = [];
+            results.forEach(function(r) {
+                if (r && r.ok) {
+                    okCount++;
+                    if (typeof r.rtt === 'number' && (bestRtt === null || r.rtt < bestRtt)) bestRtt = r.rtt;
+                } else if (r && r.site) {
+                    var host = String(r.site).replace(/^https?:\/\//, '').replace(/\/+$/, '');
+                    var reason = r.err ? String(r.err) : (r.status ? 'HTTP ' + r.status : '失败');
+                    badHosts.push(host + '（' + reason + '）');
+                }
+            });
+            svcStatus.git = { ok: okCount > 0, okCount: okCount, total: results.length, rtt: bestRtt, badHosts: badHosts };
+            finish();
         });
-        svcStatus.git = { ok: okCount > 0, okCount: okCount, total: results.length, rtt: bestRtt, badHosts: badHosts };
-        finish();
+        ctrls.forEach(function(c) { svcCheckXhrs.push(c); });
     };
     var fail = function() {
         clearTimeout(timer);

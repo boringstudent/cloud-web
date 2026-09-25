@@ -37,6 +37,7 @@ async function call(path, opts) {
   check('app.js 不含任何 key/令牌', !/ghp_|GITHUB_KEY|bearer/i.test(body));
   check('app.js 不含旧后端域名', !body.includes('boring-student') && !body.includes('redeem-key'));
   check('app.js 含 CF 下载加速通道', body.includes('https://cloud-ecr.pages.dev/'));
+  check('app.js 外部代理浏览器侧探测', appJs.includes('probeExtProxiesBrowser') && appJs.includes("EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/main/xxx.json'"));
 
   r = await call('/static/style.css?v=1');
   body = await r.text();
