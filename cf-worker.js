@@ -122,106 +122,43 @@ function makePreflightResponse(req) {
 }
 
 // ============================================================
-// ========== 服务器自身 IP 信息（JSON 返回） ==========
+// ========== 服务器自身出口 IP（纯文本返回） ==========
 // ============================================================
-
-/**
- * 解析 cip.cc 返回的文本 / HTML，整理成 JSON 对象
- * 支持以下两种格式：
- *   1) 命令行纯文本（curl cip.cc）
- *      IP	: 8.8.8.8
- *      地址	: 美国 加利福尼亚州 圣克拉拉
- *      运营商	: 谷歌公司DNS服务器
- *      数据二	: ...
- *      数据三	: ...
- *   2) 网页 HTML（<pre> 中同上内容）
- */
-function parseCipInfo(raw) {
-	const out = {
-		ip: '',
-		location: '',
-		isp: '',
-		data2: '',
-		data3: '',
-	}
-
-	let text = raw || ''
-
-	// 若是 HTML，仅截取 <pre> 内的内容
-	const pre = text.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)
-	if (pre) text = pre[1]
-
-	// 反转义常见 HTML 实体
-	text = text
-		.replace(/&nbsp;/gi, ' ')
-		.replace(/&lt;/gi, '<')
-		.replace(/&gt;/gi, '>')
-		.replace(/&quot;/gi, '"')
-		.replace(/&#39;/gi, "'")
-		.replace(/&amp;/gi, '&')
-
-	// 字段名 -> JSON 键名
-	const keyMap = {
-		'IP': 'ip',
-		'地址': 'location',
-		'运营商': 'isp',
-		'数据二': 'data2',
-		'数据三': 'data3',
-	}
-
-	for (const line of text.split(/\r?\n/)) {
-		const m = line.match(/^\s*([^\s:：]+)\s*[:：]\s*(.*?)\s*$/)
-		if (!m) continue
-		const field = keyMap[m[1]]
-		if (field) out[field] = m[2]
-	}
-
-	return out
-}
-
-/**
- * 请求 cip.cc 并返回 JSON（仅查询服务器自身 IP）
- */
-async function ipInfoResponse() {
-	const apiUrl = 'https://cip.cc/'
-
-	let raw = ''
-	try {
-		const res = await fetch(apiUrl, {
-			headers: {
-				// 用 curl 的 UA 让 cip.cc 直接返回纯文本，省去解析 HTML
-				'User-Agent': 'curl/7.68.0',
-				'Accept': 'text/plain, text/html, */*',
-			},
+// 只负责快速可靠地回答"我的出口 IP 是什么"；归属地/ISP 由调用方
+// （EO 边缘函数 /api/cf-ip）按该 IP 另行查询。
+// 优先使用 Cloudflare 自带方法（cloudflare.com/cdn-cgi/trace，同网最快最稳），
+// 失败时回退 api.ip.sb 的纯文本出口 IP 接口。
+async function ipOnlyResponse() {
+	const tryFetch = async (url, parse) => {
+		const res = await fetch(url, {
+			headers: { 'User-Agent': 'curl/8.5.0', 'Accept': 'text/plain, */*' },
 			redirect: 'follow',
 		})
-		raw = await res.text()
-	} catch (e) {
-		return makeRes(
-			JSON.stringify({ error: '请求 cip.cc 失败', message: String(e) }),
-			502,
-			{
-				'content-type': 'application/json; charset=utf-8',
-				'cache-control': 'no-store',
-			}
-		)
+		if (!res.ok) throw new Error('HTTP ' + res.status)
+		const ip = parse(await res.text())
+		if (!/^[0-9a-fA-F.:]{3,45}$/.test(ip)) throw new Error('bad ip: ' + ip.slice(0, 64))
+		return ip
 	}
-
-	const info = parseCipInfo(raw)
-
-	if (!info.ip) {
-		return makeRes(
-			JSON.stringify({ error: '解析 cip.cc 返回内容失败', raw: raw.slice(0, 800) }),
-			502,
-			{
-				'content-type': 'application/json; charset=utf-8',
+	const attempts = [
+		// 自带方法：Cloudflare 官方 trace，响应为 key=value 行，含 ip=x.x.x.x
+		() => tryFetch('https://cloudflare.com/cdn-cgi/trace', t => {
+			const m = t.match(/^ip=(.+)$/m)
+			return m ? m[1].trim() : ''
+		}),
+		// 回退：api.ip.sb 纯文本出口 IP
+		() => tryFetch('https://api.ip.sb/ip', t => t.trim()),
+	]
+	let lastErr = ''
+	for (const attempt of attempts) {
+		try {
+			return makeRes(await attempt(), 200, {
+				'content-type': 'text/plain; charset=utf-8',
 				'cache-control': 'no-store',
-			}
-		)
+			})
+		} catch (e) { lastErr = String(e) }
 	}
-
-	return makeRes(JSON.stringify(info), 200, {
-		'content-type': 'application/json; charset=utf-8',
+	return makeRes('error: ' + lastErr, 502, {
+		'content-type': 'text/plain; charset=utf-8',
 		'cache-control': 'no-store',
 	})
 }
@@ -351,10 +288,10 @@ export default {
 			});
 		}
 
-		// ===== /ip 返回 JSON 格式的服务器自身 IP 信息 =====
+		// ===== /ip 只返回服务器自身出口 IP（纯文本） =====
 		const IP_PATH = PREFIX + 'ip'
 		if (url.pathname === IP_PATH || url.pathname === IP_PATH + '/') {
-			return ipInfoResponse()
+			return ipOnlyResponse()
 		}
 
 		let path = urlObj.searchParams.get('q')
@@ -515,7 +452,7 @@ async function githubInterface() {
 			<div class="tips">
 				<p>✨ 支持带协议头(https://)或不带的 GitHub 链接，以及 api.github.com 的 REST API</p>
 				<p>🚀 release、archive 使用 cf 加速，blob/raw 走 raw 或 JsDelivr</p>
-				<p>🌐 查询服务器 IP 信息：<span class="url-part">/ip</span></p>
+				<p>🌐 查询服务器出口 IP（纯文本）：<span class="url-part">/ip</span></p>
 				<p>🔑 配置 GITHUB_TOKEN 环境变量后，api.github.com 请求在服务端注入鉴权（支持写操作）</p>
 				<p>⚠️ 注意：暂不支持文件夹下载</p>
 			</div>

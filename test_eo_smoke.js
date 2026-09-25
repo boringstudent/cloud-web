@@ -109,6 +109,12 @@ async function call(path, opts) {
   check('eo.js 探测不再用代理根路径', !eoSrc.includes("host + '/',") && (eoSrc.match(/host \+ '\/' \+ EXT_PROBE_TARGET/g) || []).length === 1);
   check('eo.js 探测分批限并发+复测+失败原因', eoSrc.includes('async function mapLimited') && eoSrc.includes("err === 'timeout'") && eoSrc.includes('status: r.status, err: r.err'));
 
+  // 9.7 CF IP 信息接口：/api/cf-ip（HEAD 不触网）
+  r = await call('/api/cf-ip', { method: 'HEAD' });
+  check('HEAD /api/cf-ip -> 200', r.status === 200);
+  check('eo.js 含 CF IP 信息接口', eoSrc.includes("path === '/api/cf-ip'") && eoSrc.includes("CF_WORKER_BASE = 'https://cloud-ecr.pages.dev'") && eoSrc.includes('getCfIpInfo'));
+  check('app.js CF 检测走同源 /api/cf-ip', appJs.includes("API_BASE + '/api/cf-ip'") && !appJs.includes("CF_PROXY_BASE + 'ip'"));
+
   // 10. 未知 API -> JSON 404；登录参数缺失 -> 400（不触网）
   r = await call('/api/nope');
   check('未知 /api/* -> JSON 404', r.status === 404 && (r.headers.get('Content-Type') || '').includes('application/json'));

@@ -1627,8 +1627,11 @@ function checkSvcStatus(force) {
         finish();
     });
     checkGitExtServices(gen, finish);
-    // CF 走其 /ip 接口：可达性 + RTT + 出口 IP/归属地/ISP（与 EO 同口径）
-    checkOneService(CF_PROXY_BASE + 'ip', function(res) {
+    // CF 加速：改由同源 EO 接口 /api/cf-ip 提供——EO 先从 CF worker /ip 拿
+    // 出口 IP（worker 侧优先 Cloudflare 自带 cdn-cgi/trace，纯文本只含 IP），
+    // 再由 EO 按该 IP 查归属地/ISP，与 EO 行同口径；
+    // RTT 为到 EO 的往返（浏览器→CF 的真实连通性由下载通道本身检验）
+    checkOneService(API_BASE + '/api/cf-ip', function(res) {
         if (gen !== svcCheckGen) return;
         svcStatus.cf = res;
         finish();

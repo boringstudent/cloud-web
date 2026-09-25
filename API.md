@@ -49,6 +49,15 @@ GET /api/my-ip
 → { "ip": "1.2.3.4", "location": "...", "isp": "...", "data2": "...", "data3": "..." }
 ```
 
+### `GET/HEAD /api/cf-ip`
+
+查询 **CF 加速通道**（cloud-ecr.pages.dev）的出口 IP 及归属地信息：EO 先请求 CF worker 的 `/ip`（只返回纯出口 IP 文本——worker 侧优先用 Cloudflare 自带 `cloudflare.com/cdn-cgi/trace`，回退 `api.ip.sb/ip`），再由 EO 按该 IP 查询归属地/ISP（`api.ip.sb` → `ipinfo.io`，cip.cc 不支持查询指定 IP）。响应结构与 `/api/my-ip` 一致；实例级缓存 5 分钟；归属地数据源全挂时降级为只回 IP；CF 不可达返回 502。`HEAD` 立即返回 200，用于前端 RTT 测量。前端服务状态"CF 加速"行由此同源获取。
+
+```
+GET /api/cf-ip
+→ { "ip": "104.28.x.x", "location": "...", "isp": "...", "data2": "...", "data3": "..." }
+```
+
 ### `GET/HEAD /api/proxies`
 
 外部多代理下载的公共 ghproxy 镜像候选。**前端实际使用方式**：`?all=1` 拿全量候选（不触网、即时返回）后在**浏览器侧逐个实测**（真实下载发生在浏览器，EO 服务端探测对浏览器没有代表性——代理回源失败/CDN 缓存按节点分片会让 EO 视角出现大量 502 误报；浏览器侧为简单 GET 不带自定义头避免 CORS 预检，8 路并发、6 秒超时、快速失败复测一次，要求 2xx 且响应体为探测文件 `https://raw.githubusercontent.com/boringstudent/cloud-web/main/xxx.json` 的真实内容）。

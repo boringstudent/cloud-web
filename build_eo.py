@@ -128,6 +128,9 @@ const APP_JS = `__APP_JS__`;
 const STYLE_CSS = `__STYLE_CSS__`;
 const FAVICON_B64 = '__FAVICON_B64__';
 
+// CF 下载/上传加速通道（cf-worker.js 部署地址）：/api/cf-ip 经其 /ip 取出口 IP
+const CF_WORKER_BASE = 'https://cloud-ecr.pages.dev';
+
 // connect-src 放行 CF 下载/上传加速通道（cloud-ecr.pages.dev）与外部多代理
 // 下载通道（公共 ghproxy 镜像域名众多且动态筛选，故放行全部 https），
 // 否则浏览器会按 CSP 拦截页面到这些域名的 fetch/XHR，导致加速通道永远没有流量
@@ -201,6 +204,17 @@ async function handleRequest(request) {
     if (path === '/api/my-ip' || path === '/ip') {
       if (request.method === 'HEAD') return new Response(null, { status: 200, headers: corsHeaders() });
       const info = await getServerIpInfo();
+      if (info.error) return json(info, 502);
+      return json(info);
+    }
+
+    // ---------- CF 加速通道出口 IP 信息（公开；HEAD 用于 RTT 测量） ----------
+    // CF worker 的 /ip 只返回纯出口 IP（优先 Cloudflare 自带 cdn-cgi/trace），
+    // 归属地/ISP 由本函数按该 IP 查询（api.ip.sb → ipinfo.io），
+    // 响应结构与 /api/my-ip 一致，前端服务状态"CF 加速"行由此同源获取
+    if (path === '/api/cf-ip') {
+      if (request.method === 'HEAD') return new Response(null, { status: 200, headers: corsHeaders() });
+      const info = await getCfIpInfo();
       if (info.error) return json(info, 502);
       return json(info);
     }
@@ -792,9 +806,43 @@ async function probeExtProxiesApi() {
   return results;
 }
 
-// api.ip.sb：JSON 免 key，英文归属地
-async function queryIpSb() {
-  const d = JSON.parse(await fetchText('https://api.ip.sb/geoip', {
+// ---------- CF 加速通道出口 IP 信息 ----------
+// 先从 CF worker 的 /ip 拿出口 IP（纯文本；worker 侧优先 Cloudflare 自带
+// cdn-cgi/trace），再按该 IP 查归属地/ISP（cip.cc 不支持查询指定 IP，
+// 故只用 api.ip.sb → ipinfo.io 两路）；实例级缓存 5 分钟
+let cfIpCache = { at: 0, info: null };
+const CF_IP_CACHE_MS = 5 * 60 * 1000;
+async function getCfIpInfo() {
+  if (cfIpCache.info && Date.now() - cfIpCache.at < CF_IP_CACHE_MS) {
+    return cfIpCache.info;
+  }
+  let ip;
+  try {
+    ip = (await fetchText(CF_WORKER_BASE + '/ip', { 'User-Agent': 'cloud-eo-cf-ip' }, 5000)).trim();
+  } catch (e) {
+    return { error: 'fetch CF /ip failed: ' + ((e && e.message) || String(e)) };
+  }
+  if (!/^[0-9a-fA-F.:]{3,45}$/.test(ip)) {
+    return { error: 'CF /ip returned invalid ip: ' + ip.slice(0, 64) };
+  }
+  for (const query of [queryIpSb, queryIpinfoIo]) {
+    try {
+      const info = await query(ip);
+      if (info && info.ip) {
+        cfIpCache = { at: Date.now(), info };
+        return info;
+      }
+    } catch (e) { /* 尝试下一数据源 */ }
+  }
+  // 归属地数据源全挂时至少返回 IP 本身（可达性正常，仅缺归属地）
+  const fallback = { ip, location: '', isp: '', data2: '', data3: '' };
+  cfIpCache = { at: Date.now(), info: fallback };
+  return fallback;
+}
+
+// api.ip.sb：JSON 免 key，英文归属地；可选查询指定 IP（默认查询调用方出口 IP）
+async function queryIpSb(ip) {
+  const d = JSON.parse(await fetchText('https://api.ip.sb/geoip' + (ip ? '/' + ip : ''), {
     'User-Agent': 'curl/8.5.0', 'Accept': 'application/json'
   }));
   if (!d.ip) throw new Error('ip.sb: missing ip');
@@ -817,9 +865,9 @@ async function queryCipCc() {
   return parsed;
 }
 
-// ipinfo.io：JSON 免 key（有频率限制，作为最终兜底）
-async function queryIpinfoIo() {
-  const d = JSON.parse(await fetchText('https://ipinfo.io/json', {
+// ipinfo.io：JSON 免 key（有频率限制，作为最终兜底）；可选查询指定 IP
+async function queryIpinfoIo(ip) {
+  const d = JSON.parse(await fetchText('https://ipinfo.io' + (ip ? '/' + ip : '') + '/json', {
     'User-Agent': 'curl/8.5.0', 'Accept': 'application/json'
   }));
   if (!d.ip) throw new Error('ipinfo.io: missing ip');
