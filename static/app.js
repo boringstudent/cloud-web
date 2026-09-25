@@ -395,6 +395,11 @@ function ulChanToggle(chan, done) {
                 if (done) done(false, '暂无可用外部代理');
                 return;
             }
+            // 显式开启即给外部通道一次全新机会：清除历史下载熔断与上传 404 封禁——
+            // 代理列表有缓存时加载不重置这些计数，旧熔断/封禁会让通道
+            // "开关开了却永远分不到任务"（分片详情 外部×0）
+            extProxyState.fails = {};
+            extProxyState.ul404 = {};
             ulChanSwitch.ext = true;
             if (done) done(true);
         });
@@ -6946,10 +6951,7 @@ function drawDlGraph() {
     if (!ctxBox) return;
     var ctx = ctxBox.ctx, W = ctxBox.plotW, H = ctxBox.plotH, x0 = ctxBox.x0;
     var tot = dlTracker.tot, eo = dlTracker.eo, cf = dlTracker.cf, ext = dlTracker.ext;
-    var peak = 0;
-    for (var p = 0; p < tot.length; p++) {
-        if (tot[p] > peak) peak = tot[p];
-    }
+    var peak = graphWindowPeak(tot);
     drawGraphGrid(ctx, ctxBox, peak);
     if (!tot.length || peak <= 0) {
         updateDlLegend(0, 0, 0, 0);
@@ -7016,6 +7018,18 @@ function updateDlLegendExtVisibility() {
 }
 
 // ---- 曲线图公共：Y 轴刻度 + 网格 + 实时速度 ----
+// 峰值自动缩放：只统计最近 GRAPH_PEAK_WINDOW 秒——早期尖峰不再永久压扁
+// Y 轴（旧尖峰在左半屏拉出的"三角形背景"即由此产生；超出量程的历史部分
+// 被绘图区裁剪，呈现 Win 任务管理器式"尖峰出窗即回缩"效果）
+var GRAPH_PEAK_WINDOW = 30;
+function graphWindowPeak(tot) {
+    var peak = 0;
+    for (var p = Math.max(0, tot.length - GRAPH_PEAK_WINDOW); p < tot.length; p++) {
+        if (tot[p] > peak) peak = tot[p];
+    }
+    return peak;
+}
+
 // 平滑曲线路径（中点二次贝塞尔），pts = [[x, y], ...]
 function traceSmoothPath(ctx, pts) {
     if (pts.length === 1) {
@@ -7086,10 +7100,7 @@ function drawSpeedGraph() {
     if (!box) return;
     var ctx = box.ctx, W = box.plotW, H = box.plotH, x0 = box.x0;
     var tot = uploadSpeedHist.tot, eo = uploadSpeedHist.eo, cf = uploadSpeedHist.cf, ext = uploadSpeedHist.ext;
-    var peak = 0;
-    for (var p = 0; p < tot.length; p++) {
-        if (tot[p] > peak) peak = tot[p];
-    }
+    var peak = graphWindowPeak(tot);
     drawGraphGrid(ctx, box, peak);
     var peakEl = document.getElementById('speedPanelPeak');
     if (peakEl) peakEl.textContent = peak > 1024 ? '峰值 ' + formatSize(Math.round(peak)) + '/s' : '';
@@ -7266,6 +7277,10 @@ function ulChannels(exclude) {
     return chans;
 }
 
+// 外部通道可用时的优先份额：blob 直传不移动引用、任意并行零冲突，
+// 期望行为是"有外部走外部"——外部固定 80% 份额，EO/CF 按速率比分剩余 20%
+var UL_EXT_PREFER_SHARE = 0.8;
+
 // 按通道负载分配上传任务：在途任务数均衡优先；尚无速率数据时轮转；
 // 有数据后按各通道实测速率比例加权（带概率地板，避免零速率通道被永久饿死），
 // 快的通道分得更多任务，并统计各自任务数。noCount=true 时不重复计数（失败换源重挑）
@@ -7282,6 +7297,33 @@ function pickUploadChannel(size, exclude, noCount) {
     var useChan;
     if (chans.length === 1) {
         useChan = chans[0];
+    } else if (chans.indexOf('ext') !== -1) {
+        // 外部优先：外部固定 UL_EXT_PREFER_SHARE 份额，其余通道按实测速率比
+        // 分剩余份额（带 25% 地板，无速率数据时均分），不做在途均衡纠偏
+        var rates = { eo: st._eoRate || 0, cf: st._cfRate || 0, ext: st._extRate || 0 };
+        var others = [], totRate = 0, anyRate = false, i;
+        for (i = 0; i < chans.length; i++) {
+            if (chans[i] === 'ext') continue;
+            others.push(chans[i]);
+            totRate += rates[chans[i]];
+            if (rates[chans[i]] >= 1024) anyRate = true;
+        }
+        var weights = [], sum = 0;
+        for (i = 0; i < chans.length; i++) {
+            var w;
+            if (chans[i] === 'ext') w = UL_EXT_PREFER_SHARE;
+            else if (others.length === 1) w = 1 - UL_EXT_PREFER_SHARE;
+            else if (!anyRate) w = (1 - UL_EXT_PREFER_SHARE) / others.length;
+            else w = (1 - UL_EXT_PREFER_SHARE) * Math.max(rates[chans[i]] / (totRate || 1), 0.25);
+            weights.push(w);
+            sum += w;
+        }
+        var px = Math.random() * sum;
+        useChan = chans[chans.length - 1];
+        for (i = 0; i < chans.length; i++) {
+            px -= weights[i];
+            if (px <= 0) { useChan = chans[i]; break; }
+        }
     } else {
         // 在途均衡优先：某通道在途任务明显更多时先补给在途最少通道
         var act = {};
