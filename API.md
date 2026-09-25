@@ -60,7 +60,7 @@ GET /api/proxies
 → { "proxies": ["https://ghproxy.felicity.land/", "https://gh-proxy.com/", ...] }
 
 GET /api/proxies?all=1
-→ { "proxies": [全部 30 个候选，未探测] }
+→ { "proxies": [全部 29 个候选，未探测] }
 
 GET /api/proxies?probe=api
 → { "results": [{ "site": "https://ghproxy.felicity.land/", "ok": true, "rtt": 820, "status": 200, "err": "" },

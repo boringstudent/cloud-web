@@ -110,7 +110,8 @@ const EXT_PROXY_CANDIDATES = [
   'github.tianrld.top',
   'github.880824.xyz',
   'github.ihnic.com',
-  'github-proxy.lixxing.top',
+  // 注：github-proxy.lixxing.top 已移除——raw 转发回源持续 500，且任何响应
+  // 都不带 CORS 头（浏览器跨域永不可用，对本项目无挽救价值）
   'github.zzrbk.xyz',
   'github.boringhex.top',
   'github.ednovas.xyz',

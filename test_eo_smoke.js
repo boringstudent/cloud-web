@@ -99,7 +99,7 @@ async function call(path, opts) {
   // 9.5 外部多代理候选列表（?all=1 不触网）
   r = await call('/api/proxies?all=1');
   const pj = await r.json();
-  check('GET /api/proxies?all=1 -> 200 候选列表', r.status === 200 && Array.isArray(pj.proxies) && pj.proxies.length === 30 && pj.proxies[0] === 'https://ghproxy.felicity.land/');
+  check('GET /api/proxies?all=1 -> 200 候选列表', r.status === 200 && Array.isArray(pj.proxies) && pj.proxies.length === 29 && pj.proxies[0] === 'https://ghproxy.felicity.land/');
   r = await call('/api/proxies', { method: 'HEAD' });
   check('HEAD /api/proxies -> 200', r.status === 200);
 
