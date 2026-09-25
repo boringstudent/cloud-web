@@ -51,7 +51,7 @@ GET /api/my-ip
 
 ### `GET/HEAD /api/proxies`
 
-外部多代理下载的公共 ghproxy 镜像候选。默认逐个并发探测连通性（3.5 秒超时，返回 <500 即视为可用），**只返回当前可用的**；探测结果实例级缓存 5 分钟。探测目标为常量 `EXT_PROBE_TARGET` 指向的本仓库 raw 小文件 `https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx`（经各代理转发请求该文件，而非 ping 代理根路径），更能反映代理对 GitHub raw 的实际转发能力。`?all=1` 跳过探测返回完整候选列表（不触网）。`?probe=api` 服务端逐个 ping 候选存活（6 秒超时，同一探测目标，能连上且返回 <500 即正常），**返回含失败站点的全量结果**（前端"Git 外部"服务检测用；浏览器直连代理会触发 CORS 预检被 403），同样缓存 5 分钟。`HEAD` 立即返回 200。
+外部多代理下载的公共 ghproxy 镜像候选。默认逐个并发探测连通性（3.5 秒超时，返回 <500 即视为可用），**只返回当前可用的**；探测结果实例级缓存 5 分钟。探测目标为常量 `EXT_PROBE_TARGET` 指向的本仓库 raw 小文件 `https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx.json`（经各代理转发请求该文件，而非 ping 代理根路径），更能反映代理对 GitHub raw 的实际转发能力。`?all=1` 跳过探测返回完整候选列表（不触网）。`?probe=api` 服务端逐个 ping 候选存活（6 秒超时，同一探测目标，能连上且返回 <500 即正常），**返回含失败站点的全量结果**（前端"Git 外部"服务检测用；浏览器直连代理会触发 CORS 预检被 403），同样缓存 5 分钟。`HEAD` 立即返回 200。
 
 ```
 GET /api/proxies

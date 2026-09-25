@@ -1,4 +1,0 @@
-ok
-cloud-web 外部代理连通性探测目标文件（probe target for external ghproxy mirrors）。
-EO 服务端探测候选代理时请求本文件的 raw 地址：
-https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx

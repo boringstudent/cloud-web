@@ -80,7 +80,7 @@ const STORAGE_REPOS = ['__STORAGE_REPO__'];
 // 探测目标：本仓库内的 raw 小文件（EXT_PROBE_TARGET，不再是根路径 /）。
 // 探测真实文件比 ping 代理首页更能反映其对 GitHub raw 的转发能力，
 // 也不会把"首页正常但转发已坏"的代理误判为可用。
-const EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx';
+const EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx.json';
 const EXT_PROXY_CANDIDATES = [
   'ghproxy.felicity.land',
   'gh.07150721.xyz',

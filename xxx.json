@@ -1,0 +1,5 @@
+{
+  "name": "cloud-web 外部代理连通性探测目标",
+  "probe": "ok",
+  "url": "https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx.json"
+}
