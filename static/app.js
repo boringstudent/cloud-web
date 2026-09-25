@@ -1461,8 +1461,8 @@ function renderSvcStatus() {
     text.textContent = doneCount < 3 ? '服务检测中…' : (badCount ? '服务异常 ×' + badCount : '服务正常');
     tip.textContent = '';
     addSvcTipLine(tip, 'EO 边缘函数', '', a);
-    addSvcTipLine(tip, 'Git 外部', '', g);
-    addSvcTipLine(tip, 'CF 加速', '', c);
+    addSvcTipLine(tip, 'Git 外部', 'api.github.com', g);
+    addSvcTipLine(tip, 'CF 加速', 'cloud-ecr.pages.dev', c);
     var timeDiv = document.createElement('div');
     var timeLabel = document.createElement('span');
     timeLabel.className = 'svc-name';
@@ -1548,11 +1548,12 @@ function checkSvcStatus(force) {
         svcStatus.git = res;
         finish();
     }));
-    svcCheckXhrs.push(checkPlainService(CF_PROXY_BASE + 'api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, function(res) {
+    // CF 走其 /ip 接口：可达性 + RTT + 出口 IP/归属地/ISP（与 EO 同口径）
+    checkOneService(CF_PROXY_BASE + 'ip', function(res) {
         if (gen !== svcCheckGen) return;
         svcStatus.cf = res;
         finish();
-    }));
+    }).forEach(function(x) { svcCheckXhrs.push(x); });
 }
 
 setInterval(function() {
@@ -3306,15 +3307,19 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail, filePath) {
     return true;
 }
 
-// 音/视频三通道测速探测：在 EO/CF/外部（可用时）各拉取文件头部最多 1MB，
-// 按实际收到字节计算各通道真实下载速度并汇总显示。
+// 音/视频三通道测速探测：在 EO/CF/外部（可用时）按 1MB 分段连续拉取
+// （每通道上限 8MB 或文件结尾），按实际收到字节持续计算各通道真实下载
+// 速度并汇总显示——分段接续采样不中断，速度显示不会在第一段完成后冻结；
+// 起播/切歌/关闭预览时统一中止，避免与播放器争抢带宽。
 // 媒体元素自身的缓冲增长受浏览器懒加载/暂停预读策略影响，不代表真实带宽，故单独探测。
 // onSpeed(speedText) 实时回调（各通道速度拼接）；请求数组存入 previewProbe 以便关闭预览时中止。
-function probeMediaSpeed(url, onSpeed, filePath) {
+function probeMediaSpeed(url, onSpeed, filePath, sizeHint) {
     var chans = dlChannels();
     var probes = [];
     previewProbe = probes;
     var CHAN_NAMES = { eo: 'EO', cf: 'CF', ext: '外部' };
+    var PROBE_CHUNK = 1048576;
+    var PROBE_MAX_PER_CHAN = 8 * 1048576;   // 每通道探测总量上限（防止过度消耗带宽）
     var speeds = {};   // chan -> speedText
     var emit = function() {
         var partsOut = [];
@@ -3339,56 +3344,228 @@ function probeMediaSpeed(url, onSpeed, filePath) {
             if (!extBase) return;
             purl = extRawUrl(extBase, filePath);
         }
-        var xhr = new XMLHttpRequest();
-        probes.push(xhr);
-        xhr.open('GET', purl, true);
-        var total = menuFileInfo.size || 0;
-        if (total > 0) {
-            xhr.setRequestHeader('Range', 'bytes=0-' + (Math.min(total, 1048576) - 1));
-        }
-        xhr.responseType = 'arraybuffer';
-        var startTime = Date.now();
-        var lastLoaded = 0;
-        var lastTime = startTime;
-        xhr.onprogress = function(e) {
-            var now = Date.now();
-            if (now - lastTime >= 300) {
-                var sp = (e.loaded - lastLoaded) / ((now - lastTime) / 1000);
-                lastLoaded = e.loaded;
-                lastTime = now;
-                if (sp > 1024) {
-                    speeds[chan] = formatSize(Math.round(sp)) + '/s';
-                    emit();
+        // 切换歌曲等场景 menuFileInfo 仍是原文件，优先用调用方传入的 sizeHint
+        var total = sizeHint || menuFileInfo.size || 0;
+        var st = { loaded: 0, next: 0, lastLoaded: 0, lastTime: Date.now(), startTime: Date.now() };
+        var launch = function() {
+            var xhr = new XMLHttpRequest();
+            probes.push(xhr);
+            xhr.open('GET', purl, true);
+            if (total > 0) {
+                xhr.setRequestHeader('Range', 'bytes=' + st.next + '-' + (Math.min(st.next + PROBE_CHUNK, total) - 1));
+            }
+            xhr.responseType = 'arraybuffer';
+            xhr.onprogress = function(e) {
+                var now = Date.now();
+                var cum = st.loaded + e.loaded;
+                if (now - st.lastTime >= 300) {
+                    var sp = (cum - st.lastLoaded) / ((now - st.lastTime) / 1000);
+                    st.lastLoaded = cum;
+                    st.lastTime = now;
+                    if (sp > 1024) {
+                        speeds[chan] = formatSize(Math.round(sp)) + '/s';
+                        emit();
+                    }
                 }
-            }
-            // 代理忽略 Range 时（200 全量响应）收到 1MB 即中止，避免拉完整文件
-            if (e.loaded > 1048576) {
-                var el = (now - startTime) / 1000;
-                var spAll = e.loaded / el;
-                if (spAll > 1024) {
-                    speeds[chan] = formatSize(Math.round(spAll)) + '/s';
-                    emit();
+                // 代理忽略 Range 时（200 全量响应）收到 1MB 即中止，避免拉完整文件
+                if (xhr.status === 200 && e.loaded > PROBE_CHUNK) {
+                    var el = (now - st.startTime) / 1000;
+                    var spAll = cum / el;
+                    if (spAll > 1024) {
+                        speeds[chan] = formatSize(Math.round(spAll)) + '/s';
+                        emit();
+                    }
+                    xhr.abort();
                 }
-                xhr.abort();
-            }
+            };
+            xhr.onload = function() {
+                cleanup(xhr);
+                if (xhr.status === 206 && xhr.response) {
+                    st.loaded += xhr.response.byteLength;
+                    st.next += PROBE_CHUNK;
+                    st.lastLoaded = st.loaded;   // 跨段采样基准接续，速度不中断
+                    // 连续分段：未到上限且未到文件结尾立即接下一段，速度显示持续更新
+                    var done = st.loaded >= PROBE_MAX_PER_CHAN || (total > 0 && st.next >= total);
+                    if (!done && total > 0) {
+                        launch();
+                        return;
+                    }
+                }
+                if ((xhr.status === 200 || xhr.status === 206) && xhr.response) {
+                    // 收尾/小文件：全程平均速度兜底（连一次采样窗口都没攒够的场景）
+                    var cumLoaded = st.loaded || xhr.response.byteLength;
+                    var el = (Date.now() - st.startTime) / 1000;
+                    var sp = cumLoaded / el;
+                    if (el > 0.05 && sp > 1024) {
+                        speeds[chan] = formatSize(Math.round(sp)) + '/s';
+                        emit();
+                    }
+                }
+            };
+            xhr.onerror = function() { cleanup(xhr); };
+            xhr.onabort = function() { cleanup(xhr); };
+            xhr.send();
         };
-        xhr.onload = function() {
-            cleanup(xhr);
-            if (xhr.status && xhr.status !== 200 && xhr.status !== 206) return;
-            if (!xhr.response) return;
-            // 全程平均速度兜底：小文件可能连一次采样窗口都没攒够
-            var el = (Date.now() - startTime) / 1000;
-            var sp = xhr.response.byteLength / el;
-            if (el > 0.05 && sp > 1024) {
-                speeds[chan] = formatSize(Math.round(sp)) + '/s';
-                emit();
-            }
-        };
-        xhr.onerror = function() { cleanup(xhr); };
-        xhr.onabort = function() { cleanup(xhr); };
-        xhr.send();
+        launch();
     });
     if (!probes.length && previewProbe === probes) previewProbe = null;
+}
+
+// ---- 美化媒体进度条：自定义控制条（播放/暂停、缓冲+播放双层进度、点击/拖拽
+// 定位、时间显示、音量滑块、视频全屏），替代原生 controls ----
+function fmtMediaTime(sec) {
+    if (!isFinite(sec) || sec < 0) return '--:--';
+    sec = Math.floor(sec);
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    var s = sec % 60;
+    return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function buildMediaControls(mediaEl, isVideo) {
+    mediaEl.controls = false;
+    mediaEl.removeAttribute('controls');
+    var bar = document.createElement('div');
+    bar.className = 'media-ctl';
+
+    var playBtn = document.createElement('button');
+    playBtn.type = 'button';
+    playBtn.className = 'media-ctl-btn';
+    playBtn.title = '播放/暂停';
+    playBtn.textContent = '▶';
+
+    var track = document.createElement('div');
+    track.className = 'media-ctl-track';
+    var bufEl = document.createElement('div');
+    bufEl.className = 'media-ctl-buf';
+    var playedEl = document.createElement('div');
+    playedEl.className = 'media-ctl-played';
+    var knob = document.createElement('div');
+    knob.className = 'media-ctl-knob';
+    playedEl.appendChild(knob);
+    track.appendChild(bufEl);
+    track.appendChild(playedEl);
+
+    var timeEl = document.createElement('span');
+    timeEl.className = 'media-ctl-time';
+    timeEl.textContent = '--:-- / --:--';
+
+    var vol = document.createElement('input');
+    vol.type = 'range';
+    vol.className = 'media-ctl-vol';
+    vol.min = '0';
+    vol.max = '1';
+    vol.step = '0.01';
+    vol.title = '音量';
+    try { vol.value = mediaEl.muted ? '0' : String(mediaEl.volume); } catch (e) { vol.value = '1'; }
+
+    var getDur = function() {
+        var d = mediaEl.duration;
+        if (!isFinite(d) || d <= 0) {
+            try {
+                if (mediaEl.seekable.length) d = mediaEl.seekable.end(mediaEl.seekable.length - 1);
+            } catch (e) {}
+        }
+        return (isFinite(d) && d > 0) ? d : 0;
+    };
+    var updatePlay = function() {
+        playBtn.textContent = mediaEl.paused ? '▶' : '⏸';
+    };
+    var updateTime = function() {
+        var d = getDur();
+        var cur = mediaEl.currentTime || 0;
+        var pct = d ? Math.min(100, cur / d * 100) : 0;
+        playedEl.style.width = pct + '%';
+        timeEl.textContent = fmtMediaTime(cur) + ' / ' + fmtMediaTime(d);
+    };
+    var updateBuf = function() {
+        var d = getDur();
+        if (!d) {
+            bufEl.style.width = '0%';
+            return;
+        }
+        var end = 0;
+        try {
+            var t = mediaEl.currentTime || 0;
+            // 取覆盖当前播放点的缓冲段末尾（最贴近“已缓冲到”的直觉）
+            for (var i = 0; i < mediaEl.buffered.length; i++) {
+                if (mediaEl.buffered.start(i) <= t + 0.5 && mediaEl.buffered.end(i) > end) {
+                    end = mediaEl.buffered.end(i);
+                }
+            }
+        } catch (e) {}
+        bufEl.style.width = Math.min(100, end / d * 100) + '%';
+    };
+
+    playBtn.addEventListener('click', function() {
+        if (mediaEl.paused) {
+            var p = mediaEl.play();
+            if (p && p.catch) p.catch(function() {});
+        } else {
+            mediaEl.pause();
+        }
+    });
+    // 进度条点击/拖拽定位（Pointer 捕获，拖拽出轨道也连续）
+    var seekTo = function(clientX) {
+        var r = track.getBoundingClientRect();
+        if (!r.width) return;
+        var ratio = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+        var d = getDur();
+        if (d) {
+            try { mediaEl.currentTime = ratio * d; } catch (e) {}
+        }
+        updateTime();
+    };
+    track.addEventListener('pointerdown', function(e) {
+        try { track.setPointerCapture(e.pointerId); } catch (err) {}
+        seekTo(e.clientX);
+        e.preventDefault();
+    });
+    track.addEventListener('pointermove', function(e) {
+        if (e.buttons) seekTo(e.clientX);
+    });
+    vol.addEventListener('input', function() {
+        try {
+            mediaEl.volume = parseFloat(vol.value);
+            mediaEl.muted = parseFloat(vol.value) <= 0;
+        } catch (e) {}
+    });
+    mediaEl.addEventListener('play', updatePlay);
+    mediaEl.addEventListener('pause', updatePlay);
+    mediaEl.addEventListener('timeupdate', updateTime);
+    mediaEl.addEventListener('progress', updateBuf);
+    mediaEl.addEventListener('loadedmetadata', function() { updateTime(); updateBuf(); });
+    mediaEl.addEventListener('durationchange', updateTime);
+    mediaEl.addEventListener('volumechange', function() {
+        try { vol.value = mediaEl.muted ? '0' : String(mediaEl.volume); } catch (e) {}
+    });
+
+    bar.appendChild(playBtn);
+    bar.appendChild(track);
+    bar.appendChild(timeEl);
+    bar.appendChild(vol);
+    if (isVideo) {
+        var fsBtn = document.createElement('button');
+        fsBtn.type = 'button';
+        fsBtn.className = 'media-ctl-btn';
+        fsBtn.title = '全屏';
+        fsBtn.textContent = '⛶';
+        fsBtn.addEventListener('click', function() {
+            try {
+                var target = mediaEl.parentNode || mediaEl;
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                } else if (target.requestFullscreen) {
+                    target.requestFullscreen();
+                } else if (mediaEl.webkitEnterFullscreen) {
+                    mediaEl.webkitEnterFullscreen();   // iOS Safari
+                }
+            } catch (e) {}
+        });
+        bar.appendChild(fsBtn);
+    }
+    updatePlay();
+    return bar;
 }
 
 // 分片文件合并下载：单独下载时驱动全局进度条（可点 ✕ 中止）；
@@ -3532,7 +3709,7 @@ function audioPlStartLoadingUx(m, audioEl) {
     probeMediaSpeed(rawUrlFor(m.path), function(s) {
         speedText = s;
         update();
-    }, m.path);
+    }, m.path, m.size || 0);
     audioEl.addEventListener('playing', abortPreviewProbes, { once: true });
     audioPl.bufTimer = setInterval(function() {
         if (!audioPl) return;
@@ -4675,7 +4852,6 @@ function previewFile(filePath, fileName) {
             content.innerHTML = '';
             content.appendChild(loadingDiv);
             audioEl = document.createElement('audio');
-            audioEl.controls = true;
             audioEl.preload = 'auto';
             audioEl.className = 'preview-audio';
             bindAudioVolume(audioEl);
@@ -4684,14 +4860,15 @@ function previewFile(filePath, fileName) {
             audioRateTag = document.createElement('div');
             audioRateTag.className = 'media-rate-below';
             audioWrap.appendChild(audioEl);
+            audioWrap.appendChild(buildMediaControls(audioEl, false));
             audioWrap.appendChild(audioRateTag);
             var plWrapC = setupAudioPlaylist(audioEl, filePath, audioRateTag);
             if (plWrapC) audioWrap.appendChild(plWrapC);
             content.appendChild(audioWrap);
             audioEl.addEventListener('play', function() { startedPlaying = true; });
-            // 用户与控制条任何交互（播放/拖进度/调音量）即停止换源：
-            // 换源会重置原生控件状态，关掉正在操作的音量弹层
-            ['mousedown', 'touchstart', 'volumechange', 'seeking'].forEach(function(ev) {
+            // 用户任何交互（播放/拖进度/调音量）即停止换源：
+            // 换源会重置已调节的播放状态
+            ['volumechange', 'seeking'].forEach(function(ev) {
                 audioEl.addEventListener(ev, function() { startedPlaying = true; });
             });
             // 部分前缀数据可能暂时无法解码（如头部不完整），忽略，等更多分片后重试
@@ -4827,7 +5004,6 @@ function previewFile(filePath, fileName) {
         } else {
             mediaEl.addEventListener('canplay', function() { loadingDiv.style.display = 'none'; });
             mediaEl.onerror = showMediaError;
-            mediaEl.controls = true;
             mediaEl.preload = 'auto';
             mediaEl.src = previewUrl;
 
@@ -4878,6 +5054,9 @@ function previewFile(filePath, fileName) {
             rateBox.appendChild(viewerWrap);
         } else {
             rateBox.appendChild(mediaEl);
+            // 音/视频：美化自定义控制条（播放/进度/缓冲/时间/音量/视频全屏）
+            var isVideoCtl = AUDIO_EXTS.indexOf(ext) === -1 && VIDEO_EXTS.indexOf(ext) !== -1;
+            rateBox.appendChild(buildMediaControls(mediaEl, isVideoCtl));
         }
         rateBox.appendChild(rateTag);
         // 音频预览：同目录音乐播放列表（顺序/随机/单曲循环 + 限量预加载）
