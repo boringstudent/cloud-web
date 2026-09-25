@@ -154,40 +154,6 @@ function extProxyLoad(cb) {
     xhr.send();
 }
 
-// 服务检测用：完整候选列表（?all=1 服务端不探测直接下发），拉一次后常驻缓存；
-// 浏览器侧再逐个探测其 api.github.com 转发能力，失败站点在服务状态面板列出
-var extProxyAllList = null;
-var extProxyAllLoading = null;
-function extProxyAllLoad(cb) {
-    if (extProxyAllList) {
-        cb(extProxyAllList);
-        return;
-    }
-    if (extProxyAllLoading) {
-        extProxyAllLoading.push(cb);
-        return;
-    }
-    var cbs = [cb];
-    extProxyAllLoading = cbs;
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', EXT_PROXY_API + '?all=1', true);
-    xhr.onload = function() {
-        var list = [];
-        try {
-            var j = JSON.parse(xhr.responseText);
-            if (j && j.proxies && j.proxies.length) list = j.proxies;
-        } catch (e) {}
-        extProxyAllList = list.length ? list : null;
-        extProxyAllLoading = null;
-        cbs.forEach(function(f) { f(list); });
-    };
-    xhr.onerror = function() {
-        extProxyAllLoading = null;
-        cbs.forEach(function(f) { f([]); });
-    };
-    xhr.send();
-}
-
 function extProxySetEnabled(on, quiet) {
     extProxyState.enabled = on;
     try {
@@ -1450,28 +1416,6 @@ function checkOneService(url, cb) {
     return [rttXhr, xhr];
 }
 
-// 通用可达性探测：GET 小 JSON，2xx/3xx 视为正常并记录 RTT（Git 外部/CF 通道用）
-function checkPlainService(url, cb) {
-    var xhr = new XMLHttpRequest();
-    var startTs = performance.now();
-    var done = function(res) {
-        if (done.called) return;
-        done.called = true;
-        cb(res);
-    };
-    var timer = setTimeout(function() { xhr.abort(); done({ ok: false }); }, 15000);
-    xhr.open('GET', url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now(), true);
-    xhr.setRequestHeader('Cache-Control', 'no-cache');
-    xhr.onload = function() {
-        clearTimeout(timer);
-        done({ ok: xhr.status >= 200 && xhr.status < 400, rtt: Math.round(performance.now() - startTs) });
-    };
-    xhr.onerror = function() { clearTimeout(timer); done({ ok: false }); };
-    xhr.onabort = function() { clearTimeout(timer); done({ ok: false }); };
-    xhr.send();
-    return xhr;
-}
-
 function renderSvcStatus() {
     var el = document.getElementById('svcStatus');
     var text = document.getElementById('svcStatusText');
@@ -1626,41 +1570,49 @@ function checkSvcStatus(force) {
     }).forEach(function(x) { svcCheckXhrs.push(x); });
 }
 
-// Git 外部检测：取完整候选池（/api/proxies?all=1），逐个经代理调用
-// api.github.com 仓库接口——部分镜像只代理 raw 不代理 API，正好借此甄别；
-// 汇总可用数（RTT 取最快者），失败站点逐个列出。在途 xhr 压入 svcCheckXhrs
-// 供强制重检中止
+// Git 外部检测：调用同源 /api/proxies?probe=api，由 EO 服务端逐个经代理调用
+// api.github.com 仓库接口甄别（浏览器直连会带自定义头触发 CORS 预检被代理 403，
+// 且部分镜像只代理 raw 不代理 API）；汇总可用数（RTT 取最快者），只列出失败站点
 function checkGitExtServices(gen, finish) {
-    extProxyAllLoad(function(list) {
+    var xhr = new XMLHttpRequest();
+    var timer = setTimeout(function() { xhr.abort(); }, 20000);
+    xhr.open('GET', EXT_PROXY_API + '?probe=api&_=' + Date.now(), true);
+    xhr.setRequestHeader('Cache-Control', 'no-cache');
+    xhr.onload = function() {
+        clearTimeout(timer);
         if (gen !== svcCheckGen) return;
-        if (!list.length) {
+        var results = [];
+        try {
+            var j = JSON.parse(xhr.responseText);
+            if (j && j.results && j.results.length) results = j.results;
+        } catch (e) {}
+        if (!results.length) {
             svcStatus.git = { ok: false, okCount: 0, total: 0, badHosts: [] };
             finish();
             return;
         }
-        var results = new Array(list.length);
-        var left = list.length;
-        list.forEach(function(base, i) {
-            var x = checkPlainService(base + 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, function(res) {
-                results[i] = res;
-                if (gen !== svcCheckGen) return;
-                left--;
-                if (left > 0) return;
-                var okCount = 0, bestRtt = null, badHosts = [];
-                results.forEach(function(r, j) {
-                    if (r && r.ok) {
-                        okCount++;
-                        if (bestRtt === null || r.rtt < bestRtt) bestRtt = r.rtt;
-                    } else {
-                        badHosts.push(list[j].replace(/^https?:\/\//, '').replace(/\/+$/, ''));
-                    }
-                });
-                svcStatus.git = { ok: okCount > 0, okCount: okCount, total: list.length, rtt: bestRtt, badHosts: badHosts };
-                finish();
-            });
-            if (gen === svcCheckGen) svcCheckXhrs.push(x);
+        var okCount = 0, bestRtt = null, badHosts = [];
+        results.forEach(function(r) {
+            if (r && r.ok) {
+                okCount++;
+                if (typeof r.rtt === 'number' && (bestRtt === null || r.rtt < bestRtt)) bestRtt = r.rtt;
+            } else if (r && r.site) {
+                badHosts.push(String(r.site).replace(/^https?:\/\//, '').replace(/\/+$/, ''));
+            }
         });
-    });
+        svcStatus.git = { ok: okCount > 0, okCount: okCount, total: results.length, rtt: bestRtt, badHosts: badHosts };
+        finish();
+    };
+    var fail = function() {
+        clearTimeout(timer);
+        if (gen !== svcCheckGen) return;
+        svcStatus.git = { ok: false, okCount: 0, total: 0, badHosts: [] };
+        finish();
+    };
+    xhr.onerror = fail;
+    xhr.onabort = fail;
+    xhr.send();
+    svcCheckXhrs.push(xhr);
 }
 
 setInterval(function() {

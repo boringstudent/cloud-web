@@ -163,6 +163,12 @@ async function handleRequest(request) {
       if (url.searchParams.get('all') === '1') {
         return json({ proxies: EXT_PROXY_CANDIDATES.map(h => 'https://' + h + '/') });
       }
+      // ?probe=api 服务端逐个经代理调用 api.github.com 仓库接口，返回含失败站点
+      // 的全量结果（前端服务检测用：浏览器直连会触发 CORS 预检被代理 403，
+      // 且部分镜像只代理 raw 不代理 API）
+      if (url.searchParams.get('probe') === 'api') {
+        return json({ results: await probeExtProxiesApi() });
+      }
       const usable = await listUsableExtProxies();
       return json({ proxies: usable.map(h => 'https://' + h + '/') });
     }
@@ -712,6 +718,43 @@ async function listUsableExtProxies() {
   const list = results.filter(Boolean);
   extProxiesCache = { at: Date.now(), list };
   return list;
+}
+
+// 探测单个代理的 api.github.com 转发能力：经代理 GET 存储仓库接口，
+// 200 视为可转发（只代理 raw 的镜像对该路径返回 404/403）
+async function probeExtProxyApi(host, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 6000);
+  const start = Date.now();
+  try {
+    const res = await fetch('https://' + host + '/https://api.github.com/repos/' + STORAGE_REPOS[0], {
+      method: 'GET',
+      redirect: 'manual',
+      signal: ctrl.signal,
+      headers: { 'User-Agent': 'cloud-eo-proxy-probe', 'Accept': 'application/vnd.github+json' }
+    });
+    // 立刻取消 body，避免悬挂流占用连接
+    try { if (res.body) await res.body.cancel(); } catch (e) {}
+    return { ok: res.status === 200, rtt: Date.now() - start };
+  } catch (e) {
+    return { ok: false, rtt: Date.now() - start };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 并发探测全部候选的 API 转发能力，返回含失败站点的全量结果（实例级缓存 5 分钟）
+let extProxiesApiCache = { at: 0, results: null };
+async function probeExtProxiesApi() {
+  if (extProxiesApiCache.results && Date.now() - extProxiesApiCache.at < EXT_PROXIES_CACHE_MS) {
+    return extProxiesApiCache.results;
+  }
+  const results = await Promise.all(EXT_PROXY_CANDIDATES.map(async h => {
+    const r = await probeExtProxyApi(h);
+    return { site: 'https://' + h + '/', ok: r.ok, rtt: r.rtt };
+  }));
+  extProxiesApiCache = { at: Date.now(), results };
+  return results;
 }
 
 // api.ip.sb：JSON 免 key，英文归属地
