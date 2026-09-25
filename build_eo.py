@@ -80,7 +80,9 @@ const STORAGE_REPOS = ['__STORAGE_REPO__'];
 // 探测目标：本仓库内的 raw 小文件（EXT_PROBE_TARGET，不再是根路径 /）。
 // 探测真实文件比 ping 代理首页更能反映其对 GitHub raw 的转发能力，
 // 也不会把"首页正常但转发已坏"的代理误判为可用。
-const EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/refs/heads/main/xxx.json';
+// 注意用标准分支形式（/main/...）而非 refs/heads 形式——前者是所有 ghproxy
+// 镜像 URL 正则必定兼容的标准 raw 路径。
+const EXT_PROBE_TARGET = 'https://raw.githubusercontent.com/boringstudent/cloud-web/main/xxx.json';
 const EXT_PROXY_CANDIDATES = [
   'ghproxy.felicity.land',
   'gh.07150721.xyz',
@@ -169,7 +171,8 @@ async function handleRequest(request) {
         return json({ proxies: EXT_PROXY_CANDIDATES.map(h => 'https://' + h + '/') });
       }
       // ?probe=api 服务端逐个 ping 候选代理存活（经代理请求探测目标文件
-      // EXT_PROBE_TARGET，能连上且返回 <500 即正常），
+      // EXT_PROBE_TARGET，9 秒超时，快速失败自动复测一次，能连上且返回 <500
+      // 即正常；结果带 status/err 失败原因），
       // 返回含失败站点的全量结果（前端服务检测用：浏览器直连会触发 CORS 预检
       // 被代理 403）
       if (url.searchParams.get('probe') === 'api') {
@@ -692,46 +695,30 @@ async function fetchText(url, headers, timeoutMs) {
   }
 }
 
-// 探测单个外部代理连通性：经代理请求探测目标文件（EXT_PROBE_TARGET），
-// 能建立连接且返回 <500 的 HTTP 响应即视为可用
-async function probeExtProxy(host, timeoutMs) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 3500);
-  try {
-    const res = await fetch('https://' + host + '/' + EXT_PROBE_TARGET, {
-      method: 'GET',
-      redirect: 'manual',
-      signal: ctrl.signal,
-      headers: { 'User-Agent': 'cloud-eo-proxy-probe' }
-    });
-    // 立刻取消 body，避免悬挂流占用连接
-    try { if (res.body) await res.body.cancel(); } catch (e) {}
-    return res.status > 0 && res.status < 500;
-  } catch (e) {
-    return false;
-  } finally {
-    clearTimeout(timer);
+// 分批限并发执行：单实例一次性发出 30 个子请求会排队甚至触发运行时并发限制，
+// 排队的请求白白消耗超时预算导致误报失败；分批后每批墙钟时间≈批内最慢者
+async function mapLimited(items, limit, fn) {
+  const out = new Array(items.length);
+  let idx = 0;
+  const workers = [];
+  for (let w = 0; w < Math.min(limit, items.length); w++) {
+    workers.push((async () => {
+      while (idx < items.length) {
+        const i = idx++;
+        out[i] = await fn(items[i]);
+      }
+    })());
   }
+  await Promise.all(workers);
+  return out;
 }
 
-// 并发探测全部候选代理，只返回当前可用者（实例级缓存 5 分钟）
-async function listUsableExtProxies() {
-  if (extProxiesCache.list && Date.now() - extProxiesCache.at < EXT_PROXIES_CACHE_MS) {
-    return extProxiesCache.list;
-  }
-  const results = await Promise.all(EXT_PROXY_CANDIDATES.map(async h => {
-    return (await probeExtProxy(h)) ? h : null;
-  }));
-  const list = results.filter(Boolean);
-  extProxiesCache = { at: Date.now(), list };
-  return list;
-}
-
-// ping 单个代理存活：经代理请求探测目标文件（EXT_PROBE_TARGET），
-// 能建立连接且返回 <500 的 HTTP 响应即视为正常（带 RTT）
-async function probeExtProxyApi(host, timeoutMs) {
+// 单次探测：经代理请求探测目标文件（EXT_PROBE_TARGET），
+// 能建立连接且返回 <500 的 HTTP 响应即视为可用；
+// 返回 { ok, status, err, rtt }——err 为 'timeout' 或底层错误码，供失败原因展示
+async function probeExtProxyOnce(host, timeoutMs) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 6000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const start = Date.now();
   try {
     const res = await fetch('https://' + host + '/' + EXT_PROBE_TARGET, {
@@ -742,24 +729,62 @@ async function probeExtProxyApi(host, timeoutMs) {
     });
     // 立刻取消 body，避免悬挂流占用连接
     try { if (res.body) await res.body.cancel(); } catch (e) {}
-    return { ok: res.status > 0 && res.status < 500, rtt: Date.now() - start };
+    return { ok: res.status > 0 && res.status < 500, status: res.status, err: '', rtt: Date.now() - start };
   } catch (e) {
-    return { ok: false, rtt: Date.now() - start };
+    const err = (e && e.name === 'AbortError') ? 'timeout'
+      : String((e && e.cause && e.cause.code) || (e && e.name) || 'error');
+    return { ok: false, status: 0, err, rtt: Date.now() - start };
   } finally {
     clearTimeout(timer);
   }
 }
 
-// 并发 ping 全部候选存活，返回含失败站点的全量结果（实例级缓存 5 分钟）
+// 探测单个外部代理连通性（默认 5 秒超时）：
+// 快速失败（连接重置/HTTP 5xx 等，非超时）自动复测一次——边缘节点偶发抖动
+// 或代理侧瞬时限流不应把正常代理误判为失败；超时失败不复测（再试大概率仍超时，
+// 只会拖慢整轮探测）
+async function probeExtProxy(host, timeoutMs) {
+  const r = await probeExtProxyOnce(host, timeoutMs || 5000);
+  if (r.ok || r.err === 'timeout') return r;
+  await new Promise(res => setTimeout(res, 300));
+  const r2 = await probeExtProxyOnce(host, 4000);
+  return r2.ok ? r2 : r;
+}
+
+// 分批探测全部候选代理，只返回当前可用者（实例级缓存 5 分钟）
+async function listUsableExtProxies() {
+  if (extProxiesCache.list && Date.now() - extProxiesCache.at < EXT_PROXIES_CACHE_MS) {
+    return extProxiesCache.list;
+  }
+  const results = await mapLimited(EXT_PROXY_CANDIDATES, 10, async h => {
+    return (await probeExtProxy(h)).ok ? h : null;
+  });
+  const list = results.filter(Boolean);
+  extProxiesCache = { at: Date.now(), list };
+  return list;
+}
+
+// ping 单个代理存活（9 秒超时，带 RTT 与失败原因）：
+// 与 probeExtProxy 相同的快速失败复测策略
+async function probeExtProxyApi(host, timeoutMs) {
+  const r = await probeExtProxyOnce(host, timeoutMs || 9000);
+  if (r.ok || r.err === 'timeout') return r;
+  await new Promise(res => setTimeout(res, 300));
+  const r2 = await probeExtProxyOnce(host, 5000);
+  return r2.ok ? r2 : r;
+}
+
+// 分批 ping 全部候选存活，返回含失败站点（status/err 失败原因）的全量结果
+// （实例级缓存 5 分钟）
 let extProxiesApiCache = { at: 0, results: null };
 async function probeExtProxiesApi() {
   if (extProxiesApiCache.results && Date.now() - extProxiesApiCache.at < EXT_PROXIES_CACHE_MS) {
     return extProxiesApiCache.results;
   }
-  const results = await Promise.all(EXT_PROXY_CANDIDATES.map(async h => {
+  const results = await mapLimited(EXT_PROXY_CANDIDATES, 8, async h => {
     const r = await probeExtProxyApi(h);
-    return { site: 'https://' + h + '/', ok: r.ok, rtt: r.rtt };
-  }));
+    return { site: 'https://' + h + '/', ok: r.ok, rtt: r.rtt, status: r.status, err: r.err };
+  });
   extProxiesApiCache = { at: Date.now(), results };
   return results;
 }

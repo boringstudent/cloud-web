@@ -1572,10 +1572,11 @@ function checkSvcStatus(force) {
 
 // Git 外部检测：调用同源 /api/proxies?probe=api，由 EO 服务端逐个 ping 候选
 // 代理存活（浏览器直连会带自定义头触发 CORS 预检被代理 403）；
-// 汇总可用数（RTT 取最快者），只列出失败站点
+// 汇总可用数（RTT 取最快者），只列出失败站点（附 HTTP 状态/超时/连接错误原因）。
+// 服务端分批限并发 + 快速失败复测，慢代理多时整轮可能超过 20 秒，故等待放宽到 45 秒
 function checkGitExtServices(gen, finish) {
     var xhr = new XMLHttpRequest();
-    var timer = setTimeout(function() { xhr.abort(); }, 20000);
+    var timer = setTimeout(function() { xhr.abort(); }, 45000);
     xhr.open('GET', EXT_PROXY_API + '?probe=api&_=' + Date.now(), true);
     xhr.setRequestHeader('Cache-Control', 'no-cache');
     xhr.onload = function() {
@@ -1597,7 +1598,9 @@ function checkGitExtServices(gen, finish) {
                 okCount++;
                 if (typeof r.rtt === 'number' && (bestRtt === null || r.rtt < bestRtt)) bestRtt = r.rtt;
             } else if (r && r.site) {
-                badHosts.push(String(r.site).replace(/^https?:\/\//, '').replace(/\/+$/, ''));
+                var host = String(r.site).replace(/^https?:\/\//, '').replace(/\/+$/, '');
+                var reason = r.err ? String(r.err) : (r.status ? 'HTTP ' + r.status : '失败');
+                badHosts.push(host + '（' + reason + '）');
             }
         });
         svcStatus.git = { ok: okCount > 0, okCount: okCount, total: results.length, rtt: bestRtt, badHosts: badHosts };
