@@ -961,6 +961,7 @@ h1 {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 8px;
     margin-bottom: 8px;
     font-size: 13px;
@@ -1285,4 +1286,147 @@ h1 {
 }
 .modal-close:hover {
     transform: scale(1.15);
+}
+
+/* ---- 右上角用户头像 + 二级菜单 ---- */
+.user-menu-wrap {
+    position: relative;
+}
+.user-avatar-btn {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.15);
+    padding: 0;
+    cursor: pointer;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #7f8c8d;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.user-avatar-btn:hover {
+    transform: scale(1.06);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+}
+.user-avatar-btn img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.user-menu {
+    display: none;
+    position: absolute;
+    top: 50px;
+    right: 0;
+    min-width: 160px;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    padding: 6px;
+    z-index: 1300;
+    animation: menuIn 0.18s ease;
+}
+.user-menu.show {
+    display: block;
+}
+.user-menu-name {
+    padding: 8px 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    border-bottom: 1px solid #f0f0f0;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+.user-menu-item {
+    padding: 8px 12px;
+    font-size: 14px;
+    color: #333;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.user-menu-item:hover {
+    background: #f2f6fa;
+    color: #2c82c9;
+}
+.user-menu-item.danger:hover {
+    background: rgba(220, 53, 69, 0.08);
+    color: #dc3545;
+}
+
+/* ---- 音频播放列表（预览弹窗） ---- */
+.audio-pl {
+    width: 100%;
+    margin-top: 10px;
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 10px;
+    box-shadow: 0 1px 8px rgba(0, 0, 0, 0.12);
+    padding: 8px 10px;
+    box-sizing: border-box;
+}
+.audio-pl-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.audio-pl-btn {
+    background: none;
+    border: 1px solid #ddd;
+    color: #666;
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.audio-pl-btn:hover {
+    color: #2c82c9;
+    border-color: #2c82c9;
+    background: rgba(44, 130, 201, 0.08);
+}
+.audio-pl-count {
+    font-size: 12px;
+    color: #999;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.audio-pl-list {
+    display: none;
+    margin-top: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+    border-top: 1px solid #f0f0f0;
+    padding-top: 4px;
+}
+.audio-pl-list.show {
+    display: block;
+}
+.audio-pl-item {
+    padding: 5px 8px;
+    font-size: 13px;
+    color: #333;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.audio-pl-item:hover {
+    background: #f2f6fa;
+}
+.audio-pl-item.active {
+    color: #2c82c9;
+    font-weight: 600;
+    background: rgba(44, 130, 201, 0.08);
 }

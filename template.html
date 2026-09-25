@@ -22,11 +22,17 @@
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
         <button class="btn" onclick="openUploadModal()" style="position: fixed; bottom: 30px; right: 30px; z-index: 100;">上传文件</button>
-        <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 100; display: flex; align-items: center; gap: 10px;">
-            <span id="authUser" style="display: none; background: rgba(255, 255, 255, 0.9); padding: 10px 15px; border-radius: 8px; color: #333; font-size: 14px; box-shadow: 0 0 10px rgba(0,0,0,0.1);"></span>
-            <button class="btn" id="accountBtn" onclick="openAccountModal()" style="display: none; background: #16a085;">我的账户</button>
-            <button class="btn" id="adminBtn" onclick="openAdminModal()" style="display: none; background: #6c5ce7;">用户管理</button>
+        <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 1200; display: flex; align-items: center; gap: 10px;">
             <button class="btn" id="authBtn" onclick="handleAuthBtnClick()">登录</button>
+            <div id="userMenuWrap" class="user-menu-wrap" style="display: none;">
+                <button type="button" id="userAvatarBtn" class="user-avatar-btn" title="账户菜单" onclick="toggleUserMenu(event)"></button>
+                <div id="userMenu" class="user-menu">
+                    <div class="user-menu-name" id="userMenuName"></div>
+                    <div class="user-menu-item" onclick="closeUserMenu(); openAccountModal();">用户信息修改</div>
+                    <div class="user-menu-item" id="userMenuAdmin" onclick="closeUserMenu(); openAdminModal();" style="display: none;">用户管理</div>
+                    <div class="user-menu-item danger" onclick="closeUserMenu(); logout();">退出登录</div>
+                </div>
+            </div>
         </div>
         <div id="refreshIndicator" class="refresh-indicator" title="正在刷新"></div>
 
@@ -244,7 +250,7 @@
                     <option value="8">并行: 8</option>
                     <option value="custom">并行: 自定义</option>
                 </select>
-                <input type="number" id="taskDlConcCustom" min="1" max="16" value="5" title="自定义并行数 (1-16)" style="display: none;">
+                <input type="number" id="taskDlConcCustom" min="1" value="5" title="自定义并行数（无上限，过大可能受浏览器单域名连接数限制）" style="display: none;">
                 <button type="button" id="taskDlEoBtn" class="task-progress-graph-btn active" title="EO 下载通道开关（实时生效）">EO</button>
                 <button type="button" id="taskDlCfBtn" class="task-progress-graph-btn active" title="CF 下载通道开关（实时生效）">CF</button>
                 <button type="button" id="taskDlExtBtn" class="task-progress-graph-btn" title="外部多代理下载（公共镜像加速，仅下载）">多代理</button>

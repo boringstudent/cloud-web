@@ -469,12 +469,14 @@ function bindAudioVolume(audioEl) {
 
 // 关闭/切换预览时停止媒体继续缓冲、中断进行中的流式读取与测速探测，避免后台浪费带宽
 function stopPreviewMedia() {
+    teardownAudioPlaylist();
     if (previewAbort) {
         try { previewAbort.abort(); } catch (e) {}
         previewAbort = null;
     }
     if (previewProbe) {
-        try { previewProbe.abort(); } catch (e) {}
+        var probes = Array.isArray(previewProbe) ? previewProbe.slice() : [previewProbe];
+        probes.forEach(function(x) { try { x.abort(); } catch (e) {} });
         previewProbe = null;
     }
     if (previewMerge) {
@@ -750,28 +752,67 @@ function initPwdEyes() {
     }
 }
 
+// ---- 用户头像：按用户名映射头像 URL，未配置时显示默认人像图标 ----
+var USER_AVATAR_MAP = {
+    'boringstudent': 'https://q.qlogo.cn/headimg_dl?dst_uin=1972403603&spec=640&img_type=jpg',
+    'fx': 'https://q.qlogo.cn/headimg_dl?dst_uin=251104925&spec=640&img_type=jpg'
+};
+var USER_AVATAR_DEFAULT_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+
+function userAvatarUrl(username) {
+    return USER_AVATAR_MAP[username] || null;
+}
+
+function renderUserAvatar() {
+    var btn = document.getElementById('userAvatarBtn');
+    if (!btn) return;
+    var saved = getSavedAuth();
+    var url = saved ? userAvatarUrl(saved.u) : null;
+    btn.innerHTML = '';
+    if (url) {
+        var img = document.createElement('img');
+        img.alt = saved.u;
+        img.referrerPolicy = 'no-referrer';
+        img.onerror = function() {
+            // 头像加载失败回退默认图标
+            btn.innerHTML = USER_AVATAR_DEFAULT_SVG;
+        };
+        img.src = url;
+        btn.appendChild(img);
+    } else {
+        btn.innerHTML = USER_AVATAR_DEFAULT_SVG;
+    }
+}
+
+function toggleUserMenu(e) {
+    if (e) e.stopPropagation();
+    var menu = document.getElementById('userMenu');
+    if (menu) menu.classList.toggle('show');
+}
+
+function closeUserMenu() {
+    var menu = document.getElementById('userMenu');
+    if (menu) menu.classList.remove('show');
+}
+
 function updateAuthBtn() {
     var btn = document.getElementById('authBtn');
-    var user = document.getElementById('authUser');
-    var adminBtn = document.getElementById('adminBtn');
+    var wrap = document.getElementById('userMenuWrap');
     var saved = getSavedAuth();
     if (btn) {
-        btn.textContent = saved ? '退出登录' : '登录';
+        btn.style.display = saved ? 'none' : '';
     }
-    if (user) {
+    if (wrap) {
+        wrap.style.display = saved ? '' : 'none';
         if (saved) {
-            user.textContent = '当前用户: ' + saved.u + (saved.role === 'admin' ? '（管理员）' : '');
-            user.style.display = 'block';
+            var nameEl = document.getElementById('userMenuName');
+            if (nameEl) nameEl.textContent = saved.u + (saved.role === 'admin' ? '（管理员）' : '');
+            var adminItem = document.getElementById('userMenuAdmin');
+            if (adminItem) adminItem.style.display = saved.role === 'admin' ? '' : 'none';
+            renderUserAvatar();
         } else {
-            user.style.display = 'none';
+            closeUserMenu();
         }
-    }
-    if (adminBtn) {
-        adminBtn.style.display = saved && saved.role === 'admin' ? '' : 'none';
-    }
-    var accountBtn = document.getElementById('accountBtn');
-    if (accountBtn) {
-        accountBtn.style.display = saved ? '' : 'none';
     }
 }
 
@@ -1467,6 +1508,26 @@ function formatSize(size) {
     return size.toFixed(1) + 'PB';
 }
 
+// 预计剩余时间格式化：<1s 不显示；支持 秒/分/小时
+function formatEtaText(sec) {
+    if (!isFinite(sec) || sec < 1) return '';
+    sec = Math.round(sec);
+    var m = Math.floor(sec / 60);
+    var s = sec % 60;
+    if (m > 59) {
+        var h = Math.floor(m / 60);
+        return h + '小时' + (m % 60) + '分';
+    }
+    return (m > 0 ? m + '分' : '') + s + '秒';
+}
+
+// 由"剩余字节 / 近期实测速度"计算预计剩余时间文本（多通道提速/降速时
+// 速度随最近采样窗口动态变化，ETA 随之实时调整）；速度无效时返回空
+function etaTextFromSpeed(remainingBytes, recentSpeed) {
+    if (!remainingBytes || remainingBytes <= 0 || !recentSpeed || recentSpeed <= 0) return '';
+    return formatEtaText(remainingBytes / recentSpeed);
+}
+
 function fetchFileTree(onDone, onFail) {
     if (fileTreeCache) {
         onDone();
@@ -1935,6 +1996,99 @@ function crc32(bytes) {
     return (c ^ 0xFFFFFFFF) >>> 0;
 }
 
+// 分段 CRC（携带中间态）：异步打包按片计算，片间让出主线程避免界面卡死
+function crc32Chunk(bytes, from, to, c) {
+    for (var i = from; i < to; i++) {
+        c = CRC32_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    }
+    return c;
+}
+
+// 异步 ZIP 打包（store 模式）：逐条目 + 条目内按 8MB 切片计算 CRC，
+// 每片之间 setTimeout(0) 让出主线程并回报进度，大文件夹打包不再卡死页面。
+// entries: [{name, data: Uint8Array}]；onProgress(doneCount, total, entryFrac)；
+// isCancelled() 返回 true 时中止（不回掉 onDone）
+function buildZipBlobAsync(entries, onProgress, isCancelled, onDone) {
+    var encoder = new TextEncoder();
+    var now = new Date();
+    var dosTime = ((now.getHours() & 0x1F) << 11) | ((now.getMinutes() & 0x3F) << 5) | (Math.floor(now.getSeconds() / 2) & 0x1F);
+    var dosDate = (((now.getFullYear() - 1980) & 0x7F) << 9) | (((now.getMonth() + 1) & 0xF) << 5) | (now.getDate() & 0x1F);
+    var parts = [];
+    var central = [];
+    var offset = 0;
+    var idx = 0;
+    var CRC_SLICE = 8 * 1024 * 1024;
+
+    function finish() {
+        var cdSize = 0;
+        central.forEach(function(p) { cdSize += p.length; });
+        var end = new DataView(new ArrayBuffer(22));
+        end.setUint32(0, 0x06054b50, true);      // end of central directory
+        end.setUint16(8, entries.length, true);
+        end.setUint16(10, entries.length, true);
+        end.setUint32(12, cdSize, true);
+        end.setUint32(16, offset, true);
+        onDone(new Blob(parts.concat(central, [new Uint8Array(end.buffer)]), { type: 'application/zip' }));
+    }
+
+    function processEntry() {
+        if (isCancelled && isCancelled()) return;
+        if (idx >= entries.length) {
+            finish();
+            return;
+        }
+        var e = entries[idx];
+        var nameBytes = encoder.encode(e.name);
+        var size = e.data.length;
+        var pos = 0;
+        var c = 0xFFFFFFFF;
+        (function crcStep() {
+            if (isCancelled && isCancelled()) return;
+            var end = Math.min(pos + CRC_SLICE, size);
+            c = crc32Chunk(e.data, pos, end, c);
+            pos = end;
+            if (pos < size) {
+                if (onProgress) onProgress(idx, entries.length, pos / size);
+                setTimeout(crcStep, 0);
+                return;
+            }
+            var crc = (c ^ 0xFFFFFFFF) >>> 0;
+            var lh = new DataView(new ArrayBuffer(30));
+            lh.setUint32(0, 0x04034b50, true);   // local file header
+            lh.setUint16(4, 20, true);
+            lh.setUint16(6, 0x0800, true);       // UTF-8 文件名
+            lh.setUint16(8, 0, true);            // store
+            lh.setUint16(10, dosTime, true);
+            lh.setUint16(12, dosDate, true);
+            lh.setUint32(14, crc, true);
+            lh.setUint32(18, size, true);
+            lh.setUint32(22, size, true);
+            lh.setUint16(26, nameBytes.length, true);
+            lh.setUint16(28, 0, true);
+            parts.push(new Uint8Array(lh.buffer), nameBytes, e.data);
+            var ch = new DataView(new ArrayBuffer(46));
+            ch.setUint32(0, 0x02014b50, true);   // central directory header
+            ch.setUint16(4, 20, true);
+            ch.setUint16(6, 20, true);
+            ch.setUint16(8, 0x0800, true);
+            ch.setUint16(10, dosTime, true);
+            ch.setUint16(12, dosDate, true);
+            ch.setUint32(16, crc, true);
+            ch.setUint32(20, size, true);
+            ch.setUint32(24, size, true);
+            ch.setUint16(28, nameBytes.length, true);
+            ch.setUint32(42, offset, true);
+            central.push(new Uint8Array(ch.buffer), nameBytes);
+            offset += 30 + nameBytes.length + size;
+            idx++;
+            if (onProgress) onProgress(idx, entries.length, 0);
+            setTimeout(processEntry, 0);
+        })();
+    }
+
+    processEntry();
+}
+
 // entries: [{name: zip 内路径（UTF-8，保留子目录结构）, data: Uint8Array}]
 function buildZipBlob(entries) {
     var encoder = new TextEncoder();
@@ -2128,6 +2282,7 @@ function downloadFolderZip(models, folderLabel) {
     var lastLoaded = 0;
     var lastTime = Date.now();
     var speedText = '';
+    var etaText = '';
 
     var sumLoaded = function() {
         var s = 0;
@@ -2141,9 +2296,11 @@ function downloadFolderZip(models, folderLabel) {
             lastLoaded = sumLoaded();
             lastTime = now;
             speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+            // ETA 跟随最近采样速度：多通道开关/通道增减时动态变化
+            etaText = totalBytes ? etaTextFromSpeed(totalBytes - sumLoaded(), sp) : '';
         }
         var pct = totalBytes ? Math.min(99, Math.round(sumLoaded() / totalBytes * 100)) : Math.round(doneCount / models.length * 100);
-        updateTaskProgress('正在下载 (' + doneCount + '/' + models.length + ') · ' + folderLabel + (speedText ? ' · ' + speedText : ''), pct);
+        updateTaskProgress('正在下载 (' + doneCount + '/' + models.length + ') · ' + folderLabel + (speedText ? ' · ' + speedText : '') + (etaText ? ' · 预计剩余 ' + etaText : ''), pct);
     };
 
     var pool = null;
@@ -2164,45 +2321,62 @@ function downloadFolderZip(models, folderLabel) {
         setTimeout(hideToast, 2500);
     };
 
+    // 打包缓存：文件一下载完立即异步转存为 Uint8Array 条目（读取开销摊到
+    // 下载期间，打包阶段不再集中读盘）；打包本身分片计算 CRC 并回报进度
+    var pendingReads = 0;
+    var readFail = false;
+
     var pack = function() {
-        updateTaskProgress('正在打包 ' + folderLabel + '.zip（' + models.length + ' 个文件）...', null);
-        // 让进度卡片先渲染一帧再做 CPU 密集的读取与 CRC 计算
-        setTimeout(function() {
-            if (cancelled) return;
-            // zip 条目按名称排序，保证并行下载完成后打包结果确定
-            rawEntries.sort(function(a, b) { return a.name.localeCompare(b.name); });
-            var entries = [];
-            var pending = rawEntries.length;
-            rawEntries.forEach(function(e) {
-                var reader = new FileReader();
-                reader.onload = function() {
-                    entries.push({ name: e.name, data: new Uint8Array(reader.result) });
-                    if (--pending === 0) finishPack(entries);
-                };
-                reader.onerror = function() {
-                    if (--pending === 0) finishPack(entries);
-                };
-                reader.readAsArrayBuffer(e.blob);
+        // zip 条目按名称排序，保证并行下载完成后打包结果确定
+        rawEntries.sort(function(a, b) { return a.name.localeCompare(b.name); });
+        updateTaskProgress('正在打包 ' + folderLabel + '.zip（0/' + rawEntries.length + '）', 0);
+        buildZipBlobAsync(rawEntries,
+            function(done, total, entryFrac) {
+                if (cancelled) return;
+                var pct = total ? Math.round((done + (entryFrac || 0)) / total * 100) : 100;
+                updateTaskProgress('正在打包 ' + folderLabel + '.zip（' + done + '/' + total + '）', Math.max(0, Math.min(99, pct)));
+            },
+            function() { return cancelled; },
+            function(zipBlob) {
+                if (cancelled) return;
+                hideTaskProgress();
+                saveBlobAs(zipBlob, folderLabel + '.zip');
+                showToast('打包下载完成: ' + folderLabel + '.zip（' + formatSize(zipBlob.size) + '）');
+                setTimeout(hideToast, 3000);
             });
-        }, 50);
     };
-    var finishPack = function(entries) {
+    // 全部下载完成后，可能仍有少量条目在转存缓存，待其就绪再打包
+    var packWhenReady = function() {
         if (cancelled) return;
-        var zipBlob = buildZipBlob(entries);
-        hideTaskProgress();
-        saveBlobAs(zipBlob, folderLabel + '.zip');
-        showToast('打包下载完成: ' + folderLabel + '.zip（' + formatSize(zipBlob.size) + '）');
-        setTimeout(hideToast, 3000);
+        if (readFail) return;   // failFile 已处理
+        if (pendingReads > 0) {
+            updateTaskProgress('正在缓存 (' + (doneCount - pendingReads) + '/' + doneCount + ') · ' + folderLabel, null);
+            setTimeout(packWhenReady, 100);
+            return;
+        }
+        pack();
     };
 
     var limit = dlGetLimit();
     var poolLimit = Math.min(models.length, limit);
     pool = runFileDownloadPool(models, poolLimit, {
         onFileBlob: function(idx, m, blob) {
-            rawEntries.push({ name: m.zipName, blob: blob });
             loadedMap[idx] = m.size || blob.size;
             doneCount++;
             report();
+            // 立即转存为打包缓存条目，读取开销摊到下载期间
+            pendingReads++;
+            var reader = new FileReader();
+            reader.onload = function() {
+                pendingReads--;
+                if (!cancelled) rawEntries.push({ name: m.zipName, data: new Uint8Array(reader.result) });
+            };
+            reader.onerror = function() {
+                pendingReads--;
+                readFail = true;
+                failFile();
+            };
+            reader.readAsArrayBuffer(blob);
         },
         onFileFail: function() {
             failFile();
@@ -2212,7 +2386,7 @@ function downloadFolderZip(models, folderLabel) {
             report();
         },
         onSettle: function() {
-            if (!cancelled) pack();
+            if (!cancelled) packWhenReady();
         }
     });
 }
@@ -2400,6 +2574,7 @@ function downloadFile(filePath, fileName, onDone, onProgress, sizeHint) {
     var lastLoaded = 0;
     var lastTime = Date.now();
     var speedText = '';
+    var etaText = '';
     var cancelled = false;
     var handle = fetchFileBlobDual(filePath, sizeHint || 0,
         function(loaded, total) {
@@ -2409,12 +2584,14 @@ function downloadFile(filePath, fileName, onDone, onProgress, sizeHint) {
                 lastLoaded = loaded;
                 lastTime = now;
                 speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+                // ETA 跟随最近采样速度：多通道开关/通道增减时动态变化
+                etaText = total ? etaTextFromSpeed(total - loaded, sp) : '';
             }
             if (onProgress) {
                 onProgress(loaded, speedText, total);
             } else {
                 var pct = total ? Math.min(99, Math.round(loaded / total * 100)) : null;
-                updateTaskProgress('正在下载: ' + fileName + ' · ' + formatSize(loaded) + (speedText ? ' · ' + speedText : ''), pct);
+                updateTaskProgress('正在下载: ' + fileName + ' · ' + formatSize(loaded) + (speedText ? ' · ' + speedText : '') + (etaText ? ' · 预计剩余 ' + etaText : ''), pct);
             }
         },
         function(blob) {
@@ -2582,6 +2759,11 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
     var lastSampleLoaded = 0;
     var lastSampleTime = Date.now();
     var speedText = '';
+    // 分通道速度统计（预览场景展示 EO/CF/外部 各自速度）
+    var chanBytes = { eo: 0, cf: 0, ext: 0 };
+    var lastChanBytes = { eo: 0, cf: 0, ext: 0 };
+    var chanSpeedText = '';
+    var etaText = '';
 
     var progressText = function() {
         var pct = totalBytes ? Math.min(99, Math.round(loadedBytes / totalBytes * 100)) : 0;
@@ -2591,17 +2773,29 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
     var report = function() {
         if (!quiet) showToast(progressText());
         if (onProgress) {
-            onProgress(totalBytes ? Math.min(99, Math.round(loadedBytes / totalBytes * 100)) : null, speedText);
+            onProgress(totalBytes ? Math.min(99, Math.round(loadedBytes / totalBytes * 100)) : null, speedText, chanSpeedText, etaText);
         }
     };
 
     var sample = function() {
         var now = Date.now();
+        var dt = (now - lastSampleTime) / 1000;
         if (now - lastSampleTime >= 500) {
-            var sp = (loadedBytes - lastSampleLoaded) / ((now - lastSampleTime) / 1000);
+            var sp = (loadedBytes - lastSampleLoaded) / dt;
             lastSampleLoaded = loadedBytes;
             lastSampleTime = now;
             speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+            // 各通道速度：仅显示有流量的通道
+            var chanParts = [];
+            var names = { eo: 'EO', cf: 'CF', ext: '外部' };
+            for (var c in chanBytes) {
+                var csp = (chanBytes[c] - lastChanBytes[c]) / dt;
+                lastChanBytes[c] = chanBytes[c];
+                if (csp > 1024) chanParts.push(names[c] + ' ' + formatSize(Math.round(csp)) + '/s');
+            }
+            chanSpeedText = chanParts.join(' · ');
+            // ETA 跟随最近采样速度：多通道开关/通道增减时动态变化
+            etaText = etaTextFromSpeed(totalBytes - loadedBytes, sp);
         }
     };
 
@@ -2688,6 +2882,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 var delta = e.loaded - (parts[i]._loaded || 0);
                 parts[i]._loaded = e.loaded;
                 loadedBytes += delta;
+                chanBytes[chan] += delta;
                 if (quiet) dlTrackAdd(chan, delta);
                 sample();
                 report();
@@ -2828,7 +3023,7 @@ function loadMediaWithRate(url, totalSize, loadingDiv, onDone, onFail) {
 var PREVIEW_STREAMS = 4;
 var PREVIEW_PARALLEL_MIN = 512 * 1024;
 
-function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
+function streamImagePreview(url, img, loadingDiv, rateTag, onFail, filePath) {
     if (!window.fetch || typeof AbortController === 'undefined' || typeof ReadableStream === 'undefined') {
         return false;
     }
@@ -2844,6 +3039,10 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
     var tmpUrl = null;
     var failed = false;
     var finished = false;   // 全程完成后置位，迟到的部分数据探针不得再换源
+    // 三通道（EO/CF/外部）分通道速度统计
+    var chanBytes = { eo: 0, cf: 0, ext: 0 };
+    var lastChanBytes = { eo: 0, cf: 0, ext: 0 };
+    var CHAN_NAMES = { eo: 'EO', cf: 'CF', ext: '外部' };
 
     var isAbort = function(err) { return err && err.name === 'AbortError'; };
 
@@ -2908,14 +3107,16 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
         setTimeout(function() { rateTag.textContent = ''; }, 3000);
     };
 
-    // 读取一个响应流到指定分段；rangeEnd 为 null 表示整文件单段
-    var pumpInto = function(resp, seg) {
+    // 读取一个响应流到指定分段；rangeEnd 为 null 表示整文件单段。
+    // attempt>=0 时可换源续传重试（从该段已收位置继续 Range）；-1 表示单流不重试
+    var pumpInto = function(resp, seg, attempt) {
         var reader = resp.body.getReader();
         var pump = function() {
             reader.read().then(function(r) {
                 if (failed) return;
                 if (r.done) {
                     seg.done = true;
+                    if (seg._chan) dlChanDec(seg._chan);
                     for (var i = 0; i < segments.length; i++) {
                         if (!segments[i].done) return;
                     }
@@ -2925,12 +3126,22 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
                 seg.chunks.push(r.value);
                 seg.received += r.value.byteLength;
                 received += r.value.byteLength;
+                if (seg._chan) chanBytes[seg._chan] += r.value.byteLength;
+                else chanBytes.eo += r.value.byteLength;
                 var now = Date.now();
                 if (now - lastTime >= 500) {
-                    var sp = (received - lastLoaded) / ((now - lastTime) / 1000);
+                    var dt = (now - lastTime) / 1000;
+                    var sp = (received - lastLoaded) / dt;
                     lastLoaded = received;
                     lastTime = now;
-                    var speedPart = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+                    // 分通道速度：仅显示有流量的通道，三通道负载一目了然
+                    var chanParts = [];
+                    for (var c in chanBytes) {
+                        var csp = (chanBytes[c] - lastChanBytes[c]) / dt;
+                        lastChanBytes[c] = chanBytes[c];
+                        if (csp > 1024) chanParts.push(CHAN_NAMES[c] + ' ' + formatSize(Math.round(csp)) + '/s');
+                    }
+                    var speedPart = chanParts.length ? chanParts.join(' · ') : (sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '');
                     var pctPart = total ? Math.min(99, Math.round(received / total * 100)) + '%' : '';
                     rateTag.textContent = [speedPart, pctPart].filter(function(s) { return s; }).join(' · ');
                     // 非渐进式图片在收完前无法渲染，加载文案同步显示进度避免无反馈
@@ -2942,11 +3153,73 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
                 }
                 pump();
             }, function(err) {
-                if (isAbort(err)) return;
+                if (isAbort(err)) {
+                    if (seg._chan) dlChanDec(seg._chan);
+                    return;
+                }
+                if (attempt >= 0) {
+                    if (seg._chan) dlChanDec(seg._chan);
+                    retrySeg(seg, attempt, seg._chan);
+                    return;
+                }
                 failOnce(0);
             });
         };
         pump();
+    };
+
+    // 段级三通道调度：按在途均衡 + 速率加权在 EO/CF/外部代理间分配，
+    // 失败换源续传（最多 3 次），外部代理按代理熔断轮换
+    var fetchSeg = function(seg, attempt) {
+        if (failed || finished) return;
+        var chan;
+        if (attempt > 0) {
+            chan = pickDlChannel(seg._lastChan) || pickDlFallback(seg._lastChan);
+        } else {
+            chan = pickDlChannel() || pickDlFallback();
+        }
+        if (chan === 'ext') {
+            seg._extBase = extPickBase();
+            if (!seg._extBase) chan = 'eo';
+        }
+        seg._lastChan = chan;
+        seg._chan = chan;
+        dlChanInc(chan);
+        var segUrl = chan === 'cf' ? cfRawUrl(filePath) : (chan === 'ext' ? extRawUrl(seg._extBase, filePath) : url);
+        // 续传：从该段已收位置继续，避免重复拉取
+        var from = seg.start + seg.received;
+        fetch(segUrl, {
+            signal: signal,
+            cache: 'no-store',
+            headers: { 'Range': 'bytes=' + from + '-' + seg.end }
+        }).then(function(r2) {
+            if (failed) {
+                dlChanDec(chan);
+                return;
+            }
+            if (r2.status !== 206 || !r2.body) {
+                dlChanDec(chan);
+                retrySeg(seg, attempt, chan);
+                return;
+            }
+            pumpInto(r2, seg, attempt);
+        }, function(err) {
+            if (isAbort(err)) {
+                dlChanDec(chan);
+                return;
+            }
+            dlChanDec(chan);
+            retrySeg(seg, attempt, chan);
+        });
+    };
+    var retrySeg = function(seg, attempt, chan) {
+        if (failed || finished) return;
+        if (chan === 'ext') extNoteFail(seg._extBase);
+        if (attempt + 1 >= DUAL_SEG_MAX_ATTEMPTS) {
+            failOnce(0);
+            return;
+        }
+        fetchSeg(seg, attempt + 1);
     };
 
     // Range 探测：拿总大小并确认服务器支持分段
@@ -2959,7 +3232,7 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
             if (m) total = parseInt(m[1], 10);
             try { resp.body.cancel(); } catch (e) {}
             if (total > PREVIEW_PARALLEL_MIN) {
-                // 多线程：切 PREVIEW_STREAMS 段并行 Range 拉取
+                // 多线程：切 PREVIEW_STREAMS 段并行 Range 拉取（三通道分配）
                 var segSize = Math.ceil(total / PREVIEW_STREAMS);
                 segments = [];
                 for (var i = 0; i < PREVIEW_STREAMS; i++) {
@@ -2969,21 +3242,7 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
                     segments.push({ start: start, end: end, chunks: [], received: 0, done: false });
                 }
                 segments.forEach(function(seg) {
-                    fetch(url, {
-                        signal: signal,
-                        cache: 'no-store',
-                        headers: { 'Range': 'bytes=' + seg.start + '-' + seg.end }
-                    }).then(function(r2) {
-                        if (failed) return;
-                        if (r2.status !== 206 || !r2.body) {
-                            failOnce(r2.status || 0);
-                            return;
-                        }
-                        pumpInto(r2, seg);
-                    }, function(err) {
-                        if (isAbort(err)) return;
-                        failOnce(0);
-                    });
+                    fetchSeg(seg, 0);
                 });
                 return;
             }
@@ -2995,7 +3254,7 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
                     return;
                 }
                 segments = [{ start: 0, end: null, chunks: [], received: 0, done: false }];
-                pumpInto(r3, segments[0]);
+                pumpInto(r3, segments[0], -1);
             }, function(err) {
                 if (isAbort(err)) return;
                 failOnce(0);
@@ -3010,7 +3269,7 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
         var len = parseInt(resp.headers.get('Content-Length'), 10);
         if (len > 0) total = len;
         segments = [{ start: 0, end: null, chunks: [], received: 0, done: false }];
-        pumpInto(resp, segments[0]);
+        pumpInto(resp, segments[0], -1);
     }, function(err) {
         if (isAbort(err)) return;
         failOnce(0);
@@ -3018,50 +3277,89 @@ function streamImagePreview(url, img, loadingDiv, rateTag, onFail) {
     return true;
 }
 
-// 音/视频测速探测：拉取文件头部最多 1MB，按实际收到字节计算真实下载速度。
+// 音/视频三通道测速探测：在 EO/CF/外部（可用时）各拉取文件头部最多 1MB，
+// 按实际收到字节计算各通道真实下载速度并汇总显示。
 // 媒体元素自身的缓冲增长受浏览器懒加载/暂停预读策略影响，不代表真实带宽，故单独探测。
-// onSpeed(speedText) 实时回调；请求存入 previewProbe 以便关闭预览时中止。
-function probeMediaSpeed(url, onSpeed) {
-    var xhr = new XMLHttpRequest();
-    previewProbe = xhr;
-    xhr.open('GET', url, true);
-    var total = menuFileInfo.size || 0;
-    if (total > 0) {
-        xhr.setRequestHeader('Range', 'bytes=0-' + (Math.min(total, 1048576) - 1));
-    }
-    xhr.responseType = 'arraybuffer';
-    var startTime = Date.now();
-    var lastLoaded = 0;
-    var lastTime = startTime;
-    xhr.onprogress = function(e) {
-        var now = Date.now();
-        if (now - lastTime >= 300) {
-            var sp = (e.loaded - lastLoaded) / ((now - lastTime) / 1000);
-            lastLoaded = e.loaded;
-            lastTime = now;
-            if (sp > 1024) onSpeed(formatSize(Math.round(sp)) + '/s');
-        }
-        // 代理忽略 Range 时（200 全量响应）收到 1MB 即中止，避免拉完整文件
-        if (e.loaded > 1048576) {
-            var el = (now - startTime) / 1000;
-            var spAll = e.loaded / el;
-            if (spAll > 1024) onSpeed(formatSize(Math.round(spAll)) + '/s');
-            xhr.abort();
-        }
+// onSpeed(speedText) 实时回调（各通道速度拼接）；请求数组存入 previewProbe 以便关闭预览时中止。
+function probeMediaSpeed(url, onSpeed, filePath) {
+    var chans = dlChannels();
+    var probes = [];
+    previewProbe = probes;
+    var CHAN_NAMES = { eo: 'EO', cf: 'CF', ext: '外部' };
+    var speeds = {};   // chan -> speedText
+    var emit = function() {
+        var partsOut = [];
+        ['eo', 'cf', 'ext'].forEach(function(c) {
+            if (speeds[c]) partsOut.push(CHAN_NAMES[c] + ' ' + speeds[c]);
+        });
+        if (partsOut.length) onSpeed(partsOut.join(' · '));
     };
-    var finish = function() {
-        if (previewProbe === xhr) previewProbe = null;
-        if (xhr.status && xhr.status !== 200 && xhr.status !== 206) return;
-        if (!xhr.response) return;
-        // 全程平均速度兜底：小文件可能连一次采样窗口都没攒够
-        var el = (Date.now() - startTime) / 1000;
-        var sp = xhr.response.byteLength / el;
-        if (el > 0.05 && sp > 1024) onSpeed(formatSize(Math.round(sp)) + '/s');
+    var cleanup = function(xhr) {
+        var i = probes.indexOf(xhr);
+        if (i !== -1) probes.splice(i, 1);
+        if (!probes.length && previewProbe === probes) previewProbe = null;
     };
-    xhr.onload = finish;
-    xhr.onerror = function() { if (previewProbe === xhr) previewProbe = null; };
-    xhr.onabort = function() { if (previewProbe === xhr) previewProbe = null; };
-    xhr.send();
+    chans.forEach(function(chan) {
+        var purl = url;
+        if (chan === 'cf') {
+            if (!filePath) return;
+            purl = cfRawUrl(filePath);
+        } else if (chan === 'ext') {
+            if (!filePath) return;
+            var extBase = extPickBase();
+            if (!extBase) return;
+            purl = extRawUrl(extBase, filePath);
+        }
+        var xhr = new XMLHttpRequest();
+        probes.push(xhr);
+        xhr.open('GET', purl, true);
+        var total = menuFileInfo.size || 0;
+        if (total > 0) {
+            xhr.setRequestHeader('Range', 'bytes=0-' + (Math.min(total, 1048576) - 1));
+        }
+        xhr.responseType = 'arraybuffer';
+        var startTime = Date.now();
+        var lastLoaded = 0;
+        var lastTime = startTime;
+        xhr.onprogress = function(e) {
+            var now = Date.now();
+            if (now - lastTime >= 300) {
+                var sp = (e.loaded - lastLoaded) / ((now - lastTime) / 1000);
+                lastLoaded = e.loaded;
+                lastTime = now;
+                if (sp > 1024) {
+                    speeds[chan] = formatSize(Math.round(sp)) + '/s';
+                    emit();
+                }
+            }
+            // 代理忽略 Range 时（200 全量响应）收到 1MB 即中止，避免拉完整文件
+            if (e.loaded > 1048576) {
+                var el = (now - startTime) / 1000;
+                var spAll = e.loaded / el;
+                if (spAll > 1024) {
+                    speeds[chan] = formatSize(Math.round(spAll)) + '/s';
+                    emit();
+                }
+                xhr.abort();
+            }
+        };
+        xhr.onload = function() {
+            cleanup(xhr);
+            if (xhr.status && xhr.status !== 200 && xhr.status !== 206) return;
+            if (!xhr.response) return;
+            // 全程平均速度兜底：小文件可能连一次采样窗口都没攒够
+            var el = (Date.now() - startTime) / 1000;
+            var sp = xhr.response.byteLength / el;
+            if (el > 0.05 && sp > 1024) {
+                speeds[chan] = formatSize(Math.round(sp)) + '/s';
+                emit();
+            }
+        };
+        xhr.onerror = function() { cleanup(xhr); };
+        xhr.onabort = function() { cleanup(xhr); };
+        xhr.send();
+    });
+    if (!probes.length && previewProbe === probes) previewProbe = null;
 }
 
 // 分片文件合并下载：单独下载时驱动全局进度条（可点 ✕ 中止）；
@@ -3077,11 +3375,11 @@ function downloadMergedFile(parts, fileName, onDone, onProgress) {
         showToast('下载失败，请重试');
         setTimeout(hideToast, 2000);
         if (onDone) onDone(false);
-    }, function(pct, speed) {
+    }, function(pct, speed, chanSpeeds, eta) {
         if (onProgress) {
             onProgress(pct, speed);
         } else {
-            updateTaskProgress('正在下载: ' + fileName + (speed ? ' · ' + speed : ''), pct);
+            updateTaskProgress('正在下载: ' + fileName + (speed ? ' · ' + speed : '') + (eta ? ' · 预计剩余 ' + eta : ''), pct);
         }
     }, null, true);
     if (standalone) {
@@ -3112,6 +3410,244 @@ function collectImageModels() {
         list.push(rec.model);
     });
     return list;
+}
+
+// ---- 音频播放列表：同目录音乐的顺序/随机/单曲循环播放 + 限量预加载 ----
+// 播放方式持久化；预加载按播放方式进行（顺序播放预载下一首，单曲循环/随机
+// 不预载），且最多同时缓存 1 首、单首超 80MB 不预载——防止目录音频过多
+// 时预加载机制过度消耗带宽。分片音频不参与预载（无直链）。
+var AUDIO_PL_MODE_KEY = 'cloud_web_audio_pl_mode';
+var AUDIO_PL_MODES = ['loop', 'seq', 'rand'];
+var AUDIO_PL_MODE_LABELS = { loop: '单曲循环', seq: '顺序播放', rand: '随机播放' };
+var AUDIO_PRELOAD_MAX = 1;
+var AUDIO_PRELOAD_SIZE_MAX = 80 * 1024 * 1024;
+var audioPl = null;   // {list, index, mode, audio, rateTag, cache, preloadXhr, listEl, modeBtn}
+
+function collectAudioModels() {
+    var list = [];
+    entryOrder.forEach(function(k) {
+        var rec = entryMap[k];
+        if (!rec || rec.model.kind !== 'file') return;
+        if (AUDIO_EXTS.indexOf(getFileExtension(rec.model.name)) === -1) return;
+        list.push(rec.model);
+    });
+    return list;
+}
+
+function audioPlModeLoad() {
+    var m = 'loop';
+    try {
+        var saved = localStorage.getItem(AUDIO_PL_MODE_KEY);
+        if (saved && AUDIO_PL_MODES.indexOf(saved) !== -1) m = saved;
+    } catch (e) {}
+    return m;
+}
+
+// 关闭预览/切换预览时清理播放列表：中止预载与分片合并，释放缓存 ObjectURL
+function teardownAudioPlaylist() {
+    if (!audioPl) return;
+    if (audioPl.preloadXhr) {
+        try { audioPl.preloadXhr.abort(); } catch (e) {}
+        audioPl.preloadXhr = null;
+    }
+    for (var p in audioPl.cache) {
+        try { URL.revokeObjectURL(audioPl.cache[p]); } catch (e) {}
+    }
+    audioPl = null;
+}
+
+function audioPlRefreshHighlight() {
+    if (!audioPl || !audioPl.listEl) return;
+    var items = audioPl.listEl.children;
+    for (var i = 0; i < items.length; i++) {
+        items[i].classList.toggle('active', i === audioPl.index);
+    }
+}
+
+// 限量预加载：仅顺序播放模式预载下一首（单曲循环重播当前、随机无法预测，
+// 均不预载）；最多缓存 1 首，分片/超大文件跳过
+function audioPlMaybePreload() {
+    if (!audioPl || audioPl.mode !== 'seq') return;
+    var next = audioPl.list[audioPl.index + 1];
+    if (!next || next.chunked) return;
+    if ((next.size || 0) > AUDIO_PRELOAD_SIZE_MAX) return;
+    if (audioPl.cache[next.path] || audioPl.preloadXhr) return;
+    var cachedCount = 0;
+    for (var p in audioPl.cache) cachedCount++;
+    if (cachedCount >= AUDIO_PRELOAD_MAX) return;
+    var xhr = new XMLHttpRequest();
+    audioPl.preloadXhr = xhr;
+    xhr.open('GET', rawUrlFor(next.path), true);
+    xhr.responseType = 'blob';
+    xhr.onload = function() {
+        if (audioPl && audioPl.preloadXhr === xhr) audioPl.preloadXhr = null;
+        if (xhr.status === 200 && audioPl) {
+            audioPl.cache[next.path] = URL.createObjectURL(xhr.response);
+        }
+    };
+    var clear = function() {
+        if (audioPl && audioPl.preloadXhr === xhr) audioPl.preloadXhr = null;
+    };
+    xhr.onerror = clear;
+    xhr.onabort = clear;
+    xhr.send();
+}
+
+// 切换播放指定曲目；autoplay=true 切换后立即播放
+function audioPlPlay(idx, autoplay) {
+    if (!audioPl || idx < 0 || idx >= audioPl.list.length) return;
+    var m = audioPl.list[idx];
+    audioPl.index = idx;
+    audioPlRefreshHighlight();
+    previewFileInfo = { path: m.path, name: m.name, ext: getFileExtension(m.name) };
+    document.getElementById('previewTitle').textContent = '预览: ' + m.name;
+    var audioEl = audioPl.audio;
+    // 中止进行中的分片合并与旧源
+    if (previewMerge) {
+        previewMerge.cancel();
+        previewMerge = null;
+    }
+    try { audioEl.pause(); } catch (e) {}
+    var startPlay = function() {
+        if (autoplay) {
+            var p = audioEl.play();
+            if (p && p.catch) p.catch(function() {});
+        }
+    };
+    if (m.chunked && m.parts) {
+        // 分片音频：合并拉取后整体播放
+        if (audioPl.rateTag) audioPl.rateTag.textContent = '加载中...';
+        previewMerge = fetchMergedBlob(m.parts, function(blob) {
+            previewMerge = null;
+            if (!audioPl) return;
+            var u = URL.createObjectURL(blob);
+            setPreviewBlobUrl(u);
+            audioEl.src = u;
+            if (audioPl.rateTag) setTimeout(function() { if (audioPl && audioPl.rateTag) audioPl.rateTag.textContent = ''; }, 1500);
+            startPlay();
+        }, function() {
+            previewMerge = null;
+            if (audioPl && audioPl.rateTag) audioPl.rateTag.textContent = '加载失败';
+        }, function(pct, speed, chanSpeeds) {
+            if (audioPl && audioPl.rateTag) {
+                audioPl.rateTag.textContent = '加载中 ' + (pct !== null ? pct + '%' : '...') + (chanSpeeds || speed ? ' · ' + (chanSpeeds || speed) : '');
+            }
+        }, null, true);
+    } else {
+        // 优先消费预加载缓存（命中即免等待），否则直链边下边播
+        var cached = audioPl.cache[m.path];
+        if (cached) {
+            delete audioPl.cache[m.path];   // 移交播放器使用，不再由缓存管理
+            setPreviewBlobUrl(cached);
+            audioEl.src = cached;
+        } else {
+            audioEl.src = rawUrlFor(m.path);
+        }
+        startPlay();
+    }
+    audioPlMaybePreload();
+}
+
+// 为音频预览构建播放列表 UI（同目录少于 2 首音频时不显示，返回 null）
+function setupAudioPlaylist(audioEl, currentPath, rateTag) {
+    var list = collectAudioModels();
+    if (list.length < 2) return null;
+    var index = -1;
+    for (var i = 0; i < list.length; i++) {
+        if (list[i].path === currentPath) {
+            index = i;
+            break;
+        }
+    }
+    if (index === -1) return null;
+    audioPl = {
+        list: list,
+        index: index,
+        mode: audioPlModeLoad(),
+        audio: audioEl,
+        rateTag: rateTag,
+        cache: {},
+        preloadXhr: null,
+        listEl: null,
+        modeBtn: null
+    };
+    audioEl.loop = audioPl.mode === 'loop';
+
+    var wrap = document.createElement('div');
+    wrap.className = 'audio-pl';
+    var bar = document.createElement('div');
+    bar.className = 'audio-pl-bar';
+    var modeBtn = document.createElement('button');
+    modeBtn.type = 'button';
+    modeBtn.className = 'audio-pl-btn';
+    modeBtn.title = '切换播放方式';
+    modeBtn.textContent = AUDIO_PL_MODE_LABELS[audioPl.mode];
+    audioPl.modeBtn = modeBtn;
+    modeBtn.addEventListener('click', function() {
+        if (!audioPl) return;
+        var i = (AUDIO_PL_MODES.indexOf(audioPl.mode) + 1) % AUDIO_PL_MODES.length;
+        audioPl.mode = AUDIO_PL_MODES[i];
+        try { localStorage.setItem(AUDIO_PL_MODE_KEY, audioPl.mode); } catch (e) {}
+        modeBtn.textContent = AUDIO_PL_MODE_LABELS[audioPl.mode];
+        audioEl.loop = audioPl.mode === 'loop';
+        audioPlMaybePreload();
+    });
+    var toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'audio-pl-btn';
+    toggleBtn.textContent = '列表';
+    var countSpan = document.createElement('span');
+    countSpan.className = 'audio-pl-count';
+    countSpan.textContent = (index + 1) + '/' + list.length + ' 首';
+    var listEl = document.createElement('div');
+    listEl.className = 'audio-pl-list';
+    audioPl.listEl = listEl;
+    list.forEach(function(m, i2) {
+        var item = document.createElement('div');
+        item.className = 'audio-pl-item' + (i2 === index ? ' active' : '');
+        item.textContent = displayName(m.name);
+        item.title = displayName(m.name);
+        item.addEventListener('click', function() {
+            audioPlPlay(i2, true);
+        });
+        listEl.appendChild(item);
+    });
+    toggleBtn.addEventListener('click', function() {
+        listEl.classList.toggle('show');
+    });
+    bar.appendChild(modeBtn);
+    bar.appendChild(toggleBtn);
+    bar.appendChild(countSpan);
+    wrap.appendChild(bar);
+    wrap.appendChild(listEl);
+
+    // 播放结束按播放方式推进：loop 由 audio.loop 自动重播；
+    // seq 顺序到尾停止；rand 随机抽下一首（不重复当前）
+    audioEl.addEventListener('ended', function() {
+        if (!audioPl || audioEl !== audioPl.audio) return;
+        if (audioPl.mode === 'loop') return;
+        if (audioPl.mode === 'seq') {
+            if (audioPl.index + 1 < audioPl.list.length) {
+                audioPlPlay(audioPl.index + 1, true);
+                countSpan.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
+            }
+            return;
+        }
+        if (audioPl.list.length > 1) {
+            var n;
+            do { n = Math.floor(Math.random() * audioPl.list.length); } while (n === audioPl.index);
+            audioPlPlay(n, true);
+            countSpan.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
+        }
+    });
+    // 点击列表切换后同步计数显示
+    listEl.addEventListener('click', function() {
+        setTimeout(function() {
+            if (audioPl) countSpan.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
+        }, 0);
+    });
+    audioPlMaybePreload();
+    return wrap;
 }
 
 function buildImageViewer() {
@@ -3976,6 +4512,8 @@ function previewFile(filePath, fileName) {
             audioRateTag.className = 'media-rate-below';
             audioWrap.appendChild(audioEl);
             audioWrap.appendChild(audioRateTag);
+            var plWrapC = setupAudioPlaylist(audioEl, filePath, audioRateTag);
+            if (plWrapC) audioWrap.appendChild(plWrapC);
             content.appendChild(audioWrap);
             audioEl.addEventListener('play', function() { startedPlaying = true; });
             // 用户与控制条任何交互（播放/拖进度/调音量）即停止换源：
@@ -4047,11 +4585,12 @@ function previewFile(filePath, fileName) {
             msgDiv.className = 'message error';
             msgDiv.textContent = '无法加载文件分片';
             content.appendChild(msgDiv);
-        }, function(pct, speed) {
+        }, function(pct, speed, chanSpeeds, eta) {
             if (pct !== null) {
-                loadingDiv.textContent = '加载中 ' + pct + '%' + (speed ? ' · ' + speed : '');
+                loadingDiv.textContent = '加载中 ' + pct + '%' + (speed ? ' · ' + speed : '') + (eta ? ' · 预计剩余 ' + eta : '');
             }
-            if (audioRateTag && speed) audioRateTag.textContent = speed;
+            // 速率标签展示各通道（EO/CF/外部）各自速度
+            if (audioRateTag && (chanSpeeds || speed)) audioRateTag.textContent = chanSpeeds || speed;
         }, function onPart(prefix, buffers) {
             if (!isAudioPreview || startedPlaying || !audioEl) return;
             var u = URL.createObjectURL(new Blob(buffers.slice(0, prefix)));
@@ -4091,7 +4630,8 @@ function previewFile(filePath, fileName) {
         rateBox.style.position = 'relative';
         var abortProbe = function() {
             if (previewProbe) {
-                try { previewProbe.abort(); } catch (e) {}
+                var probes = Array.isArray(previewProbe) ? previewProbe.slice() : [previewProbe];
+                probes.forEach(function(x) { try { x.abort(); } catch (e) {} });
                 previewProbe = null;
             }
         };
@@ -4115,7 +4655,7 @@ function previewFile(filePath, fileName) {
                 // 流式失败回退为浏览器直连加载
                 previewAbort = null;
                 mediaEl.src = previewUrl;
-            });
+            }, filePath);
             if (!streamed) mediaEl.src = previewUrl;
         } else {
             mediaEl.addEventListener('canplay', function() { loadingDiv.style.display = 'none'; });
@@ -4133,7 +4673,7 @@ function previewFile(filePath, fileName) {
             probeMediaSpeed(previewUrl, function(s) {
                 speedText = s;
                 updateTag();
-            });
+            }, filePath);
             // 开始播放即停止测速探测：探测与播放器同时拉同一文件会争抢带宽，
             // 导致起播卡顿（探测值已拿到或不再需要）
             mediaEl.addEventListener('playing', abortProbe, { once: true });
@@ -4173,6 +4713,11 @@ function previewFile(filePath, fileName) {
             rateBox.appendChild(mediaEl);
         }
         rateBox.appendChild(rateTag);
+        // 音频预览：同目录音乐播放列表（顺序/随机/单曲循环 + 限量预加载）
+        if (AUDIO_EXTS.indexOf(ext) !== -1) {
+            var plWrap = setupAudioPlaylist(mediaEl, filePath, rateTag);
+            if (plWrap) rateBox.appendChild(plWrap);
+        }
         content.appendChild(rateBox);
         if (viewerWrap) {
             imgViewerSetList(collectImageModels(), filePath);
@@ -5086,6 +5631,7 @@ function runParallelDownload(models, label) {
     var lastLoaded = 0;
     var lastTime = Date.now();
     var speedText = '';
+    var etaText = '';
     var saveQueue = [];
     var saveTimer = null;
 
@@ -5101,9 +5647,11 @@ function runParallelDownload(models, label) {
             lastLoaded = sumLoaded();
             lastTime = now;
             speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
+            // ETA 跟随最近采样速度：多通道开关/通道增减时动态变化
+            etaText = totalBytes ? etaTextFromSpeed(totalBytes - sumLoaded(), sp) : '';
         }
         var pct = totalBytes ? Math.min(99, Math.round(sumLoaded() / totalBytes * 100)) : Math.round(doneCount / models.length * 100);
-        updateTaskProgress('正在下载 (' + doneCount + '/' + models.length + ')' + (label ? ' · ' + label : '') + (speedText ? ' · ' + speedText : ''), pct);
+        updateTaskProgress('正在下载 (' + doneCount + '/' + models.length + ')' + (label ? ' · ' + label : '') + (speedText ? ' · ' + speedText : '') + (etaText ? ' · 预计剩余 ' + etaText : ''), pct);
     };
     // 保存队列：浏览器对连续自动下载有限流，串行吐出（间隔 400ms）
     var pumpSave = function() {
@@ -5645,8 +6193,8 @@ var DL_LIMIT_ADAPTIVE_START = 3;
 var dlLimit = { adaptive: true, limit: DL_LIMIT_ADAPTIVE_START };
 
 function dlGetLimit() {
-    // 自适应上限 DL_LIMIT_MAX；手动/自定义允许到 16
-    var cap = dlLimit.adaptive ? DL_LIMIT_MAX : 16;
+    // 自适应上限 DL_LIMIT_MAX；手动/自定义无上限（过大受浏览器单域名连接数限制）
+    var cap = dlLimit.adaptive ? DL_LIMIT_MAX : Infinity;
     return Math.max(DL_LIMIT_MIN, Math.min(cap, dlLimit.limit));
 }
 
@@ -5782,7 +6330,10 @@ function pickDlChannel(exclude) {
             if (c === 'ext') {
                 share = DL_EXT_SHARE;
             } else {
-                share = (1 - DL_EXT_SHARE) * (orate > 0 ? (r0[c] || 0) / orate : 1 / others.length);
+                // 非外部通道保留最低份额地板（各 25%）：零速率通道（如 CF 起步
+                // 无数据）也能持续分到探测任务，不会被 EO 的速率优势永久饿死
+                var ratio = orate > 0 ? (r0[c] || 0) / orate : 1 / others.length;
+                share = (1 - DL_EXT_SHARE) * Math.max(ratio, 0.25);
             }
             var deficit = share * total - act[c];
             if (deficit > bestDeficit) {
@@ -6106,6 +6657,7 @@ function startUpload(doneBases) {
         lastSampleBytes: 0,
         lastSampleTime: Date.now(),
         speedText: '',
+        speedSamples: [],   // 最近 10 秒速度采样窗口（ETA 动态计算用）
         baseTotals: {},
         baseDones: {},
         doneBases: doneBases || {},
@@ -6353,6 +6905,10 @@ function runUploadTask(task, done) {
         attempt++;
         task.loadedBytes = 0;
         task.startTime = Date.now();
+        task._lastProgAt = Date.now();
+        // 读盘阶段无网络句柄：清空旧 xhr 引用与看门狗标记，防止误中止/误重试
+        task.xhr = null;
+        task._wdAbort = false;
         // 优先消费预读缓存：读盘/base64 已提前完成，槽位全程用于网络传输
         readTaskContent(st, task, function(base64Content, readErr) {
             if (st.cancelled) {
@@ -6443,6 +6999,7 @@ function runUploadTask(task, done) {
                     st.bytesDone += delta;
                     stAddChanBytes(st, task.chan, delta);
                     task.loadedBytes = loaded;
+                    task._lastProgAt = Date.now();
                     updateUploadProgressUI();
                 },
                 undefined, task.chan, task);
@@ -6570,6 +7127,10 @@ function sampleUploadSpeed() {
     st._cfRate = cfSpeed;
     st._extRate = extSpeed;
     st.speedText = speed > 1024 ? formatSize(Math.round(speed)) + '/s' : '';
+    // 维护最近 10 秒速度采样窗口，ETA 随多通道吞吐变化动态调整
+    if (!st.speedSamples) st.speedSamples = [];
+    st.speedSamples.push(speed);
+    if (st.speedSamples.length > 10) st.speedSamples.shift();
     // 速度曲线采样：总/EO/CF/外部 序列（保留最近 SPEED_HISTORY_MAX 秒）
     uploadSpeedHist.tot.push(speed);
     uploadSpeedHist.eo.push(eoSpeed);
@@ -6588,6 +7149,20 @@ function sampleUploadSpeed() {
         var chunkSpeed = ((t.loadedBytes || 0) - (t.sampledBytes || 0)) / dt;
         t.sampledBytes = t.loadedBytes || 0;
         t.speedText = chunkSpeed > 1024 ? formatSize(Math.round(chunkSpeed)) + '/s' : '';
+    }
+    // 停滞看门狗：12 秒无任何上传进度即中止换源——部分外部代理对 POST
+    // 只接不发（连接挂起不报错），在途槽位会被长期占住，表现为"分到了
+    // 任务却迟迟不上传"；中止后按失败重试逻辑换代理/通道重传
+    for (var key2 in st.activeTasks) {
+        var t2 = st.activeTasks[key2];
+        if (!t2.xhr) continue;
+        var lastProg = t2._lastProgAt || t2.startTime || now;
+        if (now - lastProg > 12000) {
+            t2._wdAbort = true;
+            if (t2.chan === 'ext') extNoteFail(t2._extBase);
+            try { t2.xhr.abort(); } catch (e) {}
+            t2._lastProgAt = now;   // 避免每秒重复中止同一任务
+        }
     }
     updateUploadProgressUI();
     renderChunkPanel();
@@ -6635,9 +7210,19 @@ function renderChunkPanel() {
 function estimateEtaText() {
     var st = uploadState;
     if (!st || !st.doneCount) return '';
-    var elapsed = (Date.now() - st.startTime) / 1000;
-    if (elapsed <= 0) return '';
-    var speed = st.bytesDone / elapsed;
+    // 优先用最近 10 秒采样窗口的实测速度：多通道开关/通道增减时吞吐会
+    // 动态变化，全程平均会让 ETA 严重滞后；窗口无数据时回退全程平均
+    var speed = 0;
+    if (st.speedSamples && st.speedSamples.length) {
+        var sum = 0;
+        for (var i = 0; i < st.speedSamples.length; i++) sum += st.speedSamples[i];
+        speed = sum / st.speedSamples.length;
+    }
+    if (speed <= 0) {
+        var elapsed = (Date.now() - st.startTime) / 1000;
+        if (elapsed <= 0) return '';
+        speed = st.bytesDone / elapsed;
+    }
     var totalBytes = 0;
     uploadTasks.forEach(function(t) { totalBytes += t.blob.size; });
     var remainingBytes = Math.max(0, totalBytes - st.bytesDone);
@@ -6648,11 +7233,7 @@ function estimateEtaText() {
     var eta = transferTime
         + remainingTasks * avgSmallLatency * st.smallRatio / Math.max(1, st.limit)
         + conflictRate * remainingTasks * 3;
-    if (!isFinite(eta) || eta < 1) return '';
-    var m = Math.floor(eta / 60);
-    var s = Math.round(eta % 60);
-    if (m > 59) return Math.floor(m / 60) + '小时' + (m % 60) + '分';
-    return (m > 0 ? m + '分' : '') + s + '秒';
+    return formatEtaText(eta);
 }
 
 function updateUploadProgressUI() {
@@ -6708,6 +7289,8 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
     if (chan === 'eo') applyEoAuth(xhr);
     if (chan === 'ext') xhr.setRequestHeader('Authorization', 'token ' + ulGitKey);
     xhr.setRequestHeader('Content-Type', 'application/json');
+    // 部分外部代理对 POST 只接不发（连接挂起）：超时兜底，避免任务永久卡住
+    xhr.timeout = 60000;
     xhr.upload.onprogress = function(e) {
         if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
@@ -6730,18 +7313,40 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
         // 5xx/429 等服务端临时错误按网络错误重试；4xx 直接失败
         if ((xhr.status >= 500 || xhr.status === 429) && retries > 0) {
             setTimeout(function() {
-                putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries - 1, chan, task);
+                retryInPlace();
             }, 1000);
             return;
         }
         onError(xhr.status, xhr.responseText);
     };
+    // 重试产生的新 xhr 挂回 task.xhr：停滞看门狗与停止上传才能中止后续重试
+    var retryInPlace = function() {
+        var x2 = putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries - 1, chan, task);
+        if (task && x2) task.xhr = x2;
+    };
     xhr.onerror = function() {
         if (retries > 0) {
-            setTimeout(function() {
-                putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries - 1, chan, task);
-            }, 1000 * (4 - retries));
+            setTimeout(retryInPlace, 1000 * (4 - retries));
             return;
+        }
+        onError(0, '');
+    };
+    xhr.ontimeout = function() {
+        // 代理挂起导致的超时按网络错误换源重试
+        if (retries > 0) {
+            setTimeout(retryInPlace, 1000 * (4 - retries));
+            return;
+        }
+        onError(0, '');
+    };
+    xhr.onabort = function() {
+        // 停滞看门狗主动中止：按网络错误换源重试；用户停止上传时不重试
+        if (task && task._wdAbort) {
+            task._wdAbort = false;
+            if (retries > 0) {
+                setTimeout(retryInPlace, 800);
+                return;
+            }
         }
         onError(0, '');
     };
@@ -6927,6 +7532,11 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     document.getElementById('taskProgressCancel').addEventListener('click', function() {
         if (taskProgressCancelFn) taskProgressCancelFn();
+    });
+    // 点击页面其他位置关闭用户头像二级菜单
+    document.addEventListener('click', function(e) {
+        var w = document.getElementById('userMenuWrap');
+        if (w && !w.contains(e.target)) closeUserMenu();
     });
     document.getElementById('taskDlConc').addEventListener('change', function() {
         var custom = this.value === 'custom';
