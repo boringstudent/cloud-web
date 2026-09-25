@@ -64,9 +64,10 @@ const FILE_PATH = 'user.json';
 const GITHUB_KEY = '__GITHUB_KEY__';
 // user.json 格式：
 // {
-//   "boring_student": { "password": "<sha512>", "role": "admin" },
+//   "boring_student": { "password": "<sha512>", "role": "admin", "avatar": "https://..." },
 //   "fx":             { "password": "<sha512>", "role": "user" }
 // }
+// avatar 为可选头像 URL（与密码同一记录），登录时随 /api/login 响应下发
 
 // 允许经本函数代理访问 GitHub 的存储仓库白名单（owner/repo，小写比较）。
 // 前端网盘的文件读写、下载中转全部限制在这些仓库内；其余仓库一律 403。
@@ -204,7 +205,8 @@ async function handleRequest(request) {
       return json({
         success: true,
         username,
-        role: account.role || 'user'
+        role: account.role || 'user',
+        avatar: account.avatar || ''   // 头像 URL 与密码同一记录，随登录下发
       });
     }
 
@@ -228,6 +230,35 @@ async function handleRequest(request) {
         }
         account.password = new_password;   // 只改这一个字段
         return { success: true, username };
+      });
+      return json(result);
+    }
+
+    // ---------- 3.5 用户自助修改头像 ----------
+    // avatar 为图片 URL（http/https，最长 300 字符），空字符串表示清除自定义头像；
+    // 存放在 user.json 与密码同一记录，登录时随 /api/login 响应下发
+    if (path === '/api/change-avatar') {
+      const { username, password, avatar } = await parseBody(request);
+      if (!username || !password) {
+        return json({ error: 'Missing username or password' }, 400);
+      }
+      if (!isSha512Hex(password)) {
+        return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
+      }
+      const av = (avatar === undefined || avatar === null) ? '' : String(avatar).trim();
+      if (av.length > 300) return json({ error: 'avatar URL too long (max 300)' }, 400);
+      if (av && !/^https?:\/\//i.test(av)) {
+        return json({ error: 'avatar must be an http(s) URL' }, 400);
+      }
+
+      const result = await mutateUsers(`change avatar: ${username}`, users => {
+        const account = users[username];
+        if (!account || account.password !== password) {
+          throw new ApiError(401, 'Invalid credentials');
+        }
+        if (av) account.avatar = av;         // 只改这一个字段
+        else delete account.avatar;
+        return { success: true, username, avatar: av };
       });
       return json(result);
     }
@@ -266,22 +297,28 @@ async function handleRequest(request) {
         const { users } = await readUsersFile();
         const masked = {};
         for (const name of Object.keys(users)) {
-          masked[name] = { password: '***', role: users[name].role || 'user' };
+          masked[name] = { password: '***', role: users[name].role || 'user', avatar: users[name].avatar || '' };
         }
         return json({ users: masked });
       }
 
-      // 添加用户（password 为前端算好的 SHA-512 哈希，直接存储）
+      // 添加用户（password 为前端算好的 SHA-512 哈希，直接存储；avatar 可选）
       if (path === '/api/users' && request.method === 'POST') {
-        const { username, password, role } = body;
+        const { username, password, role, avatar } = body;
         if (!username || !password) return json({ error: 'Missing username or password' }, 400);
         if (!isSha512Hex(password)) {
           return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
         }
         const newRole = (role === 'admin') ? 'admin' : 'user';
+        const newAvatar = avatar ? String(avatar).trim() : '';
+        if (newAvatar && (newAvatar.length > 300 || !/^https?:\/\//i.test(newAvatar))) {
+          return json({ error: 'avatar must be an http(s) URL (max 300 chars)' }, 400);
+        }
         const result = await mutateUsers(`add user: ${username} (${newRole})`, users => {
           if (users[username]) throw new ApiError(409, 'User already exists');
-          users[username] = { password, role: newRole };   // 只加这一个键
+          users[username] = newAvatar
+            ? { password, role: newRole, avatar: newAvatar }   // 只加这一个键
+            : { password, role: newRole };
           return { success: true, username, role: newRole };
         });
         return json(result);
@@ -292,15 +329,26 @@ async function handleRequest(request) {
       if (!target) return json({ error: 'Missing username' }, 400);
 
       if (request.method === 'PUT' || request.method === 'PATCH') {
-        const { password, role } = body;
-        if (!password && !role) return json({ error: 'Nothing to update (password/role)' }, 400);
+        const { password, role, avatar } = body;
+        if (!password && !role && avatar === undefined) return json({ error: 'Nothing to update (password/role/avatar)' }, 400);
         if (password && !isSha512Hex(password)) {
           return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
+        }
+        if (avatar !== undefined) {
+          const av = String(avatar || '').trim();
+          if (av && (av.length > 300 || !/^https?:\/\//i.test(av))) {
+            return json({ error: 'avatar must be an http(s) URL (max 300 chars)' }, 400);
+          }
         }
         const result = await mutateUsers(`update user: ${target}`, users => {
           if (!users[target]) throw new ApiError(404, 'User not found');
           if (password) users[target].password = password;                 // 只改密码
           if (role) users[target].role = (role === 'admin') ? 'admin' : 'user'; // 只改角色
+          if (avatar !== undefined) {
+            const av = String(avatar || '').trim();
+            if (av) users[target].avatar = av;                             // 只改头像
+            else delete users[target].avatar;
+          }
           return { success: true, username: target, role: users[target].role };
         });
         return json(result);
@@ -331,10 +379,11 @@ async function handleRequest(request) {
           'GET/HEAD /api/my-ip         (服务器出口 IP 信息；HEAD 用于 RTT 测量)',
           'GET/POST /api/login?username=xxx&password=<sha512>',
           'POST   /api/change-password  {username, password:<sha512>, new_password:<sha512>}',
+          'POST   /api/change-avatar    {username, password:<sha512>, avatar}',
           'POST   /api/delete-account   {username, password:<sha512>}',
           'GET    /api/users            (admin, admin_pass:<sha512>)',
-          'POST   /api/users            {admin_user, admin_pass:<sha512>, username, password:<sha512>, role}',
-          'PUT    /api/users/:username  {admin_user, admin_pass:<sha512>, password?:<sha512>, role?}',
+          'POST   /api/users            {admin_user, admin_pass:<sha512>, username, password:<sha512>, role, avatar?}',
+          'PUT    /api/users/:username  {admin_user, admin_pass:<sha512>, password?:<sha512>, role?, avatar?}',
           'DELETE /api/users/:username  {admin_user, admin_pass:<sha512>}',
           'GET    /api/bg               (页面背景图中转)',
           '*      /api.github.com/<path>           (GitHub REST API 代理，限白名单仓库)',

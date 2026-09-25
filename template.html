@@ -173,6 +173,12 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeAccountModal()">&times;</span>
                 <h2>我的账户</h2>
+                <h3 class="modal-section">头像</h3>
+                <div class="form-group">
+                    <label>头像 URL（留空使用默认图标）</label>
+                    <input type="text" id="avUrl" placeholder="https://...">
+                </div>
+                <button class="btn" onclick="changeOwnAvatar()" id="avBtn" style="width: 100%; background: #16a085;">保存头像</button>
                 <h3 class="modal-section">修改密码</h3>
                 <div class="form-group">
                     <label>当前密码</label>
@@ -223,6 +229,10 @@
                         <option value="user" selected>user</option>
                         <option value="admin">admin</option>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label>头像 URL（可选）</label>
+                    <input type="text" id="adminNewAvatar" placeholder="https://...">
                 </div>
                 <button class="btn" onclick="adminAddUser()" id="adminAddBtn" style="width: 100%;">添加用户</button>
                 <div id="adminMessage" class="message"></div>

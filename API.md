@@ -81,8 +81,10 @@ GET /api/gitkey        （带 X-Auth-User / X-Auth-Pass 头，admin）
 
 ```
 GET /api/login?username=fx&password=<sha512哈希>
-→ { "success": true, "username": "fx", "role": "user" }
+→ { "success": true, "username": "fx", "role": "user", "avatar": "https://..." }
 ```
+
+`avatar` 为可选头像 URL（存放在 user.json 与密码同一记录），未设置时为空字符串。
 
 ### `POST /api/change-password`
 
@@ -91,6 +93,15 @@ GET /api/login?username=fx&password=<sha512哈希>
 ```json
 { "username": "fx", "password": "<旧密码sha512>", "new_password": "<新密码sha512>" }
 → { "success": true, "username": "fx" }
+```
+
+### `POST /api/change-avatar`
+
+用户自助修改自己的头像 URL（http/https，最长 300 字符；空字符串表示清除自定义头像）。
+
+```json
+{ "username": "fx", "password": "<sha512>", "avatar": "https://example.com/a.jpg" }
+→ { "success": true, "username": "fx", "avatar": "https://example.com/a.jpg" }
 ```
 
 ### `POST /api/delete-account`
@@ -116,24 +127,24 @@ GET 从 query 读取，其余方法从 body 读取；`admin_pass` 为管理员�
 
 ```
 GET /api/users?admin_user=boss&admin_pass=<sha512哈希>
-→ { "users": { "boss": { "password": "***", "role": "admin" } } }
+→ { "users": { "boss": { "password": "***", "role": "admin", "avatar": "https://..." } } }
 ```
 
 ### `POST /api/users`
 
-添加用户。新用户密码传 SHA-512 哈希，服务端直接存储。
+添加用户。新用户密码传 SHA-512 哈希，服务端直接存储；`avatar` 可选。
 
 ```json
-{ "admin_user": "boss", "admin_pass": "<sha512>", "username": "fx", "password": "<sha512>", "role": "user" }
+{ "admin_user": "boss", "admin_pass": "<sha512>", "username": "fx", "password": "<sha512>", "role": "user", "avatar": "https://..." }
 → { "success": true, "username": "fx", "role": "user" }
 ```
 
 ### `PUT/PATCH /api/users/:username`
 
-修改指定用户的密码和/或角色（至少传一项）。
+修改指定用户的密码、角色和/或头像（至少传一项；`avatar` 传空字符串表示清除）。
 
 ```json
-{ "admin_user": "boss", "admin_pass": "<sha512>", "password": "<新sha512>", "role": "admin" }
+{ "admin_user": "boss", "admin_pass": "<sha512>", "password": "<新sha512>", "role": "admin", "avatar": "https://..." }
 → { "success": true, "username": "fx", "role": "admin" }
 ```
 

@@ -467,6 +467,14 @@ function bindAudioVolume(audioEl) {
     });
 }
 
+// 中止全部测速探测请求（previewProbe 兼容单请求与请求数组）
+function abortPreviewProbes() {
+    if (!previewProbe) return;
+    var probes = Array.isArray(previewProbe) ? previewProbe.slice() : [previewProbe];
+    probes.forEach(function(x) { try { x.abort(); } catch (e) {} });
+    previewProbe = null;
+}
+
 // 关闭/切换预览时停止媒体继续缓冲、中断进行中的流式读取与测速探测，避免后台浪费带宽
 function stopPreviewMedia() {
     teardownAudioPlaylist();
@@ -474,11 +482,7 @@ function stopPreviewMedia() {
         try { previewAbort.abort(); } catch (e) {}
         previewAbort = null;
     }
-    if (previewProbe) {
-        var probes = Array.isArray(previewProbe) ? previewProbe.slice() : [previewProbe];
-        probes.forEach(function(x) { try { x.abort(); } catch (e) {} });
-        previewProbe = null;
-    }
+    abortPreviewProbes();
     if (previewMerge) {
         previewMerge.cancel();
         previewMerge = null;
@@ -515,10 +519,10 @@ var AUTH_STORAGE_KEY = 'cloud_web_auth';
 var REMEMBER_STORAGE_KEY = 'cloud_web_remember';
 var sessionAuth = null;
 
-function saveAuth(username, hash, role) {
+function saveAuth(username, hash, role, avatar) {
     try {
         localStorage.setItem(AUTH_STORAGE_KEY, btoa(unescape(encodeURIComponent(JSON.stringify({
-            v: 2, u: username, h: hash, role: role || 'user'
+            v: 2, u: username, h: hash, role: role || 'user', avatar: avatar || ''
         })))));
     } catch (e) {}
 }
@@ -691,10 +695,11 @@ function loginWithHash(username, pwHash, persist, cb) {
             return;
         }
         var role = data.role || 'user';
+        var avatar = data.avatar || '';
         if (persist) {
-            saveAuth(username, pwHash, role);
+            saveAuth(username, pwHash, role, avatar);
         } else {
-            sessionAuth = { v: 2, u: username, h: pwHash, role: role };
+            sessionAuth = { v: 2, u: username, h: pwHash, role: role, avatar: avatar };
         }
         updateAuthBtn();
         cb(null, pwHash);
@@ -752,24 +757,26 @@ function initPwdEyes() {
     }
 }
 
-// ---- 用户头像：按用户名映射头像 URL，未配置时显示默认人像图标 ----
+// ---- 用户头像：优先使用 user.json 中保存的头像 URL（随登录下发，存于本地凭据），
+// 其次按用户名内置映射兜底，都没有时显示默认人像图标 ----
 var USER_AVATAR_MAP = {
     'boringstudent': 'https://q.qlogo.cn/headimg_dl?dst_uin=1972403603&spec=640&img_type=jpg',
     'fx': 'https://q.qlogo.cn/headimg_dl?dst_uin=251104925&spec=640&img_type=jpg'
 };
 var USER_AVATAR_DEFAULT_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
 
-function userAvatarUrl(username) {
-    return USER_AVATAR_MAP[username] || null;
+function userAvatarUrl(saved) {
+    if (!saved) return null;
+    return saved.avatar || USER_AVATAR_MAP[saved.u] || null;
 }
 
 function renderUserAvatar() {
     var btn = document.getElementById('userAvatarBtn');
     if (!btn) return;
     var saved = getSavedAuth();
-    var url = saved ? userAvatarUrl(saved.u) : null;
+    var url = userAvatarUrl(saved);
     btn.innerHTML = '';
-    if (url) {
+    if (url && saved) {
         var img = document.createElement('img');
         img.alt = saved.u;
         img.referrerPolicy = 'no-referrer';
@@ -887,7 +894,7 @@ function logout() {
     loginPwd._rememberedHash = null;
 }
 
-// ---- Self-service account (change password / delete account) ----
+// ---- Self-service account (change password / avatar / delete account) ----
 function openAccountModal() {
     document.getElementById('accountMessage').className = 'message';
     document.getElementById('accountMessage').textContent = '';
@@ -895,11 +902,50 @@ function openAccountModal() {
     document.getElementById('cpNew').value = '';
     document.getElementById('cpConfirm').value = '';
     document.getElementById('daPassword').value = '';
+    var auth = getSavedAuth();
+    var avatarInput = document.getElementById('avUrl');
+    if (avatarInput) avatarInput.value = (auth && auth.avatar) || '';
     document.getElementById('accountModal').classList.add('show');
 }
 
 function closeAccountModal() {
     document.getElementById('accountModal').classList.remove('show');
+}
+
+// 自助修改头像 URL（存到 user.json 与密码同一记录，下次登录随响应下发）
+function changeOwnAvatar() {
+    var auth = getSavedAuth();
+    if (!auth) {
+        setMsg('accountMessage', '请先登录', 'error');
+        return;
+    }
+    var avatar = document.getElementById('avUrl').value.trim();
+    if (avatar && !/^https?:\/\//i.test(avatar)) {
+        setMsg('accountMessage', '头像 URL 必须以 http:// 或 https:// 开头', 'error');
+        return;
+    }
+    var btn = document.getElementById('avBtn');
+    btn.disabled = true;
+    setMsg('accountMessage', '正在保存头像...', 'success');
+    apiSendJson('POST', API_BASE + '/api/change-avatar', {
+        username: auth.u,
+        password: auth.h,
+        avatar: avatar
+    }, function(err) {
+        btn.disabled = false;
+        if (err) {
+            setMsg('accountMessage', '头像保存失败: ' + err, 'error');
+            return;
+        }
+        // 更新本地凭据中的头像并立即刷新右上角显示
+        if (sessionAuth) {
+            sessionAuth.avatar = avatar;
+        } else {
+            saveAuth(auth.u, auth.h, auth.role, avatar);
+        }
+        renderUserAvatar();
+        setMsg('accountMessage', avatar ? '头像已保存！' : '已清除自定义头像（使用默认图标）', 'success');
+    });
 }
 
 function validateNewPassword(p) {
@@ -960,9 +1006,9 @@ function changeOwnPassword() {
                 }
                 // refresh stored credentials with the locally computed new password hash
                 if (sessionAuth) {
-                    sessionAuth = { v: 2, u: auth.u, h: newHash, role: auth.role };
+                    sessionAuth = { v: 2, u: auth.u, h: newHash, role: auth.role, avatar: auth.avatar || '' };
                 } else {
-                    saveAuth(auth.u, newHash, auth.role);
+                    saveAuth(auth.u, newHash, auth.role, auth.avatar || '');
                 }
                 if (getRemember()) {
                     saveRemember(auth.u, newHash);
@@ -1154,6 +1200,8 @@ function adminAddUser() {
     var username = document.getElementById('adminNewUsername').value.trim();
     var password = document.getElementById('adminNewPassword').value;
     var role = document.getElementById('adminNewRole').value;
+    var avatar = (document.getElementById('adminNewAvatar') || {}).value || '';
+    avatar = avatar.trim();
     if (!username || !password) {
         setMsg('adminMessage', '请输入用户名和密码', 'error');
         return;
@@ -1179,7 +1227,8 @@ function adminAddUser() {
                 admin_pass: creds.admin_pass,
                 username: username,
                 password: pwHash,
-                role: role
+                role: role,
+                avatar: avatar
             };
             apiSendJson('POST', API_BASE + '/api/users', body, function(err2) {
                 btn.disabled = false;
@@ -1190,6 +1239,7 @@ function adminAddUser() {
                 setMsg('adminMessage', '添加成功: ' + username, 'success');
                 document.getElementById('adminNewUsername').value = '';
                 document.getElementById('adminNewPassword').value = '';
+                if (document.getElementById('adminNewAvatar')) document.getElementById('adminNewAvatar').value = '';
                 loadAdminUsers();
             });
         });
@@ -1298,13 +1348,14 @@ document.addEventListener('visibilitychange', function() {
     }
 });
 
-// ---- service status: EO 边缘函数单点检测（页面/API/代理同体），每 10 min 刷新 ----
+// ---- service status: EO 边缘函数 + Git 外部直连 + CF 加速通道三路检测，每 10 min 刷新 ----
 // RTT 用 HEAD 轻量请求测量：不含响应体传输与服务端地理查询耗时，更接近真实网络延迟
 var SVC_CHECK_INTERVAL = 10 * 60 * 1000;
-var svcStatus = { api: null };
+var svcStatus = { api: null, git: null, cf: null };
 var svcChecking = false;
 var svcCheckGen = 0;    // 代数令牌：被取代的旧检测回调一律忽略
 var svcCheckXhrs = [];  // 当前轮次在途请求，供强制重检时中止
+var svcExpanded = false; // 角标点击展开/折叠三路详情面板
 
 // 浏览器无法 ICMP ping，以请求往返时间（RTT）作为延时
 function measureRtt(url, cb) {
@@ -1365,26 +1416,53 @@ function checkOneService(url, cb) {
     return [rttXhr, xhr];
 }
 
-var svcFadeTimer = null;   // 检测完成后延迟淡出的计时器
+// 通用可达性探测：GET 小 JSON，2xx/3xx 视为正常并记录 RTT（Git 外部/CF 通道用）
+function checkPlainService(url, cb) {
+    var xhr = new XMLHttpRequest();
+    var startTs = performance.now();
+    var done = function(res) {
+        if (done.called) return;
+        done.called = true;
+        cb(res);
+    };
+    var timer = setTimeout(function() { xhr.abort(); done({ ok: false }); }, 15000);
+    xhr.open('GET', url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now(), true);
+    xhr.setRequestHeader('Cache-Control', 'no-cache');
+    xhr.onload = function() {
+        clearTimeout(timer);
+        done({ ok: xhr.status >= 200 && xhr.status < 400, rtt: Math.round(performance.now() - startTs) });
+    };
+    xhr.onerror = function() { clearTimeout(timer); done({ ok: false }); };
+    xhr.onabort = function() { clearTimeout(timer); done({ ok: false }); };
+    xhr.send();
+    return xhr;
+}
 
 function renderSvcStatus() {
     var el = document.getElementById('svcStatus');
     var text = document.getElementById('svcStatusText');
     var tip = document.getElementById('svcStatusTip');
-    var a = svcStatus.api;
-    if (svcFadeTimer) {
-        clearTimeout(svcFadeTimer);
-        svcFadeTimer = null;
-    }
-    if (!a) {
-        el.className = 'svc-status';
+    var a = svcStatus.api, g = svcStatus.git, c = svcStatus.cf;
+    // 角标常驻不淡出；点击展开/折叠三路详情
+    if (!a && !g && !c) {
+        el.className = 'svc-status' + (svcExpanded ? ' expanded' : '');
         text.textContent = '服务检测中…';
+        tip.textContent = '';
         return;
     }
-    el.className = 'svc-status ' + (a.ok ? 'ok' : 'fail');
-    text.textContent = a.ok ? '服务正常' : '服务异常';
+    var doneCount = 0, badCount = 0;
+    [a, g, c].forEach(function(r) {
+        if (r) {
+            doneCount++;
+            if (!r.ok) badCount++;
+        }
+    });
+    el.className = 'svc-status ' + (badCount ? 'fail' : 'ok') + (svcExpanded ? ' expanded' : '');
+    text.textContent = doneCount < 3 ? '服务检测中…' : (badCount ? '服务异常 ×' + badCount : '服务正常');
     tip.textContent = '';
     addSvcTipLine(tip, 'EO 边缘函数', '', a);
+    addSvcTipLine(tip, 'Git 外部', '', g);
+    addSvcTipLine(tip, 'CF 加速', '', c);
     var timeDiv = document.createElement('div');
     var timeLabel = document.createElement('span');
     timeLabel.className = 'svc-name';
@@ -1392,10 +1470,18 @@ function renderSvcStatus() {
     timeDiv.appendChild(timeLabel);
     timeDiv.appendChild(document.createTextNode(new Date().toLocaleTimeString()));
     tip.appendChild(timeDiv);
-    // 检测完成 4 秒后角标淡出为半透明（悬停恢复），减少常驻视觉干扰
-    svcFadeTimer = setTimeout(function() {
-        el.classList.add('faded');
-    }, 4000);
+    // 面板内重新检测按钮（角标本体点击只负责展开/折叠）
+    var reDiv = document.createElement('div');
+    var reBtn = document.createElement('button');
+    reBtn.type = 'button';
+    reBtn.className = 'svc-recheck-btn';
+    reBtn.textContent = '重新检测';
+    reBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        checkSvcStatus(true);
+    });
+    reDiv.appendChild(reBtn);
+    tip.appendChild(reDiv);
 }
 
 function addSvcTipLine(tip, name, addr, st) {
@@ -1425,7 +1511,8 @@ function addSvcTipLine(tip, name, addr, st) {
     tip.appendChild(div);
 }
 
-// force=true（手动点击）时中止上一轮未完成的检测立即重来；定时轮询不重入
+// force=true（手动重检）时中止上一轮未完成的检测立即重来；定时轮询不重入。
+// 三路并行检测：EO 边缘函数（含 IP/归属地/ISP）、Git 外部直连、CF 加速通道
 function checkSvcStatus(force) {
     if (svcChecking) {
         if (!force) return;
@@ -1436,16 +1523,36 @@ function checkSvcStatus(force) {
     }
     svcChecking = true;
     var gen = svcCheckGen;
-    // 立即重置为“检测中”，点击重新检测时才有即时反馈（否则角标保持旧状态看似没反应）
+    // 立即重置为“检测中”，重新检测时才有即时反馈（否则角标保持旧状态看似没反应）
     svcStatus.api = null;
+    svcStatus.git = null;
+    svcStatus.cf = null;
     renderSvcStatus();
+    var pending = 3;
+    var finish = function() {
+        if (gen !== svcCheckGen) return;
+        pending--;
+        if (pending <= 0) {
+            svcChecking = false;
+            svcCheckXhrs = [];
+        }
+        renderSvcStatus();
+    };
     svcCheckXhrs = checkOneService(API_BASE + '/api/my-ip', function(res) {
         if (gen !== svcCheckGen) return;
-        svcChecking = false;
-        svcCheckXhrs = [];
         svcStatus.api = res;
-        renderSvcStatus();
+        finish();
     });
+    svcCheckXhrs.push(checkPlainService('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, function(res) {
+        if (gen !== svcCheckGen) return;
+        svcStatus.git = res;
+        finish();
+    }));
+    svcCheckXhrs.push(checkPlainService(CF_PROXY_BASE + 'api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, function(res) {
+        if (gen !== svcCheckGen) return;
+        svcStatus.cf = res;
+        finish();
+    }));
 }
 
 setInterval(function() {
@@ -1871,6 +1978,13 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
         var watchdog = setInterval(function() {
             if (Date.now() - seg._lastRecvAt > 15000) {
                 try { ctrl.abort(); } catch (e) {}
+                return;
+            }
+            // 慢速换源：当前速率远低于本通道历史峰值时中止换源（段级最多 2 次，
+            // 且受单段最大尝试次数约束，不会死循环；小分段/起步期不判定）
+            if (dlChanIsSlow(chan, seg.received, Date.now() - seg.t0, seg._slowSwitches)) {
+                seg._slowSwitches = (seg._slowSwitches || 0) + 1;
+                try { ctrl.abort(); } catch (e) {}
             }
         }, 3000);
         fetch(url, { signal: ctrl.signal, cache: 'no-store', headers: headers }).then(function(resp) {
@@ -1900,6 +2014,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
                         dlChanDec(chan);
                         releaseBudget(seg);
                         if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
+                        dlChanNotePeak(chan, seg.received, Date.now() - (seg.t0 || Date.now()));
                         dlAdaptiveSuccess(Date.now() - (seg.t0 || Date.now()));
                         checkAll();
                         pumpSegs();
@@ -1987,14 +2102,6 @@ var CRC32_TABLE = (function() {
     }
     return t;
 })();
-
-function crc32(bytes) {
-    var c = 0xFFFFFFFF;
-    for (var i = 0; i < bytes.length; i++) {
-        c = CRC32_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
-    }
-    return (c ^ 0xFFFFFFFF) >>> 0;
-}
 
 // 分段 CRC（携带中间态）：异步打包按片计算，片间让出主线程避免界面卡死
 function crc32Chunk(bytes, from, to, c) {
@@ -2089,58 +2196,6 @@ function buildZipBlobAsync(entries, onProgress, isCancelled, onDone) {
     processEntry();
 }
 
-// entries: [{name: zip 内路径（UTF-8，保留子目录结构）, data: Uint8Array}]
-function buildZipBlob(entries) {
-    var encoder = new TextEncoder();
-    var now = new Date();
-    var dosTime = ((now.getHours() & 0x1F) << 11) | ((now.getMinutes() & 0x3F) << 5) | (Math.floor(now.getSeconds() / 2) & 0x1F);
-    var dosDate = (((now.getFullYear() - 1980) & 0x7F) << 9) | (((now.getMonth() + 1) & 0xF) << 5) | (now.getDate() & 0x1F);
-    var parts = [];
-    var central = [];
-    var offset = 0;
-    entries.forEach(function(e) {
-        var nameBytes = encoder.encode(e.name);
-        var crc = crc32(e.data);
-        var size = e.data.length;
-        var lh = new DataView(new ArrayBuffer(30));
-        lh.setUint32(0, 0x04034b50, true);   // local file header
-        lh.setUint16(4, 20, true);
-        lh.setUint16(6, 0x0800, true);       // UTF-8 文件名
-        lh.setUint16(8, 0, true);            // store
-        lh.setUint16(10, dosTime, true);
-        lh.setUint16(12, dosDate, true);
-        lh.setUint32(14, crc, true);
-        lh.setUint32(18, size, true);
-        lh.setUint32(22, size, true);
-        lh.setUint16(26, nameBytes.length, true);
-        lh.setUint16(28, 0, true);
-        parts.push(new Uint8Array(lh.buffer), nameBytes, e.data);
-        var ch = new DataView(new ArrayBuffer(46));
-        ch.setUint32(0, 0x02014b50, true);   // central directory header
-        ch.setUint16(4, 20, true);
-        ch.setUint16(6, 20, true);
-        ch.setUint16(8, 0x0800, true);
-        ch.setUint16(10, 0, true);
-        ch.setUint16(12, dosTime, true);
-        ch.setUint16(14, dosDate, true);
-        ch.setUint32(16, crc, true);
-        ch.setUint32(20, size, true);
-        ch.setUint32(24, size, true);
-        ch.setUint16(28, nameBytes.length, true);
-        ch.setUint32(42, offset, true);
-        central.push(new Uint8Array(ch.buffer), nameBytes);
-        offset += 30 + nameBytes.length + size;
-    });
-    var cdSize = 0;
-    central.forEach(function(p) { cdSize += p.length; });
-    var end = new DataView(new ArrayBuffer(22));
-    end.setUint32(0, 0x06054b50, true);      // end of central directory
-    end.setUint16(8, entries.length, true);
-    end.setUint16(10, entries.length, true);
-    end.setUint32(12, cdSize, true);
-    end.setUint32(16, offset, true);
-    return new Blob(parts.concat(central, [new Uint8Array(end.buffer)]), { type: 'application/zip' });
-}
 
 function showProperties(filePath, fileName, fileType) {
     document.getElementById('propertiesTitle').textContent = '属性: ' + fileName;
@@ -2870,10 +2925,17 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
             actives.push(xhr);
             xhr.open('GET', url, true);
             xhr.responseType = 'arraybuffer';
-            // 停滞看门狗：15 秒无进度即中止换源（代理挂起会在途槽位被永久占住）
+            // 停滞看门狗：15 秒无进度即中止换源（代理挂起会在途槽位被永久占住）；
+            // 慢速换源：当前速率远低于本通道历史峰值时中止换源（每片最多 2 次，
+            // 受最大尝试次数约束不死循环；小分片/起步期不判定）
             parts[i]._lastRecvAt = Date.now();
             var wd = setInterval(function() {
                 if (Date.now() - parts[i]._lastRecvAt > 15000) {
+                    try { xhr.abort(); } catch (e) {}
+                    return;
+                }
+                if (dlChanIsSlow(chan, parts[i]._loaded || 0, Date.now() - (parts[i]._t0 || Date.now()), parts[i]._slowSwitches)) {
+                    parts[i]._slowSwitches = (parts[i]._slowSwitches || 0) + 1;
                     try { xhr.abort(); } catch (e) {}
                 }
             }, 3000);
@@ -2898,6 +2960,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                     if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
                     loadedBytes += (parts[i].size || 0) - (parts[i]._loaded || 0);
                     doneCount++;
+                    dlChanNotePeak(chan, parts[i].size || 0, Date.now() - (parts[i]._t0 || Date.now()));
                     dlAdaptiveSuccess(Date.now() - (parts[i]._t0 || Date.now()));
                     report();
                     // 已连续完成的前缀分片数增长时回调，供分片音频边下边播
@@ -2978,40 +3041,6 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
             hideToast();
         }
     };
-}
-
-// Fetch a whole file as Blob with live percentage + speed updates
-function loadMediaWithRate(url, totalSize, loadingDiv, onDone, onFail) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', url, true);
-    xhr.responseType = 'blob';
-    var lastLoaded = 0;
-    var lastTime = Date.now();
-    var speedText = '';
-    xhr.onprogress = function(e) {
-        var now = Date.now();
-        if (now - lastTime >= 500) {
-            var sp = (e.loaded - lastLoaded) / ((now - lastTime) / 1000);
-            lastLoaded = e.loaded;
-            lastTime = now;
-            speedText = sp > 1024 ? formatSize(Math.round(sp)) + '/s' : '';
-        }
-        var pct = null;
-        if (totalSize) pct = Math.min(99, Math.round(e.loaded / totalSize * 100));
-        else if (e.lengthComputable) pct = Math.round(e.loaded / e.total * 100);
-        loadingDiv.textContent = '加载中' + (pct !== null ? ' ' + pct + '%' : '...') + (speedText ? ' · ' + speedText : '');
-    };
-    xhr.onload = function() {
-        if (xhr.status === 200) {
-            onDone(xhr.response);
-        } else {
-            onFail(xhr.status);
-        }
-    };
-    xhr.onerror = function() {
-        onFail(0);
-    };
-    xhr.send();
 }
 
 // 图片流式预览：fetch 分块读取，角标实时显示速度与百分比，
@@ -3443,9 +3472,11 @@ function audioPlModeLoad() {
     return m;
 }
 
-// 关闭预览/切换预览时清理播放列表：中止预载与分片合并，释放缓存 ObjectURL
+// 关闭预览/切换预览时清理播放列表：中止预载/测速/缓冲监控与分片合并，
+// 停止跳动图标，释放缓存 ObjectURL
 function teardownAudioPlaylist() {
     if (!audioPl) return;
+    audioPlStopLoadingUx();
     if (audioPl.preloadXhr) {
         try { audioPl.preloadXhr.abort(); } catch (e) {}
         audioPl.preloadXhr = null;
@@ -3453,6 +3484,7 @@ function teardownAudioPlaylist() {
     for (var p in audioPl.cache) {
         try { URL.revokeObjectURL(audioPl.cache[p]); } catch (e) {}
     }
+    audioEqStop();
     audioPl = null;
 }
 
@@ -3461,6 +3493,117 @@ function audioPlRefreshHighlight() {
     var items = audioPl.listEl.children;
     for (var i = 0; i < items.length; i++) {
         items[i].classList.toggle('active', i === audioPl.index);
+    }
+    // 跳动图标跟随当前曲目
+    var active = items[audioPl.index];
+    if (active && audioPl.eqEl && active.firstChild !== audioPl.eqEl) {
+        active.insertBefore(audioPl.eqEl, active.firstChild);
+    }
+    // 列表展开时保持当前曲目可见（快速定位）
+    if (active && audioPl.listEl.classList.contains('show')) {
+        try { active.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+    }
+    if (audioPl.countEl) {
+        audioPl.countEl.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
+    }
+}
+
+// 切歌加载反馈：中止上一首的测速探测与缓冲监控
+function audioPlStopLoadingUx() {
+    if (!audioPl) return;
+    if (audioPl.bufTimer) {
+        clearInterval(audioPl.bufTimer);
+        audioPl.bufTimer = null;
+    }
+    abortPreviewProbes();
+}
+
+// 切歌加载反馈：三通道测速 + 实时缓冲百分比（起播后停止测速避免争抢带宽，
+// 缓冲完成自动收尾）——直链曲目未命中预载缓存时启用
+function audioPlStartLoadingUx(m, audioEl) {
+    audioPlStopLoadingUx();
+    if (!audioPl || !audioPl.rateTag) return;
+    var speedText = '', bufText = '';
+    var update = function() {
+        if (audioPl && audioPl.rateTag) {
+            audioPl.rateTag.textContent = [speedText, bufText].filter(function(s) { return s; }).join(' · ');
+        }
+    };
+    probeMediaSpeed(rawUrlFor(m.path), function(s) {
+        speedText = s;
+        update();
+    }, m.path);
+    audioEl.addEventListener('playing', abortPreviewProbes, { once: true });
+    audioPl.bufTimer = setInterval(function() {
+        if (!audioPl) return;
+        var dur = audioEl.duration;
+        if (!isFinite(dur) || dur <= 0) {
+            try {
+                if (audioEl.seekable.length) dur = audioEl.seekable.end(audioEl.seekable.length - 1);
+            } catch (e) {}
+        }
+        if (!isFinite(dur) || !dur) return;
+        var end = 0;
+        try { end = audioEl.buffered.length ? audioEl.buffered.end(audioEl.buffered.length - 1) : 0; } catch (e) {}
+        if (end >= dur - 0.5) {
+            // 缓冲完成：保留最终速度 3s 再消失
+            audioPlStopLoadingUx();
+            if (audioPl && audioPl.rateTag && speedText) {
+                audioPl.rateTag.textContent = speedText;
+                setTimeout(function() { if (audioPl && audioPl.rateTag) audioPl.rateTag.textContent = ''; }, 3000);
+            }
+            return;
+        }
+        bufText = '已缓冲 ' + Math.round(end / dur * 100) + '%';
+        update();
+    }, 500);
+}
+
+// ---- 正在播放曲目的随音频跳动图标（WebAudio 分析器驱动，失败回退 CSS 动画） ----
+var audioEqAn = null;   // {ctx, src, analyser, raf, el}
+
+function audioEqStop() {
+    if (!audioEqAn) return;
+    if (audioEqAn.raf) cancelAnimationFrame(audioEqAn.raf);
+    try { audioEqAn.src.disconnect(); } catch (e) {}
+    try { audioEqAn.analyser.disconnect(); } catch (e) {}
+    audioEqAn = null;
+}
+
+function audioEqStart(audioEl, eqEl) {
+    if (audioEqAn && audioEqAn.el === audioEl) return;   // 已接管该元素
+    audioEqStop();
+    try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) throw new Error('no webaudio');
+        var ctx = audioEqStart._ctx || (audioEqStart._ctx = new AC());
+        if (ctx.state === 'suspended') ctx.resume();
+        var src = ctx.createMediaElementSource(audioEl);
+        var analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.6;
+        src.connect(analyser);
+        analyser.connect(ctx.destination);
+        var data = new Uint8Array(analyser.frequencyBinCount);
+        var bars = eqEl.children;
+        var seg = Math.max(1, Math.floor(data.length / (bars.length * 2)));   // 取低频一半更贴合音乐
+        var tick = function() {
+            if (!audioPl || !audioEqAn) return;
+            audioEqAn.analyser.getByteFrequencyData(data);
+            for (var i = 0; i < bars.length; i++) {
+                var v = 0;
+                for (var j = i * seg; j < (i + 1) * seg && j < data.length; j++) {
+                    if (data[j] > v) v = data[j];
+                }
+                var h = audioEl.paused ? 12 : Math.max(12, Math.round(v / 255 * 100));
+                bars[i].style.height = h + '%';
+            }
+            audioEqAn.raf = requestAnimationFrame(tick);
+        };
+        audioEqAn = { ctx: ctx, src: src, analyser: analyser, el: audioEl, raf: requestAnimationFrame(tick) };
+    } catch (e) {
+        // WebAudio 不可用（或元素已被接管）：回退 CSS 伪随机动画
+        eqEl.classList.add('fake');
     }
 }
 
@@ -3502,7 +3645,8 @@ function audioPlPlay(idx, autoplay) {
     previewFileInfo = { path: m.path, name: m.name, ext: getFileExtension(m.name) };
     document.getElementById('previewTitle').textContent = '预览: ' + m.name;
     var audioEl = audioPl.audio;
-    // 中止进行中的分片合并与旧源
+    // 中止上一首的加载反馈、分片合并与旧源
+    audioPlStopLoadingUx();
     if (previewMerge) {
         previewMerge.cancel();
         previewMerge = null;
@@ -3542,6 +3686,8 @@ function audioPlPlay(idx, autoplay) {
             audioEl.src = cached;
         } else {
             audioEl.src = rawUrlFor(m.path);
+            // 未命中缓存：显示新歌的加载速度（三通道测速）与缓冲进度
+            audioPlStartLoadingUx(m, audioEl);
         }
         startPlay();
     }
@@ -3569,9 +3715,14 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
         cache: {},
         preloadXhr: null,
         listEl: null,
-        modeBtn: null
+        modeBtn: null,
+        countEl: null,
+        eqEl: null,
+        bufTimer: null
     };
-    audioEl.loop = audioPl.mode === 'loop';
+    // 不依赖 loop 属性：循环/顺序/随机统一由 ended 处理，行为在所有源
+    // （直链/blob/分片合并）与列表任意位置（含最后一首）保持一致
+    audioEl.loop = false;
 
     var wrap = document.createElement('div');
     wrap.className = 'audio-pl';
@@ -3589,19 +3740,29 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
         audioPl.mode = AUDIO_PL_MODES[i];
         try { localStorage.setItem(AUDIO_PL_MODE_KEY, audioPl.mode); } catch (e) {}
         modeBtn.textContent = AUDIO_PL_MODE_LABELS[audioPl.mode];
-        audioEl.loop = audioPl.mode === 'loop';
         audioPlMaybePreload();
     });
     var toggleBtn = document.createElement('button');
     toggleBtn.type = 'button';
     toggleBtn.className = 'audio-pl-btn';
     toggleBtn.textContent = '列表';
+    var locateBtn = document.createElement('button');
+    locateBtn.type = 'button';
+    locateBtn.className = 'audio-pl-btn';
+    locateBtn.textContent = '定位';
+    locateBtn.title = '快速定位到当前播放的音频';
     var countSpan = document.createElement('span');
     countSpan.className = 'audio-pl-count';
     countSpan.textContent = (index + 1) + '/' + list.length + ' 首';
+    audioPl.countEl = countSpan;
     var listEl = document.createElement('div');
     listEl.className = 'audio-pl-list';
     audioPl.listEl = listEl;
+    // 正在播放曲目的随音频跳动图标（4 根竖条，WebAudio 驱动，回退 CSS 动画）
+    var eqEl = document.createElement('span');
+    eqEl.className = 'audio-pl-eq';
+    eqEl.innerHTML = '<i></i><i></i><i></i><i></i>';
+    audioPl.eqEl = eqEl;
     list.forEach(function(m, i2) {
         var item = document.createElement('div');
         item.className = 'audio-pl-item' + (i2 === index ? ' active' : '');
@@ -3612,39 +3773,51 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
         });
         listEl.appendChild(item);
     });
+    // 初始把跳动图标放到当前曲目
+    var firstActive = listEl.children[index];
+    if (firstActive) firstActive.insertBefore(eqEl, firstActive.firstChild);
     toggleBtn.addEventListener('click', function() {
         listEl.classList.toggle('show');
     });
+    locateBtn.addEventListener('click', function() {
+        if (!audioPl) return;
+        listEl.classList.add('show');
+        var active = listEl.children[audioPl.index];
+        if (active) {
+            try { active.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
+        }
+    });
     bar.appendChild(modeBtn);
     bar.appendChild(toggleBtn);
+    bar.appendChild(locateBtn);
     bar.appendChild(countSpan);
     wrap.appendChild(bar);
     wrap.appendChild(listEl);
 
-    // 播放结束按播放方式推进：loop 由 audio.loop 自动重播；
-    // seq 顺序到尾停止；rand 随机抽下一首（不重复当前）
+    // 首次播放时启动跳动图标（用户手势上下文，AudioContext 可恢复）
+    audioEl.addEventListener('play', function() {
+        if (audioPl && audioPl.eqEl) audioEqStart(audioEl, audioPl.eqEl);
+    });
+
+    // 播放结束按播放方式推进（手动实现，三种模式在列表任意位置行为一致）：
+    // loop 单曲循环重播当前；seq 顺序播放（到尾回到第一首）；rand 随机（不重复当前）
     audioEl.addEventListener('ended', function() {
         if (!audioPl || audioEl !== audioPl.audio) return;
-        if (audioPl.mode === 'loop') return;
+        if (audioPl.mode === 'loop') {
+            try { audioEl.currentTime = 0; } catch (e) {}
+            var pl = audioEl.play();
+            if (pl && pl.catch) pl.catch(function() {});
+            return;
+        }
         if (audioPl.mode === 'seq') {
-            if (audioPl.index + 1 < audioPl.list.length) {
-                audioPlPlay(audioPl.index + 1, true);
-                countSpan.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
-            }
+            audioPlPlay((audioPl.index + 1) % audioPl.list.length, true);
             return;
         }
         if (audioPl.list.length > 1) {
             var n;
             do { n = Math.floor(Math.random() * audioPl.list.length); } while (n === audioPl.index);
             audioPlPlay(n, true);
-            countSpan.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
         }
-    });
-    // 点击列表切换后同步计数显示
-    listEl.addEventListener('click', function() {
-        setTimeout(function() {
-            if (audioPl) countSpan.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
-        }, 0);
     });
     audioPlMaybePreload();
     return wrap;
@@ -4628,13 +4801,7 @@ function previewFile(filePath, fileName) {
         var rateBox = document.createElement('div');
         rateBox.className = (AUDIO_EXTS.indexOf(ext) !== -1 || isImagePreview) ? 'media-wrap media-wrap-audio' : 'media-wrap';
         rateBox.style.position = 'relative';
-        var abortProbe = function() {
-            if (previewProbe) {
-                var probes = Array.isArray(previewProbe) ? previewProbe.slice() : [previewProbe];
-                probes.forEach(function(x) { try { x.abort(); } catch (e) {} });
-                previewProbe = null;
-            }
-        };
+        var abortProbe = abortPreviewProbes;
         var showMediaError = function() {
             abortProbe(); // 出错后不再测速，避免与错误重试/后续操作争抢带宽
             loadingDiv.className = 'message error';
@@ -5929,7 +6096,9 @@ function finishRenderFileList(models, newOrder, listChanged) {
 
 var pendingFiles = [];
 var uploadTasks = [];
-var COMMIT_GROUP_SIZE = 40;   // 每个批量提交包含的 blob 数（引用移动次数 = ceil(N/40)）
+// 每个批量提交包含的 blob 数：组越大引用移动次数越少（引用移动是唯一的
+// 冲突竞争点），100 个/组比 40 个/组的冲突机会下降约 60%
+var COMMIT_GROUP_SIZE = 100;
 
 function buildUploadTasks() {
     var chunkSize = CHUNK_SIZE_LEVELS[chunkSizeLevel];
@@ -6262,6 +6431,32 @@ function dlAdaptiveFail() {
 // 比例加权（带概率地板），无数据时轮询兜底。通道：'eo' / 'cf' / 'ext' ----
 var dlActive = { eo: 0, cf: 0, ext: 0 };
 
+// 各通道单连接峰值速率（字节/秒）：段/片完成时按实测速率抬升（带缓慢衰减，
+// 网络变好能跟上、变差缓慢回落）。在途段/片当前速率低于该通道峰值 30%
+// 时判定"异常慢"，自动中止换源重试——防止某个慢连接长期拖尾
+var dlChanPeak = { eo: 0, cf: 0, ext: 0 };
+var DL_SLOW_RATIO = 0.3;        // 低于峰值 30% 判定异常慢
+var DL_SLOW_MIN_BYTES = 1048576; // 已收 1MB 以上才判定（小文件/小分段速度低属正常）
+var DL_SLOW_MIN_ELAPSED = 4000;  // 起步 4 秒内不判定（慢启动期）
+var DL_SLOW_MAX_SWITCH = 2;      // 每段/片最多慢速换源 2 次（防止死循环）
+
+function dlChanNotePeak(chan, bytes, elapsedMs) {
+    if (!chan || elapsedMs < 500 || bytes < 262144) return;
+    var rate = bytes / (elapsedMs / 1000);
+    var peak = dlChanPeak[chan] || 0;
+    // 新高直接抬升；否则每次观测轻微衰减（约 2%），让峰值随网络变差缓慢回落
+    dlChanPeak[chan] = rate > peak ? rate : peak * 0.98;
+}
+
+// 判定当前段/片是否"异常慢"（相对本通道历史峰值）；小任务/起步期返回 false
+function dlChanIsSlow(chan, received, elapsedMs, switches) {
+    if (!chan || (switches || 0) >= DL_SLOW_MAX_SWITCH) return false;
+    var peak = dlChanPeak[chan] || 0;
+    if (peak <= 0) return false;
+    if (elapsedMs < DL_SLOW_MIN_ELAPSED || received < DL_SLOW_MIN_BYTES) return false;
+    return (received / (elapsedMs / 1000)) < peak * DL_SLOW_RATIO;
+}
+
 function dlChanInc(chan) {
     dlActive[chan] = (dlActive[chan] || 0) + 1;
 }
@@ -6450,6 +6645,12 @@ function drawDlGraph() {
     var n = tot.length;
     var dx = W / Math.max(1, DL_HISTORY_MAX - 1);
     var xStart = x0 + W - (n - 1) * dx;
+    // 裁剪到绘图区：平滑曲线在急升/急降处会过冲到基线以下或峰值以上，
+    // 不裁剪时蓝色面积填充会溢出基线/顶边，表现为"背景色块乱"
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, ctxBox.y0, W, H + 1);
+    ctx.clip();
     var plot = function(series, color, fill) {
         var pts = [];
         for (var i = 0; i < n; i++) {
@@ -6475,6 +6676,7 @@ function drawDlGraph() {
     plot(eo, '#28a745', false);
     plot(cf, '#e67e22', false);
     if (extProxyState.enabled) plot(ext, '#9b59b6', false);
+    ctx.restore();
     updateDlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0, ext[n - 1] || 0);
 }
 
@@ -6585,6 +6787,11 @@ function drawSpeedGraph() {
     var n = tot.length;
     var dx = W / Math.max(1, SPEED_HISTORY_MAX - 1);
     var xStart = x0 + W - (n - 1) * dx;
+    // 裁剪到绘图区：平滑过冲不再溢出基线/顶边（蓝色面积填充显示修正）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, box.y0, W, H + 1);
+    ctx.clip();
     var plot = function(series, color, fill, width) {
         var pts = [];
         for (var i = 0; i < n; i++) {
@@ -6610,6 +6817,7 @@ function drawSpeedGraph() {
     plot(eo, '#28a745', false, 1.2);
     plot(cf, '#e67e22', false, 1.2);
     if (ulChanSwitch.ext) plot(ext, '#9b59b6', false, 1.2);
+    ctx.restore();
     updateUlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0, ext[n - 1] || 0);
 }
 
@@ -6909,6 +7117,7 @@ function runUploadTask(task, done) {
         // 读盘阶段无网络句柄：清空旧 xhr 引用与看门狗标记，防止误中止/误重试
         task.xhr = null;
         task._wdAbort = false;
+        task._slowSwitch = false;
         // 优先消费预读缓存：读盘/base64 已提前完成，槽位全程用于网络传输
         readTaskContent(st, task, function(base64Content, readErr) {
             if (st.cancelled) {
@@ -7034,6 +7243,7 @@ function finishUpload() {
     }
     var gi = 0;
     var sessionRef = null;   // 上一组提交成功后的新引用，作为下一组的链式基点
+    var conflictRetries = 0; // 提交阶段引用冲突重试次数（仅展示用）
     var commitNext = function() {
         if (gi >= groups.length) {
             fileTreeCache = null;
@@ -7047,7 +7257,7 @@ function finishUpload() {
             }, 1500);
             return;
         }
-        setMsg('uploadMessage', '传输完成，正在批量提交 (' + (gi + 1) + '/' + groups.length + ')...', 'success');
+        setMsg('uploadMessage', '传输完成，正在批量提交 (' + (gi + 1) + '/' + groups.length + ')...' + (conflictRetries ? ' · 冲突重试 ' + conflictRetries + ' 次' : ''), 'success');
         commitBlobGroup(groups[gi], 'Upload ' + groups[gi].length + ' file(s) via cloud-web', sessionRef, function(ok, err, newRef) {
             if (!ok) {
                 fileTreeCache = null;
@@ -7060,6 +7270,10 @@ function finishUpload() {
             sessionRef = newRef || sessionRef;
             gi++;
             commitNext();
+        }, function() {
+            // 引用冲突重试回调：实时展示，便于观察竞争烈度
+            conflictRetries++;
+            setMsg('uploadMessage', '传输完成，正在批量提交 (' + (gi + 1) + '/' + groups.length + ')... · 冲突重试 ' + conflictRetries + ' 次', 'success');
         });
     };
     if (!groups.length) {
@@ -7143,22 +7357,40 @@ function sampleUploadSpeed() {
         uploadSpeedHist.ext.shift();
     }
     drawSpeedGraph();
-    // per-chunk speeds
+    // per-chunk speeds + 各通道单连接峰值（慢速换源判定基准）
+    if (!st._peaks) st._peaks = {};
     for (var key in st.activeTasks) {
         var t = st.activeTasks[key];
         var chunkSpeed = ((t.loadedBytes || 0) - (t.sampledBytes || 0)) / dt;
         t.sampledBytes = t.loadedBytes || 0;
+        t._lastChunkSpeed = chunkSpeed;
         t.speedText = chunkSpeed > 1024 ? formatSize(Math.round(chunkSpeed)) + '/s' : '';
+        var pk = t.chan || 'eo';
+        if ((t.loadedBytes || 0) > 262144) {
+            // 新高抬升，否则每秒轻微衰减让峰值随网络变差缓慢回落
+            st._peaks[pk] = chunkSpeed > (st._peaks[pk] || 0) ? chunkSpeed : (st._peaks[pk] || 0) * 0.995;
+        }
     }
     // 停滞看门狗：12 秒无任何上传进度即中止换源——部分外部代理对 POST
     // 只接不发（连接挂起不报错），在途槽位会被长期占住，表现为"分到了
-    // 任务却迟迟不上传"；中止后按失败重试逻辑换代理/通道重传
+    // 任务却迟迟不上传"；中止后按失败重试逻辑换代理/通道重传。
+    // 慢速换源：当前速率低于本通道峰值 30% 判定异常慢，中止后交上层换
+    // 通道重试（每任务最多 2 次 + 任务重试次数上限，不会死循环；
+    // <4MB 小分片与起步 6 秒内不判定——小文件速度低属正常）
     for (var key2 in st.activeTasks) {
         var t2 = st.activeTasks[key2];
         if (!t2.xhr) continue;
         var lastProg = t2._lastProgAt || t2.startTime || now;
-        if (now - lastProg > 12000) {
+        var stalled = now - lastProg > 12000;
+        var peak2 = st._peaks[t2.chan || 'eo'] || 0;
+        var el2 = (now - (t2.startTime || now)) / 1000;
+        var tooSlow = !stalled && peak2 > 0 && t2.blob.size >= 4194304 && el2 > 6 &&
+            (t2.loadedBytes || 0) >= 1048576 && (t2._slowSwitches || 0) < 2 &&
+            (t2._lastChunkSpeed || 0) < peak2 * 0.3;
+        if (stalled || tooSlow) {
             t2._wdAbort = true;
+            t2._slowSwitch = tooSlow;
+            if (tooSlow) t2._slowSwitches = (t2._slowSwitches || 0) + 1;
             if (t2.chan === 'ext') extNoteFail(t2._extBase);
             try { t2.xhr.abort(); } catch (e) {}
             t2._lastProgAt = now;   // 避免每秒重复中止同一任务
@@ -7340,9 +7572,14 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
         onError(0, '');
     };
     xhr.onabort = function() {
-        // 停滞看门狗主动中止：按网络错误换源重试；用户停止上传时不重试
+        // 停滞看门狗主动中止：按网络错误换源重试；用户停止上传时不重试。
+        // 慢速换源（_slowSwitch）跳过同通道内重试，直接交上层换通道
         if (task && task._wdAbort) {
             task._wdAbort = false;
+            if (task._slowSwitch) {
+                onError(0, '');
+                return;
+            }
             if (retries > 0) {
                 setTimeout(retryInPlace, 800);
                 return;
@@ -7361,8 +7598,8 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
 // 仅在与其他写入者发生真实竞争（422/409）时才重新读最新引用重来，最多 8 次——
 // 每轮重新读取 base tree 再建树，不会丢失他人的并发提交（与 git rebase 同理）。
 // 引用类操作固定走 EO（最可靠通道）。onDone(ok, errMsg, newCommitSha)
-function commitBlobGroup(blobs, message, knownBase, onDone) {
-    var MAX_ATTEMPTS = 8;
+function commitBlobGroup(blobs, message, knownBase, onDone, onConflict) {
+    var MAX_ATTEMPTS = 12;
     var attempt = 0;
     // 链式基点只用一次：任何失败后的重试都重新读最新引用，保证不基于过期基点空转
     var baseOverride = knownBase || null;
@@ -7423,6 +7660,20 @@ function commitBlobGroup(blobs, message, knownBase, onDone) {
                             onDone(true, null, newCommit);
                             return;
                         }
+                        if (st5 === 422 || st5 === 409) {
+                            // 先确认是否"请求实际成功但响应丢失/延迟"：读最新引用，
+                            // 已指向本提交则直接视为成功——避免无谓整组重建与级联冲突
+                            api('GET', '/git/ref/heads/' + DEFAULT_BRANCH + '?_=' + Date.now(), null, function(stV, bodyV) {
+                                var cur = null;
+                                try { cur = JSON.parse(bodyV).object.sha; } catch (e) {}
+                                if (stV === 200 && cur === newCommit) {
+                                    onDone(true, null, newCommit);
+                                    return;
+                                }
+                                retry(st5, body5, '更新分支引用失败');
+                            });
+                            return;
+                        }
                         retry(st5, body5, '更新分支引用失败');
                     });
                 });
@@ -7433,7 +7684,12 @@ function commitBlobGroup(blobs, message, knownBase, onDone) {
     function retry(status, body, stepLabel) {
         var refMoved = status === 422 || status === 409;
         if ((refMoved || status === 0 || status >= 500) && attempt < MAX_ATTEMPTS) {
-            setTimeout(tryOnce, 1000 * attempt + Math.floor(Math.random() * 800));
+            if (refMoved && onConflict) onConflict(attempt);
+            // 引用竞争：首次快速重试（竞争窗口通常极短），之后指数退避（封顶 5s）+ 抖动
+            var wait = refMoved
+                ? (attempt === 1 ? 300 : Math.min(5000, 600 * Math.pow(1.6, attempt - 1)))
+                : 1000 * attempt;
+            setTimeout(tryOnce, Math.round(wait) + Math.floor(Math.random() * 800));
             return;
         }
         var msg = stepLabel + '（状态码 ' + status + '）';
@@ -7481,9 +7737,10 @@ document.addEventListener('DOMContentLoaded', function() {
     restoreBgTaskHint();
     dlUpdateCurUi();
 
-    // 点击服务状态角标立即重新检测（检测中再点则中止当前轮重新检测）
+    // 点击服务状态角标展开/折叠三路详情面板（重新检测按钮在面板内）
     document.getElementById('svcStatus').addEventListener('click', function() {
-        checkSvcStatus(true);
+        svcExpanded = !svcExpanded;
+        renderSvcStatus();
     });
 
     // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载与服务检测

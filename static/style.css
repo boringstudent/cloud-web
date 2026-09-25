@@ -846,14 +846,6 @@ h1 {
     box-shadow: 0 0 10px rgba(0,0,0,0.1);
     cursor: pointer;
     user-select: none;
-    transition: opacity 0.6s ease;
-}
-/* 检测完成后角标淡出为半透明，减少视觉干扰；悬停/点击时恢复 */
-.svc-status.faded {
-    opacity: 0.3;
-}
-.svc-status.faded:hover {
-    opacity: 1;
 }
 .svc-status.ok #svcStatusText {
     color: #28a745;
@@ -877,8 +869,25 @@ h1 {
     line-height: 1.9;
     text-align: left;
 }
-.svc-status:hover .svc-status-tip {
+/* 点击角标展开/折叠三路详情面板 */
+.svc-status.expanded .svc-status-tip {
     display: block;
+    animation: menuIn 0.18s ease;
+}
+.svc-recheck-btn {
+    margin-top: 4px;
+    background: none;
+    border: 1px solid #ddd;
+    color: #666;
+    font-size: 12px;
+    padding: 3px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.svc-recheck-btn:hover {
+    color: #2c82c9;
+    border-color: #2c82c9;
+    background: rgba(44, 130, 201, 0.08);
 }
 .svc-status-tip .svc-name {
     color: #999;
@@ -1429,4 +1438,36 @@ h1 {
     color: #2c82c9;
     font-weight: 600;
     background: rgba(44, 130, 201, 0.08);
+}
+/* 正在播放曲目的随音频跳动图标（WebAudio 驱动高度；fake 为 CSS 回退动画） */
+.audio-pl-eq {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 13px;
+    margin-right: 6px;
+    vertical-align: -2px;
+}
+.audio-pl-eq i {
+    width: 3px;
+    height: 12%;
+    background: #2c82c9;
+    border-radius: 1px;
+    transition: height 0.09s linear;
+}
+.audio-pl-eq.fake i {
+    animation: audioEqBounce 0.9s ease-in-out infinite;
+}
+.audio-pl-eq.fake i:nth-child(2) {
+    animation-delay: 0.22s;
+}
+.audio-pl-eq.fake i:nth-child(3) {
+    animation-delay: 0.45s;
+}
+.audio-pl-eq.fake i:nth-child(4) {
+    animation-delay: 0.11s;
+}
+@keyframes audioEqBounce {
+    0%, 100% { height: 18%; }
+    50% { height: 100%; }
 }
