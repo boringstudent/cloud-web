@@ -868,6 +868,8 @@ h1 {
     white-space: nowrap;
     line-height: 1.9;
     text-align: left;
+    max-height: 60vh;
+    overflow-y: auto;
 }
 /* 点击角标展开/折叠三路详情面板 */
 .svc-status.expanded .svc-status-tip {
@@ -892,6 +894,10 @@ h1 {
 .svc-status-tip .svc-name {
     color: #999;
     margin-right: 6px;
+}
+/* Git 外部失败站点子行缩进 */
+.svc-status-tip .svc-sub {
+    padding-left: 12px;
 }
 .svc-status-tip .svc-ok {
     color: #28a745;

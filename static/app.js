@@ -154,6 +154,40 @@ function extProxyLoad(cb) {
     xhr.send();
 }
 
+// 服务检测用：完整候选列表（?all=1 服务端不探测直接下发），拉一次后常驻缓存；
+// 浏览器侧再逐个探测其 api.github.com 转发能力，失败站点在服务状态面板列出
+var extProxyAllList = null;
+var extProxyAllLoading = null;
+function extProxyAllLoad(cb) {
+    if (extProxyAllList) {
+        cb(extProxyAllList);
+        return;
+    }
+    if (extProxyAllLoading) {
+        extProxyAllLoading.push(cb);
+        return;
+    }
+    var cbs = [cb];
+    extProxyAllLoading = cbs;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', EXT_PROXY_API + '?all=1', true);
+    xhr.onload = function() {
+        var list = [];
+        try {
+            var j = JSON.parse(xhr.responseText);
+            if (j && j.proxies && j.proxies.length) list = j.proxies;
+        } catch (e) {}
+        extProxyAllList = list.length ? list : null;
+        extProxyAllLoading = null;
+        cbs.forEach(function(f) { f(list); });
+    };
+    xhr.onerror = function() {
+        extProxyAllLoading = null;
+        cbs.forEach(function(f) { f([]); });
+    };
+    xhr.send();
+}
+
 function extProxySetEnabled(on, quiet) {
     extProxyState.enabled = on;
     try {
@@ -1461,7 +1495,7 @@ function renderSvcStatus() {
     text.textContent = doneCount < 3 ? '服务检测中…' : (badCount ? '服务异常 ×' + badCount : '服务正常');
     tip.textContent = '';
     addSvcTipLine(tip, 'EO 边缘函数', '', a);
-    addSvcTipLine(tip, 'Git 外部', 'api.github.com', g);
+    addGitSvcTip(tip, g);
     addSvcTipLine(tip, 'CF 加速', 'cloud-ecr.pages.dev', c);
     var timeDiv = document.createElement('div');
     var timeLabel = document.createElement('span');
@@ -1511,8 +1545,48 @@ function addSvcTipLine(tip, name, addr, st) {
     tip.appendChild(div);
 }
 
+// Git 外部：外部代理候选众多，汇总一行（可用 x/y，RTT 取最快者），
+// 连接失败/不支持 API 转发的站点逐个列在下方，一目了然
+function addGitSvcTip(tip, g) {
+    var div = document.createElement('div');
+    var label = document.createElement('span');
+    label.className = 'svc-name';
+    label.textContent = 'Git 外部';
+    div.appendChild(label);
+    var state = document.createElement('span');
+    if (g && g.ok) {
+        state.className = 'svc-ok';
+        state.textContent = '可用 ' + g.okCount + '/' + g.total + ' 正常';
+    } else {
+        state.className = 'svc-fail';
+        state.textContent = g ? ('连接失败（可用 0/' + g.total + '）') : '检测中…';
+    }
+    div.appendChild(state);
+    if (g && typeof g.rtt === 'number') {
+        var rttSpan = document.createElement('span');
+        rttSpan.className = 'svc-rtt';
+        rttSpan.textContent = ' ' + g.rtt + 'ms';
+        div.appendChild(rttSpan);
+    }
+    tip.appendChild(div);
+    if (g && g.badHosts && g.badHosts.length) {
+        g.badHosts.forEach(function(h) {
+            var sub = document.createElement('div');
+            var subName = document.createElement('span');
+            subName.className = 'svc-name svc-sub';
+            subName.textContent = '└ ' + h;
+            sub.appendChild(subName);
+            var subState = document.createElement('span');
+            subState.className = 'svc-fail';
+            subState.textContent = '连接失败';
+            sub.appendChild(subState);
+            tip.appendChild(sub);
+        });
+    }
+}
+
 // force=true（手动重检）时中止上一轮未完成的检测立即重来；定时轮询不重入。
-// 三路并行检测：EO 边缘函数（含 IP/归属地/ISP）、Git 外部直连、CF 加速通道
+// 三路并行检测：EO 边缘函数（含 IP/归属地/ISP）、Git 外部代理逐个探测、CF 加速通道
 function checkSvcStatus(force) {
     if (svcChecking) {
         if (!force) return;
@@ -1543,17 +1617,50 @@ function checkSvcStatus(force) {
         svcStatus.api = res;
         finish();
     });
-    svcCheckXhrs.push(checkPlainService('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, function(res) {
-        if (gen !== svcCheckGen) return;
-        svcStatus.git = res;
-        finish();
-    }));
+    checkGitExtServices(gen, finish);
     // CF 走其 /ip 接口：可达性 + RTT + 出口 IP/归属地/ISP（与 EO 同口径）
     checkOneService(CF_PROXY_BASE + 'ip', function(res) {
         if (gen !== svcCheckGen) return;
         svcStatus.cf = res;
         finish();
     }).forEach(function(x) { svcCheckXhrs.push(x); });
+}
+
+// Git 外部检测：取完整候选池（/api/proxies?all=1），逐个经代理调用
+// api.github.com 仓库接口——部分镜像只代理 raw 不代理 API，正好借此甄别；
+// 汇总可用数（RTT 取最快者），失败站点逐个列出。在途 xhr 压入 svcCheckXhrs
+// 供强制重检中止
+function checkGitExtServices(gen, finish) {
+    extProxyAllLoad(function(list) {
+        if (gen !== svcCheckGen) return;
+        if (!list.length) {
+            svcStatus.git = { ok: false, okCount: 0, total: 0, badHosts: [] };
+            finish();
+            return;
+        }
+        var results = new Array(list.length);
+        var left = list.length;
+        list.forEach(function(base, i) {
+            var x = checkPlainService(base + 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, function(res) {
+                results[i] = res;
+                if (gen !== svcCheckGen) return;
+                left--;
+                if (left > 0) return;
+                var okCount = 0, bestRtt = null, badHosts = [];
+                results.forEach(function(r, j) {
+                    if (r && r.ok) {
+                        okCount++;
+                        if (bestRtt === null || r.rtt < bestRtt) bestRtt = r.rtt;
+                    } else {
+                        badHosts.push(list[j].replace(/^https?:\/\//, '').replace(/\/+$/, ''));
+                    }
+                });
+                svcStatus.git = { ok: okCount > 0, okCount: okCount, total: list.length, rtt: bestRtt, badHosts: badHosts };
+                finish();
+            });
+            if (gen === svcCheckGen) svcCheckXhrs.push(x);
+        });
+    });
 }
 
 setInterval(function() {
