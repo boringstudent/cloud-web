@@ -163,9 +163,9 @@ async function handleRequest(request) {
       if (url.searchParams.get('all') === '1') {
         return json({ proxies: EXT_PROXY_CANDIDATES.map(h => 'https://' + h + '/') });
       }
-      // ?probe=api 服务端逐个经代理调用 api.github.com 仓库接口，返回含失败站点
-      // 的全量结果（前端服务检测用：浏览器直连会触发 CORS 预检被代理 403，
-      // 且部分镜像只代理 raw 不代理 API）
+      // ?probe=api 服务端逐个 ping 候选代理存活（能连上且返回 <500 即正常），
+      // 返回含失败站点的全量结果（前端服务检测用：浏览器直连会触发 CORS 预检
+      // 被代理 403）
       if (url.searchParams.get('probe') === 'api') {
         return json({ results: await probeExtProxiesApi() });
       }
@@ -720,22 +720,21 @@ async function listUsableExtProxies() {
   return list;
 }
 
-// 探测单个代理的 api.github.com 转发能力：经代理 GET 存储仓库接口，
-// 200 视为可转发（只代理 raw 的镜像对该路径返回 404/403）
+// ping 单个代理存活：能建立连接且返回 <500 的 HTTP 响应即视为正常（带 RTT）
 async function probeExtProxyApi(host, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs || 6000);
   const start = Date.now();
   try {
-    const res = await fetch('https://' + host + '/https://api.github.com/repos/' + STORAGE_REPOS[0], {
+    const res = await fetch('https://' + host + '/', {
       method: 'GET',
       redirect: 'manual',
       signal: ctrl.signal,
-      headers: { 'User-Agent': 'cloud-eo-proxy-probe', 'Accept': 'application/vnd.github+json' }
+      headers: { 'User-Agent': 'cloud-eo-proxy-probe' }
     });
     // 立刻取消 body，避免悬挂流占用连接
     try { if (res.body) await res.body.cancel(); } catch (e) {}
-    return { ok: res.status === 200, rtt: Date.now() - start };
+    return { ok: res.status > 0 && res.status < 500, rtt: Date.now() - start };
   } catch (e) {
     return { ok: false, rtt: Date.now() - start };
   } finally {
@@ -743,7 +742,7 @@ async function probeExtProxyApi(host, timeoutMs) {
   }
 }
 
-// 并发探测全部候选的 API 转发能力，返回含失败站点的全量结果（实例级缓存 5 分钟）
+// 并发 ping 全部候选存活，返回含失败站点的全量结果（实例级缓存 5 分钟）
 let extProxiesApiCache = { at: 0, results: null };
 async function probeExtProxiesApi() {
   if (extProxiesApiCache.results && Date.now() - extProxiesApiCache.at < EXT_PROXIES_CACHE_MS) {

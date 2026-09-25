@@ -1570,9 +1570,9 @@ function checkSvcStatus(force) {
     }).forEach(function(x) { svcCheckXhrs.push(x); });
 }
 
-// Git 外部检测：调用同源 /api/proxies?probe=api，由 EO 服务端逐个经代理调用
-// api.github.com 仓库接口甄别（浏览器直连会带自定义头触发 CORS 预检被代理 403，
-// 且部分镜像只代理 raw 不代理 API）；汇总可用数（RTT 取最快者），只列出失败站点
+// Git 外部检测：调用同源 /api/proxies?probe=api，由 EO 服务端逐个 ping 候选
+// 代理存活（浏览器直连会带自定义头触发 CORS 预检被代理 403）；
+// 汇总可用数（RTT 取最快者），只列出失败站点
 function checkGitExtServices(gen, finish) {
     var xhr = new XMLHttpRequest();
     var timer = setTimeout(function() { xhr.abort(); }, 20000);
