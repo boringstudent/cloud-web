@@ -84,11 +84,9 @@ async function call(path, opts) {
   r = await call('/api.github.com/repos/boringstudent/cloud-storage/contents/a.txt', { method: 'PUT', headers: { 'X-Auth-User': 'x', 'X-Auth-Pass': 'nothex' } });
   check('代理写操作非法哈希 -> 400', r.status === 400);
 
-  // 8.5 管理员取 key 接口鉴权（不触网）
+  // 8.5 外部上传已整体移除：取 key 接口不存在（未知 API -> 404）
   r = await call('/api/gitkey');
-  check('/api/gitkey 缺凭据 -> 401', r.status === 401);
-  r = await call('/api/gitkey', { headers: { 'X-Auth-User': 'x', 'X-Auth-Pass': 'nothex' } });
-  check('/api/gitkey 非法哈希 -> 400', r.status === 400);
+  check('/api/gitkey 已移除 -> 404', r.status === 404);
 
   // 9. HEAD 轻量检查（不触网）
   r = await call('/api/my-ip', { method: 'HEAD' });
@@ -115,7 +113,7 @@ async function call(path, opts) {
   check('eo.js 含 CF IP 信息接口', eoSrc.includes("path === '/api/cf-ip'") && eoSrc.includes("CF_WORKER_BASE = 'https://cloud-ecr.pages.dev'") && eoSrc.includes('getCfIpInfo'));
   check('app.js CF 检测走同源 /api/cf-ip', appJs.includes("API_BASE + '/api/cf-ip'") && !appJs.includes("CF_PROXY_BASE + 'ip'"));
   check('app.js 曲线图峰值 30s 窗口自动缩放', appJs.includes('GRAPH_PEAK_WINDOW = 30') && (appJs.match(/graphWindowPeak\(tot\)/g) || []).length === 3);
-  check('app.js 上传外部优先+开启重置封禁', appJs.includes('UL_EXT_PREFER_SHARE = 0.8') && appJs.includes('extProxyState.ul404 = {}'));
+  check('app.js 外部上传已移除+EO/CF默认关闭', !appJs.includes('extPickUploadBase') && !appJs.includes('ulExtBtn') && !appJs.includes('/api/gitkey') && appJs.includes('dlChanSwitch = { eo: false, cf: false }'));
 
   // 9.8 页面含搜索框与重启按钮；app.js 含重启/内存保护/分拍/搜索机制
   r = await call('/');

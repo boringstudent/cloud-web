@@ -29,7 +29,10 @@
             <h1><span id="pageTitle">加载中...</span><span class="refresh-countdown" id="refreshCountdown">45s</span><span class="total-usage" id="totalUsage"></span></h1>
             <div id="breadcrumbs" style="margin: 20px 0; font-size: 1.1em;"></div>
             <div class="search-wrap">
-                <input type="text" id="searchInput" placeholder="搜索全盘文件…" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="search-no-autofill" readonly>
+                <!-- 隐藏诱饵输入框：浏览器填充密码时会把用户名填给离密码框最近的
+                     上一个文本框，诱饵吸收掉这次误填，搜索框不受影响 -->
+                <input type="text" class="autofill-decoy" tabindex="-1" autocomplete="off" aria-hidden="true">
+                <input type="text" id="searchInput" placeholder="搜索全盘文件…" autocomplete="nope" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="search-no-autofill" readonly>
                 <button type="button" id="searchBtn" class="search-btn" title="搜索" onclick="triggerSearch()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg></button>
             </div>
             <div id="fileListContainer" class="loading">加载中...</div>
@@ -73,11 +76,11 @@
                 <h2>登录</h2>
                 <div class="form-group">
                     <label>用户名</label>
-                    <input type="text" id="loginUsername" placeholder="请输入用户名">
+                    <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username">
                 </div>
                 <div class="form-group">
                     <label>密码</label>
-                    <input type="password" id="loginPassword" placeholder="请输入密码">
+                    <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
                 </div>
                 <div class="form-group checkbox-row">
                     <input type="checkbox" id="loginRememberPwd" checked>
@@ -115,7 +118,6 @@
                     <label>上传通道</label>
                     <button type="button" id="ulEoBtn" class="task-progress-graph-btn active" title="EO 上传通道开关（实时生效）">EO</button>
                     <button type="button" id="ulCfBtn" class="task-progress-graph-btn active" title="CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）">CF</button>
-                    <button type="button" id="ulExtBtn" class="task-progress-graph-btn" title="外部代理上传通道（仅管理员，blob 直传不动引用零冲突）">外部</button>
                 </div>
                 <div id="selectedFiles"></div>
                 <div class="progress-container" style="display: none;">
@@ -139,7 +141,6 @@
                         <i style="background: #2c82c9;"></i><span id="ulLegendTot">总</span>
                         <i style="background: #28a745;"></i><span id="ulLegendEo">EO</span>
                         <i style="background: #e67e22;"></i><span id="ulLegendCf">CF</span>
-                        <i style="background: #9b59b6; display: none;"></i><span id="ulLegendExt" style="display: none;">外部</span>
                     </div>
                 </div>
                 <button class="btn" onclick="restartUploadTasks()" id="restartUploadBtn" style="width: 100%; margin-top: 10px; display: none; background: #2c82c9;">重启在途任务</button>
@@ -157,11 +158,11 @@
                 <div id="deleteAuthFields">
                     <div class="form-group">
                         <label>用户名</label>
-                        <input type="text" id="deleteUsername" placeholder="请输入用户名">
+                        <input type="text" id="deleteUsername" placeholder="请输入用户名" autocomplete="username">
                     </div>
                     <div class="form-group">
                         <label>密码</label>
-                        <input type="password" id="deletePassword" placeholder="请输入密码">
+                        <input type="password" id="deletePassword" placeholder="请输入密码" autocomplete="current-password">
                     </div>
                 </div>
                 <button class="btn" onclick="confirmDelete()" id="deleteBtn" style="width: 100%;">确认删除</button>
@@ -209,21 +210,21 @@
                 <h3 class="modal-section">修改密码</h3>
                 <div class="form-group">
                     <label>当前密码</label>
-                    <input type="password" id="cpCurrent" placeholder="请输入当前密码">
+                    <input type="password" id="cpCurrent" placeholder="请输入当前密码" autocomplete="current-password">
                 </div>
                 <div class="form-group">
                     <label>新密码</label>
-                    <input type="password" id="cpNew" placeholder="大于8位，含大小写字母和数字">
+                    <input type="password" id="cpNew" placeholder="大于8位，含大小写字母和数字" autocomplete="new-password">
                 </div>
                 <div class="form-group">
                     <label>确认新密码</label>
-                    <input type="password" id="cpConfirm" placeholder="再次输入新密码">
+                    <input type="password" id="cpConfirm" placeholder="再次输入新密码" autocomplete="new-password">
                 </div>
                 <button class="btn" onclick="changeOwnPassword()" id="cpBtn" style="width: 100%;">修改密码</button>
                 <h3 class="modal-section modal-section-danger">注销账户</h3>
                 <div class="form-group">
                     <label>输入密码确认注销</label>
-                    <input type="password" id="daPassword" placeholder="注销后账户将被永久删除">
+                    <input type="password" id="daPassword" placeholder="注销后账户将被永久删除" autocomplete="current-password">
                 </div>
                 <button class="btn" onclick="deleteOwnAccount()" id="daBtn" style="width: 100%; background: #dc3545;">永久注销账户</button>
                 <div id="accountMessage" class="message"></div>
@@ -235,7 +236,7 @@
                 <span class="modal-close" onclick="closeAdminModal()">&times;</span>
                 <h2>用户管理 <button class="icon-btn" id="adminRefreshBtn" onclick="loadAdminUsers()" title="刷新">⟳</button></h2>
                 <div class="form-group">
-                    <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="admin-search-no-autofill" oninput="renderAdminUserList()" readonly>
+                    <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="nope" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="admin-search-no-autofill" oninput="renderAdminUserList()" readonly>
                 </div>
                 <div id="adminListToggle" class="admin-list-toggle" onclick="toggleAdminUserList()">用户列表 <span id="adminListArrow">▾</span></div>
                 <div id="adminUserList" class="admin-user-list">
@@ -248,7 +249,7 @@
                 </div>
                 <div class="form-group">
                     <label>密码（明文，将加密存储）</label>
-                    <input type="password" id="adminNewPassword" placeholder="新用户密码">
+                    <input type="password" id="adminNewPassword" placeholder="新用户密码" autocomplete="new-password">
                 </div>
                 <div class="form-group">
                     <label>角色</label>

@@ -49,14 +49,11 @@ var extProxyState = {
     loading: null,    // 进行中的拉取回调队列（null=空闲）
     rr: 0,            // 代理轮询游标
     fails: {},        // base -> {n: 连续失败次数, t: 最近失败时间}（>=2 熔断，2 分钟自愈）
-    ul404: {},        // base -> 上传 404 累计次数（>=5 永久封禁该代理的上传）
-    ulFail: {}        // base -> 上传网络/CORS 失败连续次数（>=3 封禁上传，成功即清零）
+    sitePeak: {},     // base -> 站点级单连接峰值速率（新高抬升+缓慢衰减）
+    siteRate: {},     // base -> {rate, at} 最近完成分段速率（算站点平均值用）
+    slowStreak: {},   // base -> 连续异常慢中止次数（>=3 触发冷却）
+    cooldown: {}      // base -> 冷却截止时刻（异常慢 x3 冷却 30 秒）
 };
-// 部分外部镜像只代理 raw 下载、不代理 api.github.com：blob 上传会持续 404，
-// 累计 5 次即判定该代理不支持 API，永久移出上传通道（下载不受影响）；
-// 预检都过不了的代理（POST 带 Authorization 必触发 CORS 预检）网络失败 3 次封禁
-var EXT_UL_404_BAN = 5;
-var EXT_UL_NETFAIL_BAN = 3;
 // 下载熔断自愈：超过该时长未再失败即恢复（限流类 403 多为暂时性，永久逐出
 // 会让代理池在长跑中单调萎缩——外部通道利用率随之归零）
 var EXT_FAIL_RECOVER_MS = 120000;
@@ -92,13 +89,15 @@ function extDlAvailable() {
     return extProxyState.enabled && extProxiesUsable();
 }
 
-// 轮询挑选一个未熔断的代理；全部熔断返回 null
+// 轮询挑选一个未熔断且未冷却的代理（轮询天然把连接铺满所有站点——
+// 连接数 ≥ 站点数时每个站点都会被分到任务）；全部熔断/冷却返回 null
 function extPickBase() {
     var n = extProxyState.list.length;
+    var now = Date.now();
     for (var k = 0; k < n; k++) {
         var i = (extProxyState.rr + k) % n;
         var base = extProxyState.list[i];
-        if (extFailCount(base) < 2) {
+        if (extFailCount(base) < 2 && (extProxyState.cooldown[base] || 0) <= now) {
             extProxyState.rr = (i + 1) % n;
             return base;
         }
@@ -114,104 +113,53 @@ function extNoteFail(base) {
     extProxyState.fails[base] = f;
 }
 
-// 上传 404 计数：达到阈值即封禁该代理的上传能力（返回是否已封禁）
-function extNoteUpload404(base) {
-    if (!base) return false;
-    var n = (extProxyState.ul404[base] || 0) + 1;
-    extProxyState.ul404[base] = n;
-    return n >= EXT_UL_404_BAN;
-}
-
-// 上传网络/CORS 失败计数（预检失败的代理对上传永不可用）：连续 3 次封禁
-function extNoteUploadNetFail(base) {
-    if (!base) return false;
-    var n = (extProxyState.ulFail[base] || 0) + 1;
-    extProxyState.ulFail[base] = n;
-    return n >= EXT_UL_NETFAIL_BAN;
-}
-
-function extUlBanned(base) {
-    return (extProxyState.ul404[base] || 0) >= EXT_UL_404_BAN ||
-        (extProxyState.ulFail[base] || 0) >= EXT_UL_NETFAIL_BAN;
-}
-
-// 上传成功：清零该代理的上传网络失败计数（404 计数保留——不支持 API 是持续性事实）
-function extNoteUploadSuccess(base) {
+// ---- 站点级速率跟踪与慢速冷却（下载）----
+// 每个代理站点独立记录单连接峰值与最近完成速率：站点速度远低于自身峰值或
+// 低于外部池平均速度时自动中止当前分段换源重启；同一站点连续 3 次异常慢
+// 即冷却 30 秒（暂时限流的站点不再反复被踩），冷却结束自动归队
+function extSiteNoteSuccess(base, bytes, elapsedMs) {
     if (!base) return;
-    delete extProxyState.ulFail[base];
+    extProxyState.slowStreak[base] = 0;
+    if (elapsedMs < 300 || bytes < 131072) return;
+    var rate = bytes / (elapsedMs / 1000);
+    extProxyState.siteRate[base] = { rate: rate, at: Date.now() };
+    var peak = extProxyState.sitePeak[base] || 0;
+    extProxyState.sitePeak[base] = rate > peak ? rate : peak * 0.98;
 }
 
-// 上传通道视角的代理可用性：未熔断且未因 404/网络失败被封禁
-function extUploadProxiesUsable() {
-    if (!extProxyState.list.length) return false;
-    for (var i = 0; i < extProxyState.list.length; i++) {
-        var base = extProxyState.list[i];
-        if (extFailCount(base) < 2 && !extUlBanned(base)) return true;
+// 外部池其余站点的平均最近速率（无足够样本返回 0）
+function extSiteAvgRate(excludeBase) {
+    var sum = 0, cnt = 0, now = Date.now();
+    for (var b in extProxyState.siteRate) {
+        if (b === excludeBase) continue;
+        var r = extProxyState.siteRate[b];
+        if (now - r.at < 30000) {
+            sum += r.rate;
+            cnt++;
+        }
     }
-    return false;
+    return cnt >= 2 ? sum / cnt : 0;
 }
 
-// 轮询挑选一个可用于上传的代理（跳过熔断与上传封禁）；无可用返回 null
-function extPickUploadBase() {
-    var n = extProxyState.list.length;
-    for (var k = 0; k < n; k++) {
-        var i = (extProxyState.rr + k) % n;
-        var base = extProxyState.list[i];
-        if (extFailCount(base) < 2 && !extUlBanned(base)) {
-            extProxyState.rr = (i + 1) % n;
-            return base;
-        }
-    }
-    return null;
+// 判定当前分段在该站点上是否"异常慢"（相对站点峰值或池均值）；小分段/起步期 false
+function extSiteIsSlow(base, received, elapsedMs, switches) {
+    if (!base || (switches || 0) >= DL_SLOW_MAX_SWITCH) return false;
+    if (elapsedMs < DL_SLOW_MIN_ELAPSED || received < DL_SLOW_MIN_BYTES) return false;
+    var rate = received / (elapsedMs / 1000);
+    var peak = extProxyState.sitePeak[base] || 0;
+    if (peak > 0 && rate < peak * DL_SLOW_RATIO) return true;
+    var avg = extSiteAvgRate(base);
+    return avg > 0 && rate < avg * DL_SLOW_RATIO;
 }
 
-// 上传能力探测：带 Authorization 的 GET 会触发与 POST 完全相同的 CORS 预检——
-// 预检通不过 fetch 直接 reject（该代理对上传永不可用，开启通道时预封禁，
-// 避免上传时线上报错刷屏）；预检通过则必能拿到响应（401/404 都算可上传：
-// 401 只差真 key，404 由 ul404 计数兜底）
-var extUlProbed = false;
-function extProbeUploadCapable(done) {
-    var bases = extProxyState.list.slice();
-    var idx = 0, active = 0, banned = 0;
-    function next() {
-        while (active < 8 && idx < bases.length) {
-            (function(base) {
-                active++;
-                var finished = false;
-                var fin = function(capable) {
-                    if (finished) return;
-                    finished = true;
-                    active--;
-                    if (!capable) {
-                        extProxyState.ulFail[base] = EXT_UL_NETFAIL_BAN;
-                        banned++;
-                    }
-                    next();
-                };
-                var timer = setTimeout(function() { fin(false); }, 8000);
-                fetch(base + 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, {
-                    headers: { 'Authorization': 'token upload-capability-probe' },
-                    cache: 'no-store'
-                }).then(function() {
-                    clearTimeout(timer);
-                    fin(true);
-                }, function() {
-                    clearTimeout(timer);
-                    fin(false);
-                });
-            })(bases[idx++]);
-        }
-        if (idx >= bases.length && active === 0) {
-            extUlProbed = true;
-            if (done) done(banned);
-        }
+function extSiteNoteSlow(base) {
+    if (!base) return;
+    var n = (extProxyState.slowStreak[base] || 0) + 1;
+    extProxyState.slowStreak[base] = n;
+    if (n >= 3) {
+        extProxyState.cooldown[base] = Date.now() + 30000;   // 连续 3 次异常慢：冷却 30 秒
+        extProxyState.slowStreak[base] = 0;
     }
-    if (!bases.length) {
-        extUlProbed = true;
-        if (done) done(0);
-        return;
-    }
-    next();
 }
 
 // 浏览器侧分批探测候选代理：8 路并发，单个 6 秒超时；简单 GET（不带任何
@@ -347,9 +295,11 @@ function extProxyRestore() {
 
 // ---- 下载通道开关（EO/CF；外部通道开关即"多代理"按钮） ----
 // 与并行数一样实时生效：新调度的段/片立即避开已关闭通道，在途任务自然跑完；
-// 至少保留一个可用通道，最后一个通道不允许关闭
-var DL_CHAN_STORAGE_KEY = 'cloud_web_dl_chans';
-var dlChanSwitch = { eo: true, cf: true };
+// 至少保留一个可用通道，最后一个通道不允许关闭。
+// EO/CF 默认关闭：外部多代理池可用时下载几乎全走外部（免费镜像扛大头），
+// EO/CF 各限 ×3 并发兜底（见 dlChannels）；外部全部崩溃时自动恢复均衡分配
+var DL_CHAN_STORAGE_KEY = 'cloud_web_dl_chans_v2';   // v2：默认值由开变关，旧偏好作废
+var dlChanSwitch = { eo: false, cf: false };
 
 function dlChanSwitchLoad() {
     try {
@@ -359,7 +309,8 @@ function dlChanSwitchLoad() {
             if (j.cf === false || j.cf === true) dlChanSwitch.cf = j.cf;
         }
     } catch (e) {}
-    if (!dlChanSwitch.eo && !dlChanSwitch.cf) dlChanSwitch.eo = true;   // 兜底
+    // 不再强制打开 EO：EO/CF 双关是合法默认态——外部代理是默认载体；
+    // 外部也不可用时由 dlChannels 的 EO 兜底保证下载可用
 }
 
 function dlChanSwitchSave() {
@@ -387,15 +338,9 @@ function dlChanBtnRefresh() {
     }
 }
 
-// ---- 上传通道开关（EO/CF/外部）：与并行数一样实时生效（新任务立即避开
-// 已关闭通道）；外部上传通道仅限管理员——外部 ghproxy 镜像不注入鉴权，
-// blob 直传需自带 GitHub 写 key：key 由 /api/gitkey 仅下发给 admin 且
-// 只保存在内存（不持久化）；blob 创建不移动 git 引用（任意并行零冲突），
-// 引用类操作（提交）仍固定走 EO，冲突面不变 ----
+// ---- 上传通道开关（EO/CF）：与并行数一样实时生效（新任务立即避开已关闭通道） ----
 var UL_CHAN_STORAGE_KEY = 'cloud_web_ul_chans';
-var ulChanSwitch = { eo: true, cf: true, ext: false };
-var ulGitKey = null;          // 管理员 GitHub 写 key（仅内存）
-var ulGitKeyLoading = null;
+var ulChanSwitch = { eo: true, cf: true };
 
 function isAdminUser() {
     var a = getSavedAuth();
@@ -408,7 +353,6 @@ function ulChanSwitchLoad() {
         if (j && typeof j === 'object') {
             if (j.eo === false || j.eo === true) ulChanSwitch.eo = j.eo;
             if (j.cf === false || j.cf === true) ulChanSwitch.cf = j.cf;
-            // 外部上传开关不持久化：key 只存内存，每次会话需管理员重新开启
         }
     } catch (e) {}
     if (!ulChanSwitch.eo && !ulChanSwitch.cf) ulChanSwitch.eo = true;   // 兜底
@@ -421,96 +365,21 @@ function ulChanSwitchSave() {
 }
 
 function ulChanBtnRefresh() {
-    var pairs = [['ulEoBtn', 'eo'], ['ulCfBtn', 'cf'], ['ulExtBtn', 'ext']];
+    var pairs = [['ulEoBtn', 'eo'], ['ulCfBtn', 'cf']];
     for (var i = 0; i < pairs.length; i++) {
         var btn = document.getElementById(pairs[i][0]);
         if (btn) btn.classList.toggle('active', !!ulChanSwitch[pairs[i][1]]);
     }
 }
 
-// 拉取管理员 GitHub 写 key（仅内存缓存；cb(key|null)）
-function fetchUlGitKey(cb) {
-    if (ulGitKey) {
-        cb(ulGitKey);
-        return;
-    }
-    if (ulGitKeyLoading) {
-        ulGitKeyLoading.push(cb);
-        return;
-    }
-    var cbs = [cb];
-    ulGitKeyLoading = cbs;
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', '/api/gitkey', true);
-    applyEoAuth(xhr);
-    xhr.onload = function() {
-        var key = null;
-        try {
-            if (xhr.status === 200) key = JSON.parse(xhr.responseText).key || null;
-        } catch (e) {}
-        if (key) ulGitKey = key;
-        ulGitKeyLoading = null;
-        cbs.forEach(function(f) { f(ulGitKey); });
-    };
-    xhr.onerror = function() {
-        ulGitKeyLoading = null;
-        cbs.forEach(function(f) { f(null); });
-    };
-    xhr.send();
-}
-
 // 切换上传通道；返回 false 表示被拒绝（最后一个通道不能关）
-// 开启外部通道：仅管理员，需成功取得 key 并加载可用代理列表
 function ulChanToggle(chan, done) {
-    if (chan !== 'ext') {
-        if (ulChanSwitch[chan] && !ulChanSwitch[chan === 'eo' ? 'cf' : 'eo'] && !ulChanSwitch.ext) {
-            return false;
-        }
-        ulChanSwitch[chan] = !ulChanSwitch[chan];
-        ulChanSwitchSave();
-        if (done) done(true);
-        return true;
-    }
-    if (ulChanSwitch.ext) {
-        ulChanSwitch.ext = false;
-        if (done) done(true);
-        return true;
-    }
-    if (!isAdminUser()) {
-        if (done) done(false, '外部上传通道仅限管理员');
+    if (ulChanSwitch[chan] && !ulChanSwitch[chan === 'eo' ? 'cf' : 'eo']) {
         return false;
     }
-    if (done) done(null, '正在获取管理员凭据与可用代理...');
-    fetchUlGitKey(function(key) {
-        if (!key) {
-            if (done) done(false, '获取管理员 key 失败，外部上传不可用');
-            return;
-        }
-        extProxyLoad(function(list) {
-            if (!list.length) {
-                if (done) done(false, '暂无可用外部代理');
-                return;
-            }
-            // 显式开启即给外部通道一次全新机会：清除历史下载熔断与上传 404 封禁——
-            // 代理列表有缓存时加载不重置这些计数，旧熔断/封禁会让通道
-            // "开关开了却永远分不到任务"（分片详情 外部×0）
-            extProxyState.fails = {};
-            extProxyState.ul404 = {};
-            extProxyState.ulFail = {};
-            ulChanSwitch.ext = true;
-            if (done) done(true);
-            // 后台预探测各代理的上传能力（CORS 预检），预检过不了的代理
-            // 预封禁——上传时不再逐个线上报错才发现不可写
-            // （每次显式开通都重探：上面的计数重置会把探测封禁一并清掉）
-            extUlProbed = false;
-            extProbeUploadCapable(function(banned) {
-                if (banned > 0 && ulChanSwitch.ext) {
-                    showToast('已排除 ' + banned + ' 个不支持上传的外部代理');
-                    setTimeout(hideToast, 2500);
-                }
-            });
-        });
-    });
+    ulChanSwitch[chan] = !ulChanSwitch[chan];
+    ulChanSwitchSave();
+    if (done) done(true);
     return true;
 }
 
@@ -1486,15 +1355,12 @@ var I18N_BINDINGS = [
     ['#uploadModal div:nth-of-type(4) label', 'text', '上传通道'],
     ['#ulEoBtn', 'title', 'EO 上传通道开关（实时生效）'],
     ['#ulCfBtn', 'title', 'CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）'],
-    ['#ulExtBtn', 'title', '外部代理上传通道（仅管理员，blob 直传不动引用零冲突）'],
-    ['#ulExtBtn', 'text', '外部'],
     ['#chunkPanelToggle', 'owntext', '分片详情'],
     ['#speedPanelToggle', 'owntext', '速度曲线'],
     ['#restartUploadBtn', 'text', '重启在途任务'],
     ['#stopUploadBtn', 'text', '停止上传并回退'],
     ['#uploadBtn', 'text', '开始上传'],
     ['#ulLegendTot', 'text', '总'],
-    ['#ulLegendExt', 'text', '外部'],
     ['#deleteModal h2', 'text', '删除文件'],
     ['#deleteAuthFields div:nth-of-type(1) label', 'text', '用户名'],
     ['#deleteAuthFields div:nth-of-type(2) label', 'text', '密码'],
@@ -3061,9 +2927,15 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
                 try { ctrl.abort(); } catch (e) {}
                 return;
             }
-            // 慢速换源：当前速率远低于本通道历史峰值时中止换源（段级最多 2 次，
-            // 且受单段最大尝试次数约束，不会死循环；小分段/起步期不判定）
-            if (dlChanIsSlow(chan, seg.received, Date.now() - seg.t0, seg._slowSwitches)) {
+            // 慢速换源：外部按站点判定（远低于该站点峰值或外部池平均速度即
+            // 中止重启换站，连续 3 次的站点冷却 30 秒）；EO/CF 按通道峰值判定
+            if (chan === 'ext') {
+                if (extSiteIsSlow(seg._extBase, seg.received, Date.now() - seg.t0, seg._slowSwitches)) {
+                    seg._slowSwitches = (seg._slowSwitches || 0) + 1;
+                    extSiteNoteSlow(seg._extBase);
+                    try { ctrl.abort(); } catch (e) {}
+                }
+            } else if (dlChanIsSlow(chan, seg.received, Date.now() - seg.t0, seg._slowSwitches)) {
                 seg._slowSwitches = (seg._slowSwitches || 0) + 1;
                 try { ctrl.abort(); } catch (e) {}
             }
@@ -3125,7 +2997,10 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
                         dlChanDec(chan);
                         releaseBudget(seg);
                         if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
-                        if (chan === 'ext') extNoteSuccess(seg._extBase);   // 成功清零熔断计数
+                        if (chan === 'ext') {
+                            extNoteSuccess(seg._extBase);   // 成功清零熔断计数
+                            extSiteNoteSuccess(seg._extBase, seg.received, Date.now() - (seg.t0 || Date.now()));   // 站点级速率/慢速计数
+                        }
                         dlChanNotePeak(chan, seg.received, Date.now() - (seg.t0 || Date.now()));
                         dlAdaptiveSuccess(Date.now() - (seg.t0 || Date.now()));
                         checkAll();
@@ -4140,7 +4015,14 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                     try { xhr.abort(); } catch (e) {}
                     return;
                 }
-                if (dlChanIsSlow(chan, parts[i]._loaded || 0, Date.now() - (parts[i]._t0 || Date.now()), parts[i]._slowSwitches)) {
+                if (chan === 'ext') {
+                    // 站点级慢速判定：远低于站点峰值或池均值即中止重启换站，连续 3 次冷却 30s
+                    if (extSiteIsSlow(parts[i]._extBase, parts[i]._loaded || 0, Date.now() - (parts[i]._t0 || Date.now()), parts[i]._slowSwitches)) {
+                        parts[i]._slowSwitches = (parts[i]._slowSwitches || 0) + 1;
+                        extSiteNoteSlow(parts[i]._extBase);
+                        try { xhr.abort(); } catch (e) {}
+                    }
+                } else if (dlChanIsSlow(chan, parts[i]._loaded || 0, Date.now() - (parts[i]._t0 || Date.now()), parts[i]._slowSwitches)) {
                     parts[i]._slowSwitches = (parts[i]._slowSwitches || 0) + 1;
                     try { xhr.abort(); } catch (e) {}
                 }
@@ -4162,7 +4044,10 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 if (xhr.status === 200) {
                     buffers[i] = xhr.response;
                     dlChanDec(chan);
-                    if (chan === 'ext') extNoteSuccess(parts[i]._extBase);   // 成功清零熔断计数
+                    if (chan === 'ext') {
+                        extNoteSuccess(parts[i]._extBase);   // 成功清零熔断计数
+                        extSiteNoteSuccess(parts[i]._extBase, parts[i].size || 0, Date.now() - (parts[i]._t0 || Date.now()));
+                    }
                     inflightBytes = Math.max(0, inflightBytes - (parts[i].size || 0));
                     releaseBudget(parts[i]);
                     if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
@@ -5445,6 +5330,8 @@ function imgViewerSetList(models, currentPath) {
     }
     v.thumbs.innerHTML = '';
     v.thumbsLoaded = false;
+    v.thumbQueue = null;
+    v.thumbActive = 0;
     if (v.list.length > 1) {
         v.list.forEach(function(item, i) {
             var t = document.createElement('img');
@@ -5467,14 +5354,41 @@ function imgViewerSetList(models, currentPath) {
     imgViewerSyncNav();
 }
 
-// 主图加载成功后再加载缩略图条（幂等）
+// 主图加载成功后再加载缩略图条（幂等）。
+// 限流队列：最多 4 个缩略图同时在途（旧版一次性设置全部 src，百余张缩略图
+// 同时开拉把带宽占死、主图切换被拖慢）；当前图片优先，再向两侧扩散
+var IMG_THUMB_CONCURRENCY = 4;
 function imgViewerLoadThumbs() {
     var v = imgViewer;
     if (!v || v.thumbsLoaded) return;
     v.thumbsLoaded = true;
-    var thumbs = v.thumbs.children;
-    for (var i = 0; i < thumbs.length; i++) {
-        if (thumbs[i].dataset.src) thumbs[i].src = thumbs[i].dataset.src;
+    v.thumbActive = 0;
+    v.thumbQueue = [];
+    for (var d = 0; d < v.list.length; d++) {
+        if (v.index - d >= 0) v.thumbQueue.push(v.thumbs.children[v.index - d]);
+        if (d > 0 && v.index + d < v.list.length) v.thumbQueue.push(v.thumbs.children[v.index + d]);
+    }
+    imgViewerPumpThumbs();
+}
+
+function imgViewerPumpThumbs() {
+    var v = imgViewer;
+    if (!v || !v.thumbQueue) return;
+    while ((v.thumbActive || 0) < IMG_THUMB_CONCURRENCY && v.thumbQueue.length) {
+        var t = v.thumbQueue.shift();
+        if (!t || !t.dataset.src) continue;
+        v.thumbActive = (v.thumbActive || 0) + 1;
+        (function(el) {
+            var done = function() {
+                if (!imgViewer) return;
+                imgViewer.thumbActive--;
+                imgViewerPumpThumbs();
+            };
+            el.onload = done;
+            el.onerror = done;
+            el.src = el.dataset.src;
+            delete el.dataset.src;
+        })(t);
     }
 }
 
@@ -5494,7 +5408,9 @@ function imgViewerSyncNav() {
     }
 }
 
-// 切换图片（缩略图/前后按钮/方向键）：中断当前流式加载，直接换源（直链可走浏览器缓存）
+// 切换图片（缩略图/前后按钮/方向键）：中断当前流式加载，直接换源（直链可走浏览器缓存）；
+// 缩略图还在限流加载中也可随时切换——新主图立即中止旧加载并换源，
+// 其缩略图提到队列最前优先加载
 function imgViewerGo(i) {
     var v = imgViewer;
     if (!v || i < 0 || i >= v.list.length || i === v.index) return;
@@ -5503,6 +5419,16 @@ function imgViewerGo(i) {
         previewAbort = null;
     }
     v.index = i;
+    // 新当前图的缩略图插队优先加载
+    if (v.thumbQueue && v.thumbs.children[i]) {
+        var cur = v.thumbs.children[i];
+        var qi = v.thumbQueue.indexOf(cur);
+        if (qi > 0) {
+            v.thumbQueue.splice(qi, 1);
+            v.thumbQueue.unshift(cur);
+        }
+        imgViewerPumpThumbs();
+    }
     v.zoom = 1;
     imgViewerApply();
     v.img.src = v.list[i].url;
@@ -7163,7 +7089,11 @@ function runFileDownloadPool(models, poolLimit, hooks) {
 
     function pump() {
         if (cancelled) return;
-        while (active < poolLimit && nextIdx < models.length) {
+        // 文件级并行数动态跟随当前全局限制（自适应爬升后小文件也能吃满——
+        // 小文件单分段，文件级并行就是全部并行；旧版按启动时的限制定死，
+        // 限制爬到 32/48 后池子仍只有起步的几路，"线程数高但分配不匹配"）
+        var effPoolLimit = Math.min(models.length, dlGetLimit());
+        while (active < effPoolLimit && nextIdx < models.length) {
             (function(idx) {
                 var m = models[idx];
                 active++;
@@ -7809,7 +7739,9 @@ var dlLimit = { adaptive: true, limit: DL_LIMIT_ADAPTIVE_START };
 // "单域名 6 连接"限制——按可用代理数放大全局连接（每站约 2 路，封顶 48），
 // 把整个代理池的聚合吞吐吃满；外部通道关闭或全部熔断后自动回落 DL_LIMIT_MAX
 var DL_LIMIT_EXT_PER_PROXY = 2;
-var DL_LIMIT_EXT_HARD_MAX = 32;   // 过高并发会触发代理站点限流 403（实测 48 大量触发）
+// 高强度并行：每站约 2 路、封顶 48——限流类 403 由"失败 2 分钟自愈 + 站点
+// 异常慢 30 秒冷却"自我调节，不再靠压低全局上限规避
+var DL_LIMIT_EXT_HARD_MAX = 48;
 
 // 未熔断的外部代理数（下载通道视角）
 function extUsableProxyCount() {
@@ -7950,14 +7882,23 @@ function dlRecentRates() {
     return { eo: avg(dlTracker.eo), cf: avg(dlTracker.cf), ext: avg(dlTracker.ext) };
 }
 
+// 外部代理池可用时 EO/CF 各自的在途并发上限（兜底通道不抢外部带宽；
+// 外部全部崩溃 extDlAvailable()=false 时限额自动解除，恢复均衡分配）
+var DL_EOCF_CAP_WHEN_EXT = 3;
+
 // 当前可用下载通道（exclude 用于重试换源时排除上次失败的通道）；
-// EO/CF 受通道开关控制，外部通道受"多代理"开关与熔断控制
+// EO/CF 受通道开关控制（外部可用时另受 ×3 在途限额约束），外部通道受
+// "多代理"开关与熔断控制
 function dlChannels(exclude) {
     var chans = [];
-    if (dlChanSwitch.eo && exclude !== 'eo') chans.push('eo');
-    if (dlChanSwitch.cf && exclude !== 'cf') chans.push('cf');
-    if (exclude !== 'ext' && extDlAvailable()) chans.push('ext');
-    if (!chans.length) chans.push('eo');   // 兜底：永远保留 EO
+    var extOn = extDlAvailable();
+    if (dlChanSwitch.eo && exclude !== 'eo' && (!extOn || (dlActive.eo || 0) < DL_EOCF_CAP_WHEN_EXT)) chans.push('eo');
+    if (dlChanSwitch.cf && exclude !== 'cf' && (!extOn || (dlActive.cf || 0) < DL_EOCF_CAP_WHEN_EXT)) chans.push('cf');
+    if (exclude !== 'ext' && extOn) chans.push('ext');
+    if (!chans.length) {
+        // 兜底：限额把 EO/CF 都排除、外部又被换源排除时，仍给 EO 留活路
+        chans.push(exclude === 'cf' ? 'eo' : (exclude === 'eo' ? 'cf' : 'eo'));
+    }
     return chans;
 }
 
@@ -8246,13 +8187,13 @@ function drawSpeedGraph() {
     var box = prepareGraphCanvas(canvas, 34);
     if (!box) return;
     var ctx = box.ctx, W = box.plotW, H = box.plotH, x0 = box.x0;
-    var tot = uploadSpeedHist.tot, eo = uploadSpeedHist.eo, cf = uploadSpeedHist.cf, ext = uploadSpeedHist.ext;
+    var tot = uploadSpeedHist.tot, eo = uploadSpeedHist.eo, cf = uploadSpeedHist.cf;
     var peak = graphWindowPeak(tot);
     drawGraphGrid(ctx, box, peak);
     var peakEl = document.getElementById('speedPanelPeak');
     if (peakEl) peakEl.textContent = peak > 1024 ? '峰值 ' + formatSize(Math.round(peak)) + '/s' : '';
     if (!tot.length || peak <= 0) {
-        updateUlLegend(0, 0, 0, 0);
+        updateUlLegend(0, 0, 0);
         return;
     }
     var max = peak * 1.15;
@@ -8279,29 +8220,16 @@ function drawSpeedGraph() {
     plot(tot, '#2c82c9', 1.8);
     plot(eo, '#28a745', 1.2);
     plot(cf, '#e67e22', 1.2);
-    if (ulChanSwitch.ext) plot(ext, '#9b59b6', 1.2);
     ctx.restore();
-    updateUlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0, ext[n - 1] || 0);
+    updateUlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0);
 }
 
-function updateUlLegend(totV, eoV, cfV, extV) {
+function updateUlLegend(totV, eoV, cfV) {
     var f = function(v) { return v > 1024 ? formatSize(Math.round(v)) + '/s' : '0/s'; };
     var el;
     if ((el = document.getElementById('ulLegendTot'))) el.textContent = '总 ' + f(totV);
     if ((el = document.getElementById('ulLegendEo'))) el.textContent = 'EO ' + f(eoV);
     if ((el = document.getElementById('ulLegendCf'))) el.textContent = 'CF ' + f(cfV);
-    if ((el = document.getElementById('ulLegendExt'))) el.textContent = '外部 ' + f(extV || 0);
-    updateUlLegendExtVisibility();
-}
-
-// 外部上传图例只在外部上传通道开启时显示（连同前面的色块）
-function updateUlLegendExtVisibility() {
-    var span = document.getElementById('ulLegendExt');
-    if (!span) return;
-    var icon = span.previousElementSibling;
-    var disp = ulChanSwitch.ext ? '' : 'none';
-    span.style.display = disp;
-    if (icon && icon.tagName === 'I') icon.style.display = disp;
 }
 
 function startUpload(doneBases) {
@@ -8434,17 +8362,9 @@ function ulChannels(exclude) {
     var chans = [];
     if (ulChanSwitch.eo && exclude !== 'eo') chans.push('eo');
     if (ulChanSwitch.cf && exclude !== 'cf' && cfUploadState === true) chans.push('cf');
-    if (ulChanSwitch.ext && exclude !== 'ext' && isAdminUser() && ulGitKey && extUploadProxiesUsable()) chans.push('ext');
     if (!chans.length) chans.push('eo');
     return chans;
 }
-
-// 外部通道可用时的优先份额：blob 直传不移动引用、任意并行零冲突，
-// 期望行为是"有外部走外部"——外部固定 80% 份额，EO/CF 按速率比分剩余 20%
-var UL_EXT_PREFER_SHARE = 0.8;
-// 每个非外部通道（EO/CF）的最低任务份额：保证可用通道始终分到任务、
-// 维持速率采样，避免"零速率→零份额→永远零速率"的饿死循环
-var UL_OTHER_MIN_SHARE = 0.08;
 
 // 按通道负载分配上传任务：在途任务数均衡优先；尚无速率数据时轮转；
 // 有数据后按各通道实测速率比例加权（带概率地板，避免零速率通道被永久饿死），
@@ -8462,59 +8382,6 @@ function pickUploadChannel(size, exclude, noCount) {
     var useChan;
     if (chans.length === 1) {
         useChan = chans[0];
-    } else if (chans.indexOf('ext') !== -1) {
-        // 外部优先的确定性份额分配：外部固定 UL_EXT_PREFER_SHARE；EO/CF 各自
-        // 保底 UL_OTHER_MIN_SHARE（修复：旧版地板只作用于"剩余 20% 内部的比例"，
-        // 零速率通道实际份额被稀释到约 5%，低并发下全程分不到任务——CF 曾被
-        // 饿死在 0 任务），保底之上的余额再按实测速率比例分配。
-        // 选通道分两层：先看"累计派发亏欠"（落后目标半个任务即强制补位，保证
-        // 任何可用通道都能持续拿到任务、维持速率采样），再看"在途缺口"（吞吐
-        // 优先：完成快的通道自然占更多在途槽位）
-        var rates = { eo: st._eoRate || 0, cf: st._cfRate || 0, ext: st._extRate || 0 };
-        var others = [], totRate = 0, anyRate = false, i;
-        for (i = 0; i < chans.length; i++) {
-            if (chans[i] === 'ext') continue;
-            others.push(chans[i]);
-            totRate += rates[chans[i]];
-            if (rates[chans[i]] >= 1024) anyRate = true;
-        }
-        var rest = 1 - UL_EXT_PREFER_SHARE;
-        var floorEach = Math.min(UL_OTHER_MIN_SHARE, rest / others.length);
-        var extra = rest - floorEach * others.length;
-        var targets = { ext: UL_EXT_PREFER_SHARE, eo: 0, cf: 0 };
-        for (i = 0; i < others.length; i++) {
-            var ratio = anyRate ? (rates[others[i]] || 0) / (totRate || 1) : 1 / others.length;
-            targets[others[i]] = floorEach + extra * ratio;
-        }
-        var tsum = 0;
-        for (i = 0; i < chans.length; i++) tsum += targets[chans[i]] || 0;
-        for (i = 0; i < chans.length; i++) targets[chans[i]] = (targets[chans[i]] || 0) / (tsum || 1);
-        // 第一层：累计派发亏欠兜底（平滑加权轮询，长期比例不漂移、无通道饿死）
-        var disp = { eo: st.eoTasks || 0, cf: st.cfTasks || 0, ext: st.extTasks || 0 };
-        var totalDisp = disp.eo + disp.cf + disp.ext + 1;   // 含即将派发的新任务
-        var oweChan = null, oweMax = 0.5;
-        for (i = 0; i < chans.length; i++) {
-            var owe = targets[chans[i]] * totalDisp - (disp[chans[i]] || 0);
-            if (owe > oweMax) { oweMax = owe; oweChan = chans[i]; }
-        }
-        if (oweChan) {
-            useChan = oweChan;
-        } else {
-            // 第二层：在途缺口——补给"实际在途占比落后目标最多"的通道，
-            // 多代理站点各自匀速异步收发，快通道占更多槽位、吞吐最大化
-            var act = { eo: 0, cf: 0, ext: 0 }, totalAct = 0;
-            for (var key in st.activeTasks) {
-                var ac = st.activeTasks[key].chan || 'eo';
-                if (chans.indexOf(ac) !== -1) { act[ac]++; totalAct++; }
-            }
-            var bestScore = -Infinity;
-            useChan = chans[0];
-            for (i = 0; i < chans.length; i++) {
-                var c = chans[i];
-                var score = targets[c] - (totalAct ? act[c] / totalAct : 0);
-                if (score > bestScore) { bestScore = score; useChan = c; }
-            }
-        }
     } else {
         // 在途均衡优先：某通道在途任务明显更多时先补给在途最少通道
         var act = {};
@@ -9036,9 +8903,8 @@ function renderChunkPanelNow() {
         activeList.push(st.activeTasks[key]);
     }
     var chanText = '';
-    if (cfUploadState === true || ulChanSwitch.ext) {
+    if (cfUploadState === true) {
         chanText = ' · EO×' + (st.eoTasks || 0) + ' CF×' + (st.cfTasks || 0);
-        if (ulChanSwitch.ext) chanText += ' 外部×' + (st.extTasks || 0);
     }
     document.getElementById('chunkPanelSummary').textContent =
         '· 并行 ' + st.limit + (st.adaptive ? '(自适应)' : '') + ' · 进行中 ' + activeList.length + ' · 已完成 ' + st.doneCount + '/' + uploadTasks.length + chanText;
@@ -9123,27 +8989,15 @@ function gitApiUrl(apiPath, useCf) {
     return useCf ? (CF_PROXY_BASE + p) : ghUrl('https://' + p);
 }
 
-// chan：'eo'（同源，EO 注入 key）/ 'cf'（CF 服务端 key）/ 'ext'（外部代理，
-// 管理员 key 直传——外部代理不注入鉴权；blob 创建不移动引用，任意并行零冲突）
+// chan：'eo'（同源，EO 注入 key）/ 'cf'（CF 服务端 key）
 function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries, chan, task) {
     if (retries === undefined) retries = 3;
-    if (chan === 'ext') {
-        var base = extPickUploadBase();
-        if (!base) chan = 'eo';   // 外部代理全部熔断/404 封禁时兜底 EO
-        else if (task) task._extBase = base;
-    }
-    var url;
-    if (chan === 'ext') {
-        url = task._extBase + 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/git/blobs';
-    } else {
-        url = gitApiUrl('/git/blobs', chan === 'cf');
-    }
+    var url = gitApiUrl('/git/blobs', chan === 'cf');
     var xhr = new XMLHttpRequest();
     xhr.open('POST', url, true);
     if (chan === 'eo') applyEoAuth(xhr);
-    if (chan === 'ext') xhr.setRequestHeader('Authorization', 'token ' + ulGitKey);
     xhr.setRequestHeader('Content-Type', 'application/json');
-    // 部分外部代理对 POST 只接不发（连接挂起）：超时兜底，避免任务永久卡住
+    // 链路挂起（连接不报错也不再发数据）：超时兜底，避免任务永久卡住
     xhr.timeout = 60000;
     xhr.upload.onprogress = function(e) {
         if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
@@ -9153,20 +9007,11 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
             var sha = null;
             try { sha = JSON.parse(xhr.responseText).sha; } catch (e) {}
             if (sha) {
-                if (chan === 'ext' && task && task._extBase) {
-                    extNoteUploadSuccess(task._extBase);
-                    extNoteSuccess(task._extBase);
-                }
                 onSuccess(sha);
                 return;
             }
             onError(xhr.status, xhr.responseText);
             return;
-        }
-        // 外部代理 404：该镜像大概率不代理 api.github.com，按代理累计计数，
-        // 满 5 次永久移出上传通道（只计上传 404，raw 下载 404 不影响）
-        if (chan === 'ext' && xhr.status === 404 && task && task._extBase) {
-            extNoteUpload404(task._extBase);
         }
         // 5xx/429 等服务端临时错误按网络错误重试；4xx 直接失败
         if ((xhr.status >= 500 || xhr.status === 429) && retries > 0) {
@@ -9183,9 +9028,6 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
         if (task && x2) task.xhr = x2;
     };
     xhr.onerror = function() {
-        // 外部代理网络/CORS 失败（多为预检不过）：按代理累计，连续 3 次封禁上传——
-        // 此前只计 404，预检失败的代理永远不被惩罚，每个任务都在它们身上烧重试
-        if (chan === 'ext' && task && task._extBase) extNoteUploadNetFail(task._extBase);
         if (retries > 0) {
             setTimeout(retryInPlace, 1000 * (4 - retries));
             return;
@@ -9193,8 +9035,7 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
         onError(0, '');
     };
     xhr.ontimeout = function() {
-        // 代理挂起导致的超时按网络错误换源重试
-        if (chan === 'ext' && task && task._extBase) extNoteUploadNetFail(task._extBase);
+        // 链路挂起导致的超时按网络错误换源重试
         if (retries > 0) {
             setTimeout(retryInPlace, 1000 * (4 - retries));
             return;
@@ -9487,11 +9328,10 @@ document.addEventListener('DOMContentLoaded', function() {
             dlChanBtnRefresh();
         });
     });
-    // 上传通道开关（EO/CF/外部）：实时生效（新任务立即避开已关闭通道）；
-    // 外部通道仅管理员可开（需取得 /api/gitkey 下发的 key 与可用代理列表）
+    // 上传通道开关（EO/CF）：实时生效（新任务立即避开已关闭通道）
     ulChanSwitchLoad();
     ulChanBtnRefresh();
-    [['ulEoBtn', 'eo'], ['ulCfBtn', 'cf'], ['ulExtBtn', 'ext']].forEach(function(pair) {
+    [['ulEoBtn', 'eo'], ['ulCfBtn', 'cf']].forEach(function(pair) {
         document.getElementById(pair[0]).addEventListener('click', function() {
             var ok = ulChanToggle(pair[1], function(success, msg) {
                 if (msg) {
@@ -9499,7 +9339,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     setTimeout(hideToast, 3000);
                 }
                 ulChanBtnRefresh();
-                updateUlLegendExtVisibility();
             });
             if (!ok) {
                 showToast('至少保留一个上传通道');

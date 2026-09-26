@@ -2013,6 +2013,19 @@ h1 {
     position: relative;
     margin: 0 0 14px;
 }
+/* 自动填充诱饵输入框：隐形、不可聚焦、不可交互，专门吸收浏览器误填的用户名 */
+.autofill-decoy {
+    position: absolute;
+    opacity: 0;
+    height: 0;
+    width: 0;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    pointer-events: none;
+    left: -9999px;
+    top: 0;
+}
 .search-wrap #searchInput {
     width: 100%;
     box-sizing: border-box;
