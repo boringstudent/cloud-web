@@ -866,6 +866,8 @@ function themeSet(mode) {
     themeMode = (mode === 'dark' || mode === 'light') ? mode : 'auto';
     try { localStorage.setItem(THEME_STORAGE_KEY, themeMode); } catch (e) {}
     applyTheme();
+    var sel = document.getElementById('themeSelect');
+    if (sel && sel.value !== themeMode) sel.value = themeMode;
 }
 
 function initTheme() {
@@ -1033,6 +1035,15 @@ var I18N = {
         '上传双通道已启用（EO + CF）': 'Dual upload channels enabled (EO + CF)',
         '当前位置:': 'Location:',
         '总用量': 'Total',
+        '搜索': 'Search',
+        '停止任务': 'Stop task',
+        '正在搜索…': 'Searching…',
+        '没有匹配「': 'No files matching "',
+        '」的文件': '"',
+        '搜索到': 'Found',
+        '个文件（点击跳转所在目录）': 'file(s) (click to open folder)',
+        '搜索失败：无法获取仓库文件树': 'Search failed: cannot fetch repo file tree',
+        '已停止之前的同类型任务': 'Previous task of the same type stopped',
         '未知错误': 'Unknown error'
     },
     'zh-TW': {
@@ -1173,6 +1184,15 @@ var I18N = {
         '上传双通道已启用（EO + CF）': '上傳雙通道已啟用（EO + CF）',
         '当前位置:': '目前位置:',
         '总用量': '總用量',
+        '搜索': '搜尋',
+        '停止任务': '停止任務',
+        '正在搜索…': '正在搜尋…',
+        '没有匹配「': '沒有匹配「',
+        '」的文件': '」的檔案',
+        '搜索到': '搜尋到',
+        '个文件（点击跳转所在目录）': '個檔案（點擊跳轉所在目錄）',
+        '搜索失败：无法获取仓库文件树': '搜尋失敗：無法取得倉庫檔案樹',
+        '已停止之前的同类型任务': '已停止之前的同類型任務',
         '未知错误': '未知錯誤'
     },
     'ja': {
@@ -1313,6 +1333,15 @@ var I18N = {
         '上传双通道已启用（EO + CF）': 'アップロードデュアル経路を有効化しました（EO + CF）',
         '当前位置:': '現在位置:',
         '总用量': '総使用量',
+        '搜索': '検索',
+        '停止任务': 'タスクを停止',
+        '正在搜索…': '検索中…',
+        '没有匹配「': '「',
+        '」的文件': '」に一致するファイルはありません',
+        '搜索到': '見つかったファイル: ',
+        '个文件（点击跳转所在目录）': '件（クリックでフォルダへ）',
+        '搜索失败：无法获取仓库文件树': '検索失敗：リポジトリのファイルツリーを取得できません',
+        '已停止之前的同类型任务': '同種類の前のタスクを停止しました',
         '未知错误': '不明なエラー'
     }
 };
@@ -1327,8 +1356,10 @@ function t(s) {
 var I18N_BINDINGS = [
     ['#authBtn', 'text', '登录'],
     ['#searchInput', 'ph', '搜索全盘文件…'],
+    ['#searchBtn', 'title', '搜索'],
+    ['#bgTaskStop', 'title', '停止任务'],
     ['#fileListContainer', 'text', '加载中...'],
-    ['button[onclick="openUploadModal()"]', 'text', '上传文件'],
+    ['#uploadFabBtn', 'text', '上传文件'],
     ['#userAvatarBtn', 'title', '账户菜单'],
     ['#userMenu div:nth-of-type(2)', 'text', '用户信息修改'],
     ['#userMenuAdmin', 'text', '用户管理'],
@@ -2398,7 +2429,7 @@ function closeUploadModal() {
         document.getElementById('uploadModal').classList.remove('show');
         showBgTask(document.getElementById('progressText').textContent || '上传中...', function() {
             document.getElementById('uploadModal').classList.add('show');
-        });
+        }, false, 'upload');
         showToast('上传已转入后台，点击右下角浮泡可查看');
         setTimeout(hideToast, 2500);
         return;
@@ -2502,10 +2533,14 @@ var searchSeq = 0;   // 代数令牌：树加载慢响应到达时输入已变�
 
 function renderSearchResults(q) {
     var seq = ++searchSeq;
+    listViewSearch = true;
+    var searchBtn = document.getElementById('searchBtn');
+    if (searchBtn) searchBtn.classList.add('searching');
     var container = document.getElementById('fileListContainer');
     container.className = '';
-    container.innerHTML = '<div style="padding: 16px; color: #999;">正在搜索…</div>';
+    container.innerHTML = '<div style="padding: 16px; color: #999;">' + t('正在搜索…') + '</div>';
     fetchFileTree(function() {
+        if (searchBtn) searchBtn.classList.remove('searching');
         if (seq !== searchSeq) return;
         var lq = q.toLowerCase();
         var matches = [];
@@ -2517,10 +2552,10 @@ function renderSearchResults(q) {
             if (matches.length >= 200) break;
         }
         if (!matches.length) {
-            container.innerHTML = '<div style="padding: 16px; color: #999;">没有匹配「' + escapeHtml(q) + '」的文件</div>';
+            container.innerHTML = '<div style="padding: 16px; color: #999;">' + t('没有匹配「') + escapeHtml(q) + t('」的文件') + '</div>';
             return;
         }
-        var html = '<div style="padding: 6px 8px; color: #888; font-size: 0.9em;">搜索到 ' + matches.length + (matches.length >= 200 ? '+' : '') + ' 个文件（点击跳转所在目录）</div>';
+        var html = '<div style="padding: 6px 8px; color: #888; font-size: 0.9em;">' + t('搜索到') + ' ' + matches.length + (matches.length >= 200 ? '+' : '') + ' ' + t('个文件（点击跳转所在目录）') + '</div>';
         matches.forEach(function(ent) {
             var slash = ent.path.lastIndexOf('/');
             var dir = slash === -1 ? '' : ent.path.slice(0, slash);
@@ -2532,9 +2567,31 @@ function renderSearchResults(q) {
         });
         container.innerHTML = html;
     }, function() {
+        if (searchBtn) searchBtn.classList.remove('searching');
         if (seq !== searchSeq) return;
-        container.innerHTML = '<div style="padding: 16px; color: #e74c3c;">搜索失败：无法获取仓库文件树</div>';
+        container.innerHTML = '<div style="padding: 16px; color: #e74c3c;">' + t('搜索失败：无法获取仓库文件树') + '</div>';
     });
+}
+
+// 搜索按钮：有词立即搜索（带弹跳动画），空词强制恢复目录列表——
+// 浏览器自动填充/清除不触发 input 事件时也能靠按钮回到原列表
+function triggerSearch() {
+    var input = document.getElementById('searchInput');
+    if (!input) return;
+    var q = input.value.trim();
+    clearTimeout(searchDebounceTimer);
+    var btn = document.getElementById('searchBtn');
+    if (btn) {
+        btn.classList.remove('pop');
+        void btn.offsetWidth;   // 重新触发动画
+        btn.classList.add('pop');
+    }
+    if (!q) {
+        searchSeq++;
+        loadFileList();
+        return;
+    }
+    renderSearchResults(q);
 }
 
 function initSearchBox() {
@@ -2550,6 +2607,23 @@ function initSearchBox() {
             return;
         }
         searchDebounceTimer = setTimeout(function() { renderSearchResults(q); }, 350);
+    });
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            triggerSearch();
+        }
+    });
+    // 浏览器自动填充（如账户名）不触发 input 事件：聚焦/值变化轮询兜底，
+    // 检测到外源性清空（框已空但列表仍停在搜索结果）自动恢复目录列表
+    input.addEventListener('focus', function() {
+        if (!input.value.trim() && input._hadQuery) {
+            searchSeq++;
+            loadFileList();
+        }
+    });
+    input.addEventListener('blur', function() {
+        input._hadQuery = !!input.value.trim();
     });
 }
 
@@ -3588,26 +3662,65 @@ function hideToast() {
 var BG_TASK_KEY = 'cloud_web_bgtask';
 var bgTaskRestore = null;
 var bgTaskInterrupted = false;
+var bgTaskType = null;   // 浮泡当前对应的任务类型（upload/download/delete）
 
-function showBgTask(text, restoreFn, interrupted) {
+// ---- 全局任务注册表：上传/下载/删除同类型互斥 ----
+// 同类型同时只允许一个任务：启动新任务自动停止旧任务（即"切换到同类型任务"），
+// 后台浮泡带停止按钮可主动停止当前任务；页面刷新后残留的"已中断"提示在新
+// 任务启动时自动清除，不再卡住/覆盖新任务的进度显示
+var runningTasks = { upload: null, download: null, delete: null };
+
+function taskRegister(type, task) {
+    var old = runningTasks[type];
+    if (old && old !== task && old.stop) {
+        try { old.stop(); } catch (e) {}
+        showToast(t('已停止之前的同类型任务'));
+        setTimeout(hideToast, 2200);
+    }
+    runningTasks[type] = task;
+    // 新任务启动：清掉刷新残留的"已中断"浮泡，避免占据新任务的进度位置
+    if (bgTaskInterrupted) clearBgTask();
+    updateBgTaskStopBtn();
+}
+
+function taskUnregister(type, task) {
+    if (!task || runningTasks[type] === task) runningTasks[type] = null;
+    updateBgTaskStopBtn();
+}
+
+function updateBgTaskStopBtn() {
+    var btn = document.getElementById('bgTaskStop');
+    if (!btn) return;
+    var bubble = document.getElementById('bgTaskBubble');
+    var show = !bgTaskInterrupted && bgTaskType && runningTasks[bgTaskType] &&
+        bubble && bubble.style.display !== 'none';
+    btn.style.display = show ? '' : 'none';
+}
+
+function showBgTask(text, restoreFn, interrupted, type) {
     var b = document.getElementById('bgTaskBubble');
     b.style.display = 'flex';
     bgTaskInterrupted = !!interrupted;
+    bgTaskType = type || null;
     b.classList.toggle('interrupted', bgTaskInterrupted);
     document.getElementById('bgTaskText').textContent = t(text);
     bgTaskRestore = restoreFn || null;
+    updateBgTaskStopBtn();
 }
 
 function updateBgTask(text) {
     var b = document.getElementById('bgTaskBubble');
     if (b.style.display === 'none' || bgTaskInterrupted) return;
     document.getElementById('bgTaskText').textContent = text;
+    updateBgTaskStopBtn();
 }
 
 function clearBgTask() {
     document.getElementById('bgTaskBubble').style.display = 'none';
     bgTaskRestore = null;
     bgTaskInterrupted = false;
+    bgTaskType = null;
+    updateBgTaskStopBtn();
     clearBgTaskPersist();
 }
 
@@ -3634,14 +3747,21 @@ function restoreBgTaskHint() {
         clearBgTaskPersist();
         return;
     }
-    showBgTask(rec.label + ' · 已被页面刷新中断', null, true);
+    showBgTask(rec.label + ' · 已被页面刷新中断', null, true, rec.type || null);
 }
 
 // ---- 全局任务进度条（单文件/批量/文件夹下载共用） ----
 var taskProgressCancelFn = null;
 var taskProgressRestartFn = null;
 
+var taskProgressDlTask = null;   // 进度卡片当前对应的下载任务（注册表引用）
+
 function showTaskProgress(text, pct, onCancel, onRestart) {
+    // 下载类任务注册（同类型互斥）：先停止旧下载——其取消回调可能连带
+    // hideTaskProgress 清理 UI，因此注册完成后再设置本任务的界面
+    var newTask = onCancel ? { stop: onCancel } : null;
+    if (newTask) taskRegister('download', newTask);
+    taskProgressDlTask = newTask;
     var el = document.getElementById('taskProgress');
     el.classList.add('show');
     taskProgressCancelFn = onCancel || null;
@@ -3672,6 +3792,10 @@ function hideTaskProgress() {
     document.getElementById('taskProgress').classList.remove('show');
     taskProgressCancelFn = null;
     taskProgressRestartFn = null;
+    if (taskProgressDlTask) {
+        taskUnregister('download', taskProgressDlTask);
+        taskProgressDlTask = null;
+    }
     clearBgTaskPersist();
 }
 
@@ -6300,6 +6424,17 @@ function deleteFolderFiles(files) {
         errMsg: ''
     };
     deleteState = state;
+    // 删除类任务注册：同类型互斥——新删除任务自动停止旧删除任务；
+    // stop 绑定本状态对象，全局 deleteState 已换人时只标记自己停止
+    taskRegister('delete', {
+        stop: function() {
+            if (deleteState === state) {
+                stopDelete();
+                return;
+            }
+            state.stopped = true;
+        }
+    });
     document.getElementById('deleteStopBtn').style.display = '';
     setMsg('deleteMessage', '正在删除 (0/' + files.length + ')', 'success');
     setDeleteProgress(0, files.length);
@@ -6307,6 +6442,7 @@ function deleteFolderFiles(files) {
     function settle() {
         if (state.active > 0) return;
         deleteState = null;
+        taskUnregister('delete');
         document.getElementById('deleteStopBtn').style.display = 'none';
         if (state.stopped) {
             setMsg('deleteMessage', '已停止（已删除 ' + state.done + '/' + files.length + '），其余文件保留', 'error');
@@ -6503,6 +6639,7 @@ var entryMap = {};
 var entryOrder = [];
 var hasRenderedList = false;
 var listLoading = false;
+var listViewSearch = false;  // 当前容器展示的是搜索结果（304 时仍需重渲染目录）
 var LIST_RENDER_BATCH = 40;  // 首屏懒加载每批渲染的条目数
 var listRenderToken = 0;     // 分批渲染令牌：新一轮渲染使旧批次失效
 
@@ -6535,6 +6672,13 @@ function loadFileList() {
         hideRefreshIndicator();
 
         if (status === 304) {
+            // 视图被搜索结果替换过时，304 也必须用缓存体重渲染目录列表——
+            // 否则清空搜索（或自动填充被清除）后永远停在搜索结果页
+            if (listViewSearch && body) {
+                try {
+                    renderFileList(JSON.parse(body));
+                } catch (e) {}
+            }
             return;
         }
 
@@ -6874,7 +7018,8 @@ function runFileDownloadPool(models, poolLimit, hooks) {
 // （工作窃取），任何文件都能抢占空闲连接，并行数全程吃满；完成的文件经保存
 // 队列串行吐出（浏览器对连续自动下载限流）；全局进度条按字节汇总总进度。
 function runParallelDownload(models, label) {
-    if (batchDownloadState) return;
+    // 同类型互斥：已有批量下载在跑时自动停止旧的、切换到新任务
+    if (batchDownloadState) stopBatchDownload();
     if (!models.length) return;
     batchDownloadState = { cancelled: false, pool: null };
     toggleBatchDownloadUI(true);
@@ -7008,8 +7153,19 @@ function openBatchDeleteModal() {
 }
 
 function renderFileList(items) {
+    var wasSearch = listViewSearch;
+    listViewSearch = false;
     var models = buildEntryModels(items);
     var container = document.getElementById('fileListContainer');
+
+    if (wasSearch) {
+        // 容器里是搜索结果节点（不在 entryMap 登记内）：增量 diff 既不会移除
+        // 它们、也不会重新挂载 entryMap 里已脱离 DOM 的条目——强制全量重渲染
+        hasRenderedList = false;
+        entryMap = {};
+        entryOrder = [];
+        listRenderToken++;
+    }
 
     if (!models.length) {
         listRenderToken++;   // 中止进行中的分批渲染（tail 已随 innerHTML 移除）
@@ -8005,6 +8161,28 @@ function startUpload(doneBases) {
         cacheIdx: 0,     // 预读游标（领先 nextIndex 最多 UPLOAD_READAHEAD 个任务）
         inflightBytes: 0 // 在途任务总字节数（内存保护：超过 UL_MAX_INFLIGHT_BYTES 暂停派发）
     };
+    // 上传类任务注册：同类型互斥——开始新上传自动停止旧上传（blob 未提交无副作用）；
+    // stop 绑定本状态对象：全局 uploadState 已切换到新任务时只中止自己的在途连接
+    var stSelf = uploadState;
+    taskRegister('upload', {
+        stop: function() {
+            if (uploadState === stSelf) {
+                stopUploadRollback();
+                return;
+            }
+            stSelf.cancelled = true;
+            if (stSelf.speedTimer) {
+                clearInterval(stSelf.speedTimer);
+                stSelf.speedTimer = null;
+            }
+            for (var key in stSelf.activeTasks) {
+                var at = stSelf.activeTasks[key];
+                if (at.xhr) {
+                    try { at.xhr.abort(); } catch (e) {}
+                }
+            }
+        }
+    });
     var smallCount = 0;
     uploadTasks.forEach(function(t) {
         if (t.blob.size < 1048576) smallCount++;
@@ -8279,6 +8457,7 @@ function checkUploadSettled() {
         setMsg('uploadMessage', '分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），正在重新上传...', 'success');
         stopUploadTimer();
         uploadState = null;
+        taskUnregister('upload');   // 降档重传是同一任务的延续，不触发互斥停止提示
         // blob 未提交不产生任何仓库变更，无需清理，直接重传
         startUpload(doneBases);
         return;
@@ -8447,6 +8626,7 @@ function finishUpload() {
     var st = uploadState;
     var blobs = st ? st.blobs.slice() : [];
     uploadState = null;
+    taskUnregister('upload');
     renderChunkPanel();
     clearBgTask();
 
@@ -8510,6 +8690,7 @@ function stopUploadRollback() {
     st.cancelled = true;
     stopUploadTimer();
     uploadState = null;
+    taskUnregister('upload');
     for (var key in st.activeTasks) {
         var t = st.activeTasks[key];
         if (t.xhr) {
@@ -8527,6 +8708,7 @@ function stopUploadRollback() {
 function failUpload(finalMsg) {
     stopUploadTimer();
     uploadState = null;
+    taskUnregister('upload');
     renderChunkPanel();
     clearBgTask();
     document.getElementById('stopUploadBtn').style.display = 'none';
@@ -8977,13 +9159,30 @@ document.addEventListener('DOMContentLoaded', function() {
         e.stopPropagation();
         clearBgTask();
     });
+    // 浮泡停止按钮：中止当前后台任务（同类型任务管理的一部分）
+    document.getElementById('bgTaskStop').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var type = bgTaskType;
+        if (type && runningTasks[type] && runningTasks[type].stop) {
+            try { runningTasks[type].stop(); } catch (err) {}
+        }
+        clearBgTask();
+    });
     restoreBgTaskHint();
     dlUpdateCurUi();
 
-    // 点击服务状态角标展开/折叠三路详情面板（重新检测按钮在面板内）
-    document.getElementById('svcStatus').addEventListener('click', function() {
+    // 点击服务状态角标展开/折叠三路详情面板（重新检测按钮在面板内）；
+    // 展开后点击页面其他位置自动收回
+    document.getElementById('svcStatus').addEventListener('click', function(e) {
+        e.stopPropagation();
         svcExpanded = !svcExpanded;
         renderSvcStatus();
+    });
+    document.addEventListener('click', function() {
+        if (svcExpanded) {
+            svcExpanded = false;
+            renderSvcStatus();
+        }
     });
 
     // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载与服务检测

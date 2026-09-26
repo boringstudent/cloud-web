@@ -28,10 +28,13 @@
         <div class="container">
             <h1><span id="pageTitle">加载中...</span><span class="refresh-countdown" id="refreshCountdown">45s</span><span class="total-usage" id="totalUsage"></span></h1>
             <div id="breadcrumbs" style="margin: 20px 0; font-size: 1.1em;"></div>
-            <input type="text" id="searchInput" placeholder="搜索全盘文件…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" style="width: 100%; box-sizing: border-box; margin: 0 0 14px; padding: 9px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; outline: none;">
+            <div class="search-wrap">
+                <input type="text" id="searchInput" placeholder="搜索全盘文件…" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="search-no-autofill">
+                <button type="button" id="searchBtn" class="search-btn" title="搜索" onclick="triggerSearch()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg></button>
+            </div>
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
-        <button class="btn" onclick="openUploadModal()" style="position: fixed; bottom: 30px; right: 30px; z-index: 100;">上传文件</button>
+        <button class="btn" id="uploadFabBtn" onclick="openUploadModal()">上传文件</button>
         <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 1200; display: flex; align-items: center; gap: 10px;">
             <div class="pref-wrap">
                 <select id="themeSelect" title="主题 / Theme">
@@ -232,7 +235,7 @@
                 <span class="modal-close" onclick="closeAdminModal()">&times;</span>
                 <h2>用户管理 <button class="icon-btn" id="adminRefreshBtn" onclick="loadAdminUsers()" title="刷新">⟳</button></h2>
                 <div class="form-group">
-                    <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" oninput="renderAdminUserList()">
+                    <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="admin-search-no-autofill" oninput="renderAdminUserList()">
                 </div>
                 <div id="adminListToggle" class="admin-list-toggle" onclick="toggleAdminUserList()">用户列表 <span id="adminListArrow">▾</span></div>
                 <div id="adminUserList" class="admin-user-list">
@@ -267,6 +270,7 @@
 
         <div id="bgTaskBubble" class="bg-task-bubble" style="display: none;">
             <span id="bgTaskText"></span>
+            <button type="button" id="bgTaskStop" title="停止任务" style="display: none;"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></button>
             <button type="button" id="bgTaskClose" title="关闭提示">&times;</button>
         </div>
 

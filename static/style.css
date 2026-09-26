@@ -1968,3 +1968,138 @@ h1 {
 :root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.35);
 }
+
+/* ---- 登录按钮与上传按钮统一风格（明暗两主题一致） ---- */
+#authBtn,
+#uploadFabBtn {
+    padding: 9px 22px;
+    border-radius: 10px;
+    font-size: 14px;
+    box-shadow: 0 2px 10px rgba(44, 130, 201, 0.35);
+    transition: background 0.3s, box-shadow 0.3s, transform 0.1s;
+}
+#authBtn:hover,
+#uploadFabBtn:hover {
+    background: #1a5a8a;
+    box-shadow: 0 4px 14px rgba(44, 130, 201, 0.5);
+}
+#authBtn:active,
+#uploadFabBtn:active {
+    transform: scale(0.96);
+}
+#uploadFabBtn {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    z-index: 1000;
+}
+:root[data-theme="dark"] #authBtn,
+:root[data-theme="dark"] #uploadFabBtn {
+    background: #2f7fc4;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.55);
+}
+:root[data-theme="dark"] #authBtn:hover,
+:root[data-theme="dark"] #uploadFabBtn:hover {
+    background: #3d92dc;
+    box-shadow: 0 4px 16px rgba(61, 146, 220, 0.4);
+}
+:root[data-theme="dark"] .btn:disabled {
+    background: #484f58;
+    color: #8b949e;
+}
+
+/* ---- 搜索框 + 搜索按钮 ---- */
+.search-wrap {
+    position: relative;
+    margin: 0 0 14px;
+}
+.search-wrap #searchInput {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 9px 40px 9px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 0.95em;
+    outline: none;
+    transition: border-color 0.25s, box-shadow 0.25s;
+}
+.search-wrap #searchInput:focus {
+    border-color: #2c82c9;
+    box-shadow: 0 0 0 3px rgba(44, 130, 201, 0.15);
+}
+.search-btn {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: #9aa4b0;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s, transform 0.12s;
+}
+.search-btn:hover {
+    background: rgba(44, 130, 201, 0.12);
+    color: #2c82c9;
+}
+.search-btn:active {
+    transform: translateY(-50%) scale(0.85);
+}
+/* 点击弹跳动画（重新触发靠移除/重加 class） */
+.search-btn.pop svg {
+    animation: searchPop 0.32s ease;
+}
+@keyframes searchPop {
+    0% { transform: scale(1); }
+    40% { transform: scale(0.72) rotate(-12deg); }
+    75% { transform: scale(1.18); }
+    100% { transform: scale(1); }
+}
+/* 搜索进行中：按钮呼吸提示 */
+.search-btn.searching {
+    color: #2c82c9;
+    animation: searchPulse 0.9s ease-in-out infinite;
+}
+@keyframes searchPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+:root[data-theme="dark"] .search-btn {
+    color: #6e7681;
+}
+:root[data-theme="dark"] .search-btn:hover {
+    background: rgba(88, 166, 255, 0.15);
+    color: #58a6ff;
+}
+:root[data-theme="dark"] .search-btn.searching {
+    color: #58a6ff;
+}
+
+/* ---- 后台任务浮泡：停止按钮 ---- */
+#bgTaskStop {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.18);
+    border: none;
+    color: #fff;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.2s, transform 0.1s;
+}
+#bgTaskStop:hover {
+    background: rgba(231, 76, 60, 0.9);
+}
+#bgTaskStop:active {
+    transform: scale(0.88);
+}
