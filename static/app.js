@@ -22,7 +22,7 @@ function ghUrl(url) {
 var CF_PROXY_BASE = 'https://cloud-ecr.pages.dev/';
 var DUAL_DL_MIN = 2 * 1024 * 1024;   // 大于 2MB 才启用分段双通道
 var DUAL_DL_PARTS = 12;              // 分段数（多于并发数，调度器滚动补位）
-var DUAL_SEG_MAX_ATTEMPTS = 3;       // 单段最大尝试次数（每次换源）
+var DUAL_SEG_MAX_ATTEMPTS = 5;       // 单段最大尝试次数（每次换源；坏代理快速失败，多两次几乎零成本）
 
 function cfRawUrl(filePath) {
     return CF_PROXY_BASE + 'raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
@@ -48,18 +48,42 @@ var extProxyState = {
     list: [],         // 可用代理 base 数组（'https://host/'）
     loading: null,    // 进行中的拉取回调队列（null=空闲）
     rr: 0,            // 代理轮询游标
-    fails: {},        // base -> 连续失败次数（>=2 熔断）
-    ul404: {}         // base -> 上传 404 累计次数（>=5 永久封禁该代理的上传）
+    fails: {},        // base -> {n: 连续失败次数, t: 最近失败时间}（>=2 熔断，2 分钟自愈）
+    ul404: {},        // base -> 上传 404 累计次数（>=5 永久封禁该代理的上传）
+    ulFail: {}        // base -> 上传网络/CORS 失败连续次数（>=3 封禁上传，成功即清零）
 };
 // 部分外部镜像只代理 raw 下载、不代理 api.github.com：blob 上传会持续 404，
-// 累计 5 次即判定该代理不支持 API，永久移出上传通道（下载不受影响）
+// 累计 5 次即判定该代理不支持 API，永久移出上传通道（下载不受影响）；
+// 预检都过不了的代理（POST 带 Authorization 必触发 CORS 预检）网络失败 3 次封禁
 var EXT_UL_404_BAN = 5;
+var EXT_UL_NETFAIL_BAN = 3;
+// 下载熔断自愈：超过该时长未再失败即恢复（限流类 403 多为暂时性，永久逐出
+// 会让代理池在长跑中单调萎缩——外部通道利用率随之归零）
+var EXT_FAIL_RECOVER_MS = 120000;
+
+// 有效失败次数：超过自愈窗口未再失败按 0 计
+function extFailCount(base) {
+    var f = extProxyState.fails[base];
+    if (!f || !f.n) return 0;
+    if (Date.now() - (f.t || 0) > EXT_FAIL_RECOVER_MS) {
+        delete extProxyState.fails[base];
+        return 0;
+    }
+    return f.n;
+}
+
+// 任一通道经该代理成功：清零失败计数（熔断计数不再只增不减，
+// 好代理不会因偶发超时积累满 2 次被永久逐出——利用率的根基）
+function extNoteSuccess(base) {
+    if (!base) return;
+    delete extProxyState.fails[base];
+}
 
 // 代理池是否有未熔断的可用代理（不区分下载/上传开关）
 function extProxiesUsable() {
     if (!extProxyState.list.length) return false;
     for (var i = 0; i < extProxyState.list.length; i++) {
-        if ((extProxyState.fails[extProxyState.list[i]] || 0) < 2) return true;
+        if (extFailCount(extProxyState.list[i]) < 2) return true;
     }
     return false;
 }
@@ -74,7 +98,7 @@ function extPickBase() {
     for (var k = 0; k < n; k++) {
         var i = (extProxyState.rr + k) % n;
         var base = extProxyState.list[i];
-        if ((extProxyState.fails[base] || 0) < 2) {
+        if (extFailCount(base) < 2) {
             extProxyState.rr = (i + 1) % n;
             return base;
         }
@@ -84,7 +108,10 @@ function extPickBase() {
 
 function extNoteFail(base) {
     if (!base) return;
-    extProxyState.fails[base] = (extProxyState.fails[base] || 0) + 1;
+    var f = extProxyState.fails[base] || { n: 0, t: 0 };
+    f.n++;
+    f.t = Date.now();
+    extProxyState.fails[base] = f;
 }
 
 // 上传 404 计数：达到阈值即封禁该代理的上传能力（返回是否已封禁）
@@ -95,32 +122,96 @@ function extNoteUpload404(base) {
     return n >= EXT_UL_404_BAN;
 }
 
-function extUlBanned(base) {
-    return (extProxyState.ul404[base] || 0) >= EXT_UL_404_BAN;
+// 上传网络/CORS 失败计数（预检失败的代理对上传永不可用）：连续 3 次封禁
+function extNoteUploadNetFail(base) {
+    if (!base) return false;
+    var n = (extProxyState.ulFail[base] || 0) + 1;
+    extProxyState.ulFail[base] = n;
+    return n >= EXT_UL_NETFAIL_BAN;
 }
 
-// 上传通道视角的代理可用性：未熔断且未因 404 被封禁
+function extUlBanned(base) {
+    return (extProxyState.ul404[base] || 0) >= EXT_UL_404_BAN ||
+        (extProxyState.ulFail[base] || 0) >= EXT_UL_NETFAIL_BAN;
+}
+
+// 上传成功：清零该代理的上传网络失败计数（404 计数保留——不支持 API 是持续性事实）
+function extNoteUploadSuccess(base) {
+    if (!base) return;
+    delete extProxyState.ulFail[base];
+}
+
+// 上传通道视角的代理可用性：未熔断且未因 404/网络失败被封禁
 function extUploadProxiesUsable() {
     if (!extProxyState.list.length) return false;
     for (var i = 0; i < extProxyState.list.length; i++) {
         var base = extProxyState.list[i];
-        if ((extProxyState.fails[base] || 0) < 2 && !extUlBanned(base)) return true;
+        if (extFailCount(base) < 2 && !extUlBanned(base)) return true;
     }
     return false;
 }
 
-// 轮询挑选一个可用于上传的代理（跳过熔断与 404 封禁）；无可用返回 null
+// 轮询挑选一个可用于上传的代理（跳过熔断与上传封禁）；无可用返回 null
 function extPickUploadBase() {
     var n = extProxyState.list.length;
     for (var k = 0; k < n; k++) {
         var i = (extProxyState.rr + k) % n;
         var base = extProxyState.list[i];
-        if ((extProxyState.fails[base] || 0) < 2 && !extUlBanned(base)) {
+        if (extFailCount(base) < 2 && !extUlBanned(base)) {
             extProxyState.rr = (i + 1) % n;
             return base;
         }
     }
     return null;
+}
+
+// 上传能力探测：带 Authorization 的 GET 会触发与 POST 完全相同的 CORS 预检——
+// 预检通不过 fetch 直接 reject（该代理对上传永不可用，开启通道时预封禁，
+// 避免上传时线上报错刷屏）；预检通过则必能拿到响应（401/404 都算可上传：
+// 401 只差真 key，404 由 ul404 计数兜底）
+var extUlProbed = false;
+function extProbeUploadCapable(done) {
+    var bases = extProxyState.list.slice();
+    var idx = 0, active = 0, banned = 0;
+    function next() {
+        while (active < 8 && idx < bases.length) {
+            (function(base) {
+                active++;
+                var finished = false;
+                var fin = function(capable) {
+                    if (finished) return;
+                    finished = true;
+                    active--;
+                    if (!capable) {
+                        extProxyState.ulFail[base] = EXT_UL_NETFAIL_BAN;
+                        banned++;
+                    }
+                    next();
+                };
+                var timer = setTimeout(function() { fin(false); }, 8000);
+                fetch(base + 'https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME, {
+                    headers: { 'Authorization': 'token upload-capability-probe' },
+                    cache: 'no-store'
+                }).then(function() {
+                    clearTimeout(timer);
+                    fin(true);
+                }, function() {
+                    clearTimeout(timer);
+                    fin(false);
+                });
+            })(bases[idx++]);
+        }
+        if (idx >= bases.length && active === 0) {
+            extUlProbed = true;
+            if (done) done(banned);
+        }
+    }
+    if (!bases.length) {
+        extUlProbed = true;
+        if (done) done(0);
+        return;
+    }
+    next();
 }
 
 // 浏览器侧分批探测候选代理：8 路并发，单个 6 秒超时；简单 GET（不带任何
@@ -405,8 +496,19 @@ function ulChanToggle(chan, done) {
             // "开关开了却永远分不到任务"（分片详情 外部×0）
             extProxyState.fails = {};
             extProxyState.ul404 = {};
+            extProxyState.ulFail = {};
             ulChanSwitch.ext = true;
             if (done) done(true);
+            // 后台预探测各代理的上传能力（CORS 预检），预检过不了的代理
+            // 预封禁——上传时不再逐个线上报错才发现不可写
+            // （每次显式开通都重探：上面的计数重置会把探测封禁一并清掉）
+            extUlProbed = false;
+            extProbeUploadCapable(function(banned) {
+                if (banned > 0 && ulChanSwitch.ext) {
+                    showToast('已排除 ' + banned + ' 个不支持上传的外部代理');
+                    setTimeout(hideToast, 2500);
+                }
+            });
         });
     });
     return true;
@@ -2594,9 +2696,27 @@ function triggerSearch() {
     renderSearchResults(q);
 }
 
+// 防浏览器自动填充账户名（实测 autocomplete=off/new-password 都会被 Chrome
+// 的登录联想忽略）：输入框初始 readonly——自动填充只发生在页面加载/字段可写时，
+// readonly 字段不在填充候选内；用户指向/聚焦即解除，无感输入。每次加载再换一个
+// 随机 name，表单历史（按 name 键控）也无从联想
+function antiAutofillInput(input) {
+    if (!input) return;
+    try { input.name = 'q-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); } catch (e) {}
+    var unlock = function() {
+        if (input.hasAttribute('readonly')) input.removeAttribute('readonly');
+    };
+    input.addEventListener('pointerdown', unlock);
+    input.addEventListener('focus', unlock);
+    input.addEventListener('keydown', unlock);
+    input.addEventListener('touchstart', unlock, { passive: true });
+}
+
 function initSearchBox() {
     var input = document.getElementById('searchInput');
     if (!input) return;
+    antiAutofillInput(input);
+    antiAutofillInput(document.getElementById('adminSearchInput'));
     input.addEventListener('input', function() {
         var q = input.value.trim();
         clearTimeout(searchDebounceTimer);
@@ -2891,11 +3011,17 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
     function fetchSeg(seg, attempt) {
         if (state.failed || state.cancelled) return;
         // 通道：首次按各通道在途均衡 + 实测速率加权分配（无数据时轮询），
-        // 重试在上次失败的通道之外换源；CF 熔断后排除 CF 通道
+        // 重试在上次失败的通道之外换源；CF 熔断后排除 CF 通道；
+        // 外部代理连续坑了本段 2 次后，剩余尝试只走 EO/CF 保底——
+        // 不让单个分段被整个代理池的坏站点轮番消耗殆尽导致整文件失败
         var chan;
         if (attempt > 0) {
             var ex = seg._lastChan;
-            chan = pickDlChannel(ex) || pickDlFallback(ex);
+            if ((seg._extFails || 0) >= 2) {
+                chan = pickDlChannel('ext') || pickDlFallback('ext');
+            } else {
+                chan = pickDlChannel(ex) || pickDlFallback(ex);
+            }
         } else if (state.cfDown) {
             chan = pickDlChannel('cf') || pickDlFallback('cf');
         } else {
@@ -2944,6 +3070,36 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
         }, 3000);
         fetch(url, { signal: ctrl.signal, cache: 'no-store', headers: headers }).then(function(resp) {
             if (state.failed || state.cancelled) return;
+            // 416 Range Not Satisfiable：段的请求区间超出真实文件——从
+            // Content-Range: bytes */N 取真实大小自我修正：段已收齐则直接完成，
+            // 否则收敛段尾后不计失败立即重试（sizeHint 偏大/续传越界不再整单失败）
+            if (resp.status === 416) {
+                clearInterval(watchdog);
+                var cr = resp.headers.get('Content-Range') || '';
+                var cm = /\/(\d+)\s*$/.exec(cr);
+                if (cm) {
+                    var realSize = parseInt(cm[1], 10);
+                    if (realSize >= 0 && (!total || realSize < total)) total = realSize;
+                }
+                if (total && seg.start + seg.received >= total) {
+                    seg.done = true;
+                    activeSegs--;
+                    dlChanDec(chan);
+                    releaseBudget(seg);
+                    if (budget) dlNotify();
+                    checkAll();
+                    pumpSegs();
+                    return;
+                }
+                dlChanDec(chan);
+                if (total) seg.end = Math.min(seg.end === null ? total - 1 : seg.end, total - 1);
+                if (attempt + 1 >= DUAL_SEG_MAX_ATTEMPTS) {
+                    failAll();
+                    return;
+                }
+                fetchSeg(seg, attempt + 1);
+                return;
+            }
             var ranged = headers['Range'] !== undefined;
             var ok = ranged ? resp.status === 206 : resp.ok;
             // 整文件单段且从头开始：200/206 均可
@@ -2969,6 +3125,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
                         dlChanDec(chan);
                         releaseBudget(seg);
                         if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
+                        if (chan === 'ext') extNoteSuccess(seg._extBase);   // 成功清零熔断计数
                         dlChanNotePeak(chan, seg.received, Date.now() - (seg.t0 || Date.now()));
                         dlAdaptiveSuccess(Date.now() - (seg.t0 || Date.now()));
                         checkAll();
@@ -3004,7 +3161,9 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
             state.cfFails++;
             if (state.cfFails >= 2) state.cfDown = true;
         } else if (chan === 'ext') {
-            // 外部代理按代理熔断：单个代理连续失败 2 次即轮换下一个
+            // 外部代理按代理熔断：单个代理连续失败 2 次即轮换下一个；
+            // 分段级外部尝试计数（>=2 后本段剩余尝试只走 EO/CF）
+            seg._extFails = (seg._extFails || 0) + 1;
             extNoteFail(seg._extBase);
         } else {
             // EO 段失败暗示链路饱和，自适应降低下载并发（CF/外部失败只熔断通道）
@@ -3297,6 +3456,7 @@ function downloadFolderZip(models, folderLabel) {
     var loadedMap = {};
     var rawEntries = [];
     var doneCount = 0;
+    var failCount = 0;   // 单个文件失败跳过继续打包（不再整单中止）
     var cancelled = false;
     var lastLoaded = 0;
     var lastTime = Date.now();
@@ -3346,6 +3506,12 @@ function downloadFolderZip(models, folderLabel) {
     var readFail = false;
 
     var pack = function() {
+        if (!rawEntries.length) {
+            hideTaskProgress();
+            showToast('全部文件下载失败，无法打包');
+            setTimeout(hideToast, 2500);
+            return;
+        }
         // zip 条目按名称排序，保证并行下载完成后打包结果确定
         rawEntries.sort(function(a, b) { return a.name.localeCompare(b.name); });
         updateTaskProgress('正在打包 ' + folderLabel + '.zip（0/' + rawEntries.length + '）', 0);
@@ -3360,8 +3526,8 @@ function downloadFolderZip(models, folderLabel) {
                 if (cancelled) return;
                 hideTaskProgress();
                 saveBlobAs(zipBlob, folderLabel + '.zip');
-                showToast('打包下载完成: ' + folderLabel + '.zip（' + formatSize(zipBlob.size) + '）');
-                setTimeout(hideToast, 3000);
+                showToast('打包下载完成: ' + folderLabel + '.zip（' + formatSize(zipBlob.size) + '）' + (failCount ? ' · ' + failCount + ' 个失败已跳过' : ''));
+                setTimeout(hideToast, 3500);
             });
     };
     // 全部下载完成后，可能仍有少量条目在转存缓存，待其就绪再打包
@@ -3397,8 +3563,15 @@ function downloadFolderZip(models, folderLabel) {
             };
             reader.readAsArrayBuffer(blob);
         },
-        onFileFail: function() {
-            failFile();
+        // 单个文件失败：跳过并继续其余文件（坏代理抖动不再让整个文件夹
+        // 打包前功尽弃），完成提示中报告跳过数
+        onFileFail: function(idx, m) {
+            failCount++;
+            loadedMap[idx] = m.size || 0;
+            doneCount++;
+            showToast('下载失败（跳过）: ' + m.displayName);
+            setTimeout(hideToast, 2500);
+            report();
         },
         onFileProgress: function(idx, m, loaded) {
             loadedMap[idx] = loaded;
@@ -3422,11 +3595,13 @@ function openDeleteModal(filePath, fileSha, fileName, fileType) {
     deleteParts = deleteFileType === 'chunked' ? (menuFileInfo.parts || []) : null;
     var deleteBtn = document.getElementById('deleteBtn');
     deleteBtn.disabled = false;
+    deleteBtn.style.display = '';   // 上次删除时被隐藏，重新打开需还原
     var deleteMsg = document.getElementById('deleteMessage');
     deleteMsg.className = 'message';
     deleteMsg.textContent = '';
     setDeleteProgress(null);
     var confirmP = document.getElementById('deleteConfirmText');
+    confirmP.style.display = '';    // 上次删除时被隐藏，重新打开需还原
     confirmP.textContent = '';
     confirmP.appendChild(document.createTextNode('确定要删除' + (deleteFileType === 'dir' ? '文件夹 ' : '')));
     var nameStrong = document.createElement('strong');
@@ -3921,11 +4096,16 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
         var startPart = function() {
             if (failed || cancelled) return;
             parts[i]._t0 = Date.now();
-            // 通道：重试在上次失败的通道之外换源；CF 熔断后排除 CF 通道
+            // 通道：重试在上次失败的通道之外换源；CF 熔断后排除 CF 通道；
+            // 外部代理连续坑了本片 2 次后剩余尝试只走 EO/CF 保底
             var chan;
             if (attempt > 0) {
                 var ex = parts[i]._lastChan;
-                chan = pickDlChannel(ex) || pickDlFallback(ex);
+                if ((parts[i]._extFails || 0) >= 2) {
+                    chan = pickDlChannel('ext') || pickDlFallback('ext');
+                } else {
+                    chan = pickDlChannel(ex) || pickDlFallback(ex);
+                }
             } else if (mergeCfDown) {
                 chan = pickDlChannel('cf') || pickDlFallback('cf');
             } else {
@@ -3982,6 +4162,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 if (xhr.status === 200) {
                     buffers[i] = xhr.response;
                     dlChanDec(chan);
+                    if (chan === 'ext') extNoteSuccess(parts[i]._extBase);   // 成功清零熔断计数
                     inflightBytes = Math.max(0, inflightBytes - (parts[i].size || 0));
                     releaseBudget(parts[i]);
                     if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
@@ -4026,7 +4207,9 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 mergeCfFails++;
                 if (mergeCfFails >= 2) mergeCfDown = true;
             } else if (chan === 'ext') {
-                // 外部代理按代理熔断：单个代理连续失败 2 次即轮换下一个
+                // 外部代理按代理熔断：单个代理连续失败 2 次即轮换下一个；
+                // 片级外部尝试计数（>=2 后本片剩余尝试只走 EO/CF）
+                parts[i]._extFails = (parts[i]._extFails || 0) + 1;
                 extNoteFail(parts[i]._extBase);
             } else {
                 // EO 片失败暗示链路饱和，自适应降低下载并发
@@ -6283,9 +6466,23 @@ function updateFileOnGitHub(filePath, newContent) {
     shaXhr.send();
 }
 
+// 删除流程失败时还原弹窗的防误删确认文本/凭据区/确认按钮（开始删除时被收起）
+function restoreDeleteModalPrompt() {
+    var deleteBtn = document.getElementById('deleteBtn');
+    deleteBtn.disabled = false;
+    deleteBtn.style.display = '';
+    document.getElementById('deleteConfirmText').style.display = '';
+    document.getElementById('deleteAuthFields').style.display = getSavedAuth() ? 'none' : '';
+}
+
 function confirmDelete() {
     var deleteBtn = document.getElementById('deleteBtn');
     deleteBtn.disabled = true;
+    // 开始删除流程即收起防误删确认文本/凭据区/确认按钮，只留进度与停止按钮——
+    // 否则删除进行中"确定要删除 xxx 吗？此操作不可撤销"还挂在弹窗里
+    document.getElementById('deleteConfirmText').style.display = 'none';
+    document.getElementById('deleteAuthFields').style.display = 'none';
+    deleteBtn.style.display = 'none';
     setMsg('deleteMessage', '正在获取授权...', 'success');
 
     var runDelete = function() {
@@ -6300,7 +6497,7 @@ function confirmDelete() {
 
     var fail = function(text) {
         setMsg('deleteMessage', text, 'error');
-        deleteBtn.disabled = false;
+        restoreDeleteModalPrompt();
     };
 
     if (getSavedAuth()) {
@@ -6343,7 +6540,7 @@ function deleteFile(filePath, sha) {
     ghDeleteFile(filePath, sha, function(status, responseText) {
         if (status === 0) {
             setMsg('deleteMessage', '网络错误，删除失败', 'error');
-            document.getElementById('deleteBtn').disabled = false;
+            restoreDeleteModalPrompt();
             return;
         }
         if (status === 200 || status === 201) {
@@ -6361,14 +6558,14 @@ function deleteFile(filePath, sha) {
             } catch (e) {
                 setMsg('deleteMessage', '删除失败，状态码: ' + status, 'error');
             }
-            document.getElementById('deleteBtn').disabled = false;
+            restoreDeleteModalPrompt();
         }
     });
 }
 
 function deleteFolderError() {
     setMsg('deleteMessage', '获取文件夹内容失败', 'error');
-    document.getElementById('deleteBtn').disabled = false;
+    restoreDeleteModalPrompt();
 }
 
 function deleteFolder(folderPath) {
@@ -6384,7 +6581,7 @@ function deleteFolder(folderPath) {
         });
         if (!files.length) {
             setMsg('deleteMessage', '文件夹为空或不存在', 'error');
-            document.getElementById('deleteBtn').disabled = false;
+            restoreDeleteModalPrompt();
             return;
         }
         deleteFolderFiles(files);
@@ -6457,7 +6654,7 @@ function deleteFolderFiles(files) {
         }
         if (state.failed) {
             setMsg('deleteMessage', '删除失败: ' + state.errMsg + '（已删除 ' + state.done + '/' + files.length + '）', 'error');
-            document.getElementById('deleteBtn').disabled = false;
+            restoreDeleteModalPrompt();
             return;
         }
         if (state.next >= files.length) {
@@ -7136,11 +7333,13 @@ function openBatchDeleteModal() {
     deleteParts = files;
     var deleteBtn = document.getElementById('deleteBtn');
     deleteBtn.disabled = false;
+    deleteBtn.style.display = '';   // 上次删除时被隐藏，重新打开需还原
     var deleteMsg = document.getElementById('deleteMessage');
     deleteMsg.className = 'message';
     deleteMsg.textContent = '';
     setDeleteProgress(null);
     var confirmP = document.getElementById('deleteConfirmText');
+    confirmP.style.display = '';    // 上次删除时被隐藏，重新打开需还原
     confirmP.textContent = '';
     confirmP.appendChild(document.createTextNode('确定要删除选中的 '));
     var nameStrong = document.createElement('strong');
@@ -7610,13 +7809,13 @@ var dlLimit = { adaptive: true, limit: DL_LIMIT_ADAPTIVE_START };
 // "单域名 6 连接"限制——按可用代理数放大全局连接（每站约 2 路，封顶 48），
 // 把整个代理池的聚合吞吐吃满；外部通道关闭或全部熔断后自动回落 DL_LIMIT_MAX
 var DL_LIMIT_EXT_PER_PROXY = 2;
-var DL_LIMIT_EXT_HARD_MAX = 48;
+var DL_LIMIT_EXT_HARD_MAX = 32;   // 过高并发会触发代理站点限流 403（实测 48 大量触发）
 
 // 未熔断的外部代理数（下载通道视角）
 function extUsableProxyCount() {
     var n = 0;
     for (var i = 0; i < extProxyState.list.length; i++) {
-        if ((extProxyState.fails[extProxyState.list[i]] || 0) < 2) n++;
+        if (extFailCount(extProxyState.list[i]) < 2) n++;
     }
     return n;
 }
@@ -8954,6 +9153,10 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
             var sha = null;
             try { sha = JSON.parse(xhr.responseText).sha; } catch (e) {}
             if (sha) {
+                if (chan === 'ext' && task && task._extBase) {
+                    extNoteUploadSuccess(task._extBase);
+                    extNoteSuccess(task._extBase);
+                }
                 onSuccess(sha);
                 return;
             }
@@ -8980,6 +9183,9 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
         if (task && x2) task.xhr = x2;
     };
     xhr.onerror = function() {
+        // 外部代理网络/CORS 失败（多为预检不过）：按代理累计，连续 3 次封禁上传——
+        // 此前只计 404，预检失败的代理永远不被惩罚，每个任务都在它们身上烧重试
+        if (chan === 'ext' && task && task._extBase) extNoteUploadNetFail(task._extBase);
         if (retries > 0) {
             setTimeout(retryInPlace, 1000 * (4 - retries));
             return;
@@ -8988,6 +9194,7 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
     };
     xhr.ontimeout = function() {
         // 代理挂起导致的超时按网络错误换源重试
+        if (chan === 'ext' && task && task._extBase) extNoteUploadNetFail(task._extBase);
         if (retries > 0) {
             setTimeout(retryInPlace, 1000 * (4 - retries));
             return;

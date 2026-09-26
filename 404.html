@@ -29,7 +29,7 @@
             <h1><span id="pageTitle">加载中...</span><span class="refresh-countdown" id="refreshCountdown">45s</span><span class="total-usage" id="totalUsage"></span></h1>
             <div id="breadcrumbs" style="margin: 20px 0; font-size: 1.1em;"></div>
             <div class="search-wrap">
-                <input type="text" id="searchInput" placeholder="搜索全盘文件…" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="search-no-autofill">
+                <input type="text" id="searchInput" placeholder="搜索全盘文件…" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="search-no-autofill" readonly>
                 <button type="button" id="searchBtn" class="search-btn" title="搜索" onclick="triggerSearch()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg></button>
             </div>
             <div id="fileListContainer" class="loading">加载中...</div>
@@ -235,7 +235,7 @@
                 <span class="modal-close" onclick="closeAdminModal()">&times;</span>
                 <h2>用户管理 <button class="icon-btn" id="adminRefreshBtn" onclick="loadAdminUsers()" title="刷新">⟳</button></h2>
                 <div class="form-group">
-                    <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="admin-search-no-autofill" oninput="renderAdminUserList()">
+                    <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="admin-search-no-autofill" oninput="renderAdminUserList()" readonly>
                 </div>
                 <div id="adminListToggle" class="admin-list-toggle" onclick="toggleAdminUserList()">用户列表 <span id="adminListArrow">▾</span></div>
                 <div id="adminUserList" class="admin-user-list">
