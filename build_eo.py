@@ -94,7 +94,7 @@ const EXT_PROXY_CANDIDATES = [
   'github.mlmle.cn',
   'github.cnxiaobai.com',
   'gh.1k.ink',
-  'ghproxy.cxkpro.top',
+  // 'ghproxy.cxkpro.top',   // 已停用（应用户要求注释保留，暂不删除）
   'tvv.tw',
   'proxy.baguoyuyan.com',
   'gh-proxy.com',

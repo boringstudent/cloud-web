@@ -99,7 +99,7 @@ async function call(path, opts) {
   // 9.5 外部多代理候选列表（?all=1 不触网）
   r = await call('/api/proxies?all=1');
   const pj = await r.json();
-  check('GET /api/proxies?all=1 -> 200 候选列表', r.status === 200 && Array.isArray(pj.proxies) && pj.proxies.length === 29 && pj.proxies[0] === 'https://ghproxy.felicity.land/');
+  check('GET /api/proxies?all=1 -> 200 候选列表', r.status === 200 && Array.isArray(pj.proxies) && pj.proxies.length === 28 && pj.proxies[0] === 'https://ghproxy.felicity.land/' && !pj.proxies.join(' ').includes('cxkpro'));
   r = await call('/api/proxies', { method: 'HEAD' });
   check('HEAD /api/proxies -> 200', r.status === 200);
 
@@ -116,6 +116,14 @@ async function call(path, opts) {
   check('app.js CF 检测走同源 /api/cf-ip', appJs.includes("API_BASE + '/api/cf-ip'") && !appJs.includes("CF_PROXY_BASE + 'ip'"));
   check('app.js 曲线图峰值 30s 窗口自动缩放', appJs.includes('GRAPH_PEAK_WINDOW = 30') && (appJs.match(/graphWindowPeak\(tot\)/g) || []).length === 3);
   check('app.js 上传外部优先+开启重置封禁', appJs.includes('UL_EXT_PREFER_SHARE = 0.8') && appJs.includes('extProxyState.ul404 = {}'));
+
+  // 9.8 页面含搜索框与重启按钮；app.js 含重启/内存保护/分拍/搜索机制
+  r = await call('/');
+  body = await r.text();
+  check('页面含搜索框与重启按钮', body.includes('id="searchInput"') && body.includes('id="restartUploadBtn"') && body.includes('id="taskProgressRestart"'));
+  check('app.js 上传重启/内存保护/分拍发布', appJs.includes('restartUploadTasks') && appJs.includes('UL_MAX_INFLIGHT_BYTES') && appJs.includes('UL_DISPATCH_BURST'));
+  check('app.js 下载重启+全盘搜索', appJs.includes('taskProgressRestartFn') && appJs.includes('renderSearchResults'));
+  check('app.js 曲线图已去面积填充', !appJs.includes("rgba(44, 130, 201, 0.12)") && appJs.includes("plot(tot, '#2c82c9');") && appJs.includes("plot(tot, '#2c82c9', 1.8);"));
 
   // 10. 未知 API -> JSON 404；登录参数缺失 -> 400（不触网）
   r = await call('/api/nope');

@@ -226,10 +226,15 @@ function extProxySetEnabled(on, quiet) {
     } catch (e) {}
     if (!on) {
         updateDlLegendExtVisibility();
+        dlNotify();   // 上限随外部通道关闭回落，调度器实时补位/收缩
         return;
     }
     extProxyLoad(function(list) {
         updateDlLegendExtVisibility();
+        // 上限随代理池放大：自适应起步并发从 3 抬到 8，再进行中的下载
+        // 立即吃到更多连接（后续由快段升档继续爬向 dlGetLimitCap()）
+        if (dlLimit.adaptive && extDlAvailable() && dlLimit.limit < 8) dlLimit.limit = 8;
+        dlNotify();
         if (!quiet && extProxyState.enabled) {
             showToast(list.length ? ('外部多代理已启用（' + list.length + ' 个可用）') : '暂无可用外部代理，仍走 EO/CF 通道');
             setTimeout(hideToast, 3000);
@@ -786,6 +791,7 @@ function fillAuthInputs(usernameId, passwordId, checkboxId) {
         var pwdInput = document.getElementById(passwordId);
         pwdInput.value = REMEMBER_PWD_PLACEHOLDER;
         pwdInput._rememberedHash = remembered.h;
+        pwdEyeRefresh(pwdInput);   // 占位符状态隐藏眼睛（显示出来也只是圆点）
         if (!pwdInput._rememberBound) {
             pwdInput._rememberBound = true;
             pwdInput.addEventListener('input', function() {
@@ -801,18 +807,32 @@ function fillAuthInputs(usernameId, passwordId, checkboxId) {
 var PWD_EYE_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
 var PWD_EYE_OFF_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 
+// 记住密码预填的是占位符圆点（只存哈希，明文不可恢复）：此时"显示密码"
+// 显示出来的还是一排圆点，视觉上等于切换失效——占位符状态下隐藏眼睛，
+// 用户一旦手动输入（哈希失效）眼睛恢复可用
+function pwdEyeRefresh(input) {
+    var wrap = input.parentNode;
+    var btn = wrap && wrap.classList.contains('pwd-wrap') ? wrap.querySelector('.pwd-eye') : null;
+    if (!btn) return;
+    var isPlaceholder = !!(input._rememberedHash && input.value === REMEMBER_PWD_PLACEHOLDER);
+    btn.style.display = isPlaceholder ? 'none' : '';
+    if (isPlaceholder && input.type === 'text') input.type = 'password';
+}
+
 function togglePwdEye(btn) {
     var input = btn.parentNode.querySelector('input');
+    if (input._rememberedHash && input.value === REMEMBER_PWD_PLACEHOLDER) return;
     var show = input.type === 'password';
     input.type = show ? 'text' : 'password';
     btn.innerHTML = show ? PWD_EYE_SVG : PWD_EYE_OFF_SVG;
-    btn.title = show ? '隐藏密码' : '显示密码';
+    btn.title = show ? t('隐藏密码') : t('显示密码');
 }
 
 function initPwdEyes() {
     var inputs = document.querySelectorAll('input[type="password"]');
     for (var i = 0; i < inputs.length; i++) {
         var input = inputs[i];
+        if (input.parentNode && input.parentNode.classList.contains('pwd-wrap')) continue;
         var wrap = document.createElement('div');
         wrap.className = 'pwd-wrap';
         input.parentNode.insertBefore(wrap, input);
@@ -820,11 +840,673 @@ function initPwdEyes() {
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'pwd-eye';
-        btn.title = '显示密码';
+        btn.title = t('显示密码');
         btn.innerHTML = PWD_EYE_OFF_SVG;
         btn.onclick = function() { togglePwdEye(this); };
         wrap.appendChild(btn);
+        input.addEventListener('input', function() { pwdEyeRefresh(this); });
+        pwdEyeRefresh(input);
     }
+}
+
+// ==================== 主题切换（浅色/深色/跟随系统） ====================
+var THEME_STORAGE_KEY = 'cloud_web_theme';
+var themeMode = 'auto';
+
+function themeResolve(mode) {
+    if (mode === 'dark' || mode === 'light') return mode;
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+}
+
+function applyTheme() {
+    document.documentElement.setAttribute('data-theme', themeResolve(themeMode));
+}
+
+function themeSet(mode) {
+    themeMode = (mode === 'dark' || mode === 'light') ? mode : 'auto';
+    try { localStorage.setItem(THEME_STORAGE_KEY, themeMode); } catch (e) {}
+    applyTheme();
+}
+
+function initTheme() {
+    try { themeMode = localStorage.getItem(THEME_STORAGE_KEY) || 'auto'; } catch (e) {}
+    if (['auto', 'light', 'dark'].indexOf(themeMode) === -1) themeMode = 'auto';
+    applyTheme();
+    var sel = document.getElementById('themeSelect');
+    if (sel) {
+        sel.value = themeMode;
+        sel.addEventListener('change', function() { themeSet(this.value); });
+    }
+    // 跟随系统模式下监听系统主题变化实时切换
+    if (window.matchMedia) {
+        var mq = window.matchMedia('(prefers-color-scheme: dark)');
+        var onSysThemeChange = function() { if (themeMode === 'auto') applyTheme(); };
+        if (mq.addEventListener) mq.addEventListener('change', onSysThemeChange);
+        else if (mq.addListener) mq.addListener(onSysThemeChange);
+    }
+}
+
+// ==================== 多语言（简体中文/繁體中文/English/日本語） ====================
+// 以简体中文源码字符串为 key，t() 未命中时原样返回（界面回退中文）。
+// 静态文案经 I18N_BINDINGS 批量绑定；动态消息在 setMsg/showToast/showBgTask
+// 三个出口统一翻译，各处调用点无需改动；拼接消息未收录的部分回退中文。
+var LANG_STORAGE_KEY = 'cloud_web_lang';
+var I18N_LANGS = ['zh-CN', 'zh-TW', 'en', 'ja'];
+var LANG = 'zh-CN';
+
+var I18N = {
+    'en': {
+        '登录': 'Sign in',
+        '用户名': 'Username',
+        '请输入用户名': 'Enter username',
+        '密码': 'Password',
+        '请输入密码': 'Enter password',
+        '记住密码': 'Remember me',
+        '上传文件': 'Upload files',
+        '拖拽文件或文件夹到此处<br>或点击选择文件': 'Drag files or folders here<br>or click to browse',
+        '选择文件': 'Choose files',
+        '选择文件夹': 'Choose folder',
+        '上传并行数': 'Upload parallelism',
+        '自适应': 'Auto',
+        '自定义': 'Custom',
+        '上传通道': 'Upload channels',
+        '重启在途任务': 'Restart active tasks',
+        '停止上传并回退': 'Stop upload & roll back',
+        '开始上传': 'Start upload',
+        '删除文件': 'Delete file',
+        '确认删除': 'Confirm delete',
+        '停止删除': 'Stop deleting',
+        '预览文件': 'Preview file',
+        '保存修改': 'Save changes',
+        '属性': 'Properties',
+        '我的账户': 'My account',
+        '头像': 'Avatar',
+        '头像 URL（留空使用默认图标）': 'Avatar URL (blank = default icon)',
+        '保存头像': 'Save avatar',
+        '修改密码': 'Change password',
+        '当前密码': 'Current password',
+        '请输入当前密码': 'Enter current password',
+        '新密码': 'New password',
+        '大于8位，含大小写字母和数字': 'Over 8 chars, with upper/lowercase letters and digits',
+        '确认新密码': 'Confirm new password',
+        '再次输入新密码': 'Re-enter new password',
+        '注销账户': 'Delete account',
+        '输入密码确认注销': 'Enter password to confirm deletion',
+        '注销后账户将被永久删除': 'The account will be permanently deleted',
+        '永久注销账户': 'Delete account permanently',
+        '用户管理': 'User management',
+        '刷新': 'Refresh',
+        '搜索用户名': 'Search username',
+        '用户列表': 'User list',
+        '添加用户': 'Add user',
+        '密码（明文，将加密存储）': 'Password (plaintext, stored encrypted)',
+        '新用户名': 'New username',
+        '新用户密码': 'New user password',
+        '角色': 'Role',
+        '头像 URL（可选）': 'Avatar URL (optional)',
+        '账户菜单': 'Account menu',
+        '用户信息修改': 'Edit profile',
+        '退出登录': 'Sign out',
+        '正在刷新': 'Refreshing',
+        '服务检测中…': 'Checking services…',
+        '搜索全盘文件…': 'Search all files…',
+        '加载中...': 'Loading...',
+        '关闭提示': 'Dismiss',
+        '全选': 'Select all',
+        '反选': 'Invert',
+        '批量下载': 'Download',
+        '停止下载': 'Stop download',
+        '批量删除': 'Delete',
+        '取消': 'Cancel',
+        '预览': 'Preview',
+        '修改': 'Edit',
+        '下载': 'Download',
+        '删除': 'Delete',
+        '多代理': 'Proxies',
+        '曲线': 'Graph',
+        '停止': 'Stop',
+        '并行': 'Parallel',
+        '并行: 自适应': 'Parallel: auto',
+        '并行: 自定义': 'Parallel: custom',
+        '下载并行数': 'Download parallelism',
+        '当前实际并行数': 'Current parallelism',
+        'EO 下载通道开关（实时生效）': 'EO download channel (effective immediately)',
+        'CF 下载通道开关（实时生效）': 'CF download channel (effective immediately)',
+        '外部多代理下载（公共镜像加速，仅下载）': 'External multi-proxy download (public mirrors, download only)',
+        '重启在途任务（换源重发）': 'Restart active tasks (resend via another source)',
+        'EO 上传通道开关（实时生效）': 'EO upload channel (effective immediately)',
+        'CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）': 'CF upload channel (effective immediately, requires server key on CF)',
+        '外部代理上传通道（仅管理员，blob 直传不动引用零冲突）': 'External proxy upload channel (admin only, direct blob upload, zero ref conflicts)',
+        '外部': 'Ext',
+        '总': 'Total',
+        '跟随系统': 'System',
+        '浅色': 'Light',
+        '深色': 'Dark',
+        '主题': 'Theme',
+        '分片详情': 'Chunk details',
+        '速度曲线': 'Speed graph',
+        '手动并行数无上限，过大可能受浏览器单域名连接数限制': 'No limit on manual parallelism; very high values may hit the browser per-host connection limit',
+        '自定义并行数（无上限，过大可能受浏览器单域名连接数限制）': 'Custom parallelism (no limit; very high values may hit the browser per-host connection limit)',
+        '请输入用户名和密码': 'Please enter username and password',
+        '正在登录...': 'Signing in...',
+        '登录成功！': 'Signed in!',
+        '服务正常': 'All services OK',
+        '服务异常': 'Service issue',
+        '（管理员）': ' (admin)',
+        '显示密码': 'Show password',
+        '隐藏密码': 'Hide password',
+        '请先登录': 'Please sign in first',
+        '头像 URL 必须以 http:// 或 https:// 开头': 'Avatar URL must start with http:// or https://',
+        '正在保存头像...': 'Saving avatar...',
+        '请输入当前密码和新密码': 'Please enter current and new password',
+        '两次输入的新密码不一致': 'New passwords do not match',
+        '正在修改...': 'Updating...',
+        '密码修改成功！': 'Password changed!',
+        '密码加密失败': 'Password encryption failed',
+        '请输入密码以确认注销': 'Enter password to confirm deletion',
+        '正在注销...': 'Deleting account...',
+        '账户已注销': 'Account deleted',
+        '正在添加...': 'Adding...',
+        '需要管理员权限或身份验证失败': 'Admin required or authentication failed',
+        '正在获取授权...': 'Getting authorization...',
+        '保存成功！': 'Saved!',
+        '网络错误，保存失败': 'Network error, save failed',
+        '获取文件信息失败': 'Failed to get file info',
+        '网络错误，无法获取文件信息': 'Network error, cannot get file info',
+        '正在删除...': 'Deleting...',
+        '网络错误，删除失败': 'Network error, delete failed',
+        '删除成功！': 'Deleted!',
+        '获取文件夹内容失败': 'Failed to get folder contents',
+        '正在获取文件夹内容...': 'Getting folder contents...',
+        '文件夹为空或不存在': 'Folder is empty or does not exist',
+        '正在停止（等待当前文件删除完成）...': 'Stopping (waiting for current file)...',
+        '请先登录后再上传文件': 'Please sign in before uploading',
+        '文件夹为空': 'Folder is empty',
+        '已取消打包下载': 'Archive download cancelled',
+        '文件下载失败，打包中止': 'File download failed, archive aborted',
+        '下载失败，请重试': 'Download failed, please retry',
+        '上传已转入后台，点击右下角浮泡可查看': 'Upload moved to background; click the bubble at bottom-right to view',
+        '已关闭外部多代理下载': 'External multi-proxy download disabled',
+        '正在获取可用外部代理...': 'Getting available external proxies...',
+        '至少保留一个下载通道': 'Keep at least one download channel',
+        '至少保留一个上传通道': 'Keep at least one upload channel',
+        '上传双通道已启用（EO + CF）': 'Dual upload channels enabled (EO + CF)',
+        '当前位置:': 'Location:',
+        '总用量': 'Total',
+        '未知错误': 'Unknown error'
+    },
+    'zh-TW': {
+        '登录': '登入',
+        '用户名': '使用者名稱',
+        '请输入用户名': '請輸入使用者名稱',
+        '密码': '密碼',
+        '请输入密码': '請輸入密碼',
+        '记住密码': '記住密碼',
+        '上传文件': '上傳檔案',
+        '拖拽文件或文件夹到此处<br>或点击选择文件': '拖曳檔案或資料夾到此處<br>或點擊選擇檔案',
+        '选择文件': '選擇檔案',
+        '选择文件夹': '選擇資料夾',
+        '上传并行数': '上傳並行數',
+        '自适应': '自適應',
+        '自定义': '自訂',
+        '上传通道': '上傳通道',
+        '重启在途任务': '重啟在途任務',
+        '停止上传并回退': '停止上傳並回退',
+        '开始上传': '開始上傳',
+        '删除文件': '刪除檔案',
+        '确认删除': '確認刪除',
+        '停止删除': '停止刪除',
+        '预览文件': '預覽檔案',
+        '保存修改': '儲存修改',
+        '属性': '屬性',
+        '我的账户': '我的帳戶',
+        '头像': '頭像',
+        '头像 URL（留空使用默认图标）': '頭像 URL（留空使用預設圖示）',
+        '保存头像': '儲存頭像',
+        '修改密码': '修改密碼',
+        '当前密码': '目前密碼',
+        '请输入当前密码': '請輸入目前密碼',
+        '新密码': '新密碼',
+        '大于8位，含大小写字母和数字': '大於8位，含大小寫字母和數字',
+        '确认新密码': '確認新密碼',
+        '再次输入新密码': '再次輸入新密碼',
+        '注销账户': '註銷帳戶',
+        '输入密码确认注销': '輸入密碼確認註銷',
+        '注销后账户将被永久删除': '註銷後帳戶將被永久刪除',
+        '永久注销账户': '永久註銷帳戶',
+        '用户管理': '使用者管理',
+        '刷新': '重新整理',
+        '搜索用户名': '搜尋使用者名稱',
+        '用户列表': '使用者列表',
+        '添加用户': '新增使用者',
+        '密码（明文，将加密存储）': '密碼（明文，將加密儲存）',
+        '新用户名': '新使用者名稱',
+        '新用户密码': '新使用者密碼',
+        '角色': '角色',
+        '头像 URL（可选）': '頭像 URL（可選）',
+        '账户菜单': '帳戶選單',
+        '用户信息修改': '修改使用者資料',
+        '退出登录': '登出',
+        '正在刷新': '正在重新整理',
+        '服务检测中…': '服務檢測中…',
+        '搜索全盘文件…': '搜尋所有檔案…',
+        '加载中...': '載入中...',
+        '关闭提示': '關閉提示',
+        '全选': '全選',
+        '反选': '反選',
+        '批量下载': '批次下載',
+        '停止下载': '停止下載',
+        '批量删除': '批次刪除',
+        '取消': '取消',
+        '预览': '預覽',
+        '修改': '修改',
+        '下载': '下載',
+        '删除': '刪除',
+        '多代理': '多代理',
+        '曲线': '曲線',
+        '停止': '停止',
+        '并行': '並行',
+        '并行: 自适应': '並行: 自適應',
+        '并行: 自定义': '並行: 自訂',
+        '下载并行数': '下載並行數',
+        '当前实际并行数': '目前實際並行數',
+        'EO 下载通道开关（实时生效）': 'EO 下載通道開關（即時生效）',
+        'CF 下载通道开关（实时生效）': 'CF 下載通道開關（即時生效）',
+        '外部多代理下载（公共镜像加速，仅下载）': '外部多代理下載（公共鏡像加速，僅下載）',
+        '重启在途任务（换源重发）': '重啟在途任務（換源重發）',
+        'EO 上传通道开关（实时生效）': 'EO 上傳通道開關（即時生效）',
+        'CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）': 'CF 上傳通道開關（即時生效，需 CF 側配置伺服端 key）',
+        '外部代理上传通道（仅管理员，blob 直传不动引用零冲突）': '外部代理上傳通道（僅管理員，blob 直傳不動引用零衝突）',
+        '外部': '外部',
+        '总': '總',
+        '跟随系统': '跟隨系統',
+        '浅色': '淺色',
+        '深色': '深色',
+        '主题': '主題',
+        '分片详情': '分片詳情',
+        '速度曲线': '速度曲線',
+        '手动并行数无上限，过大可能受浏览器单域名连接数限制': '手動並行數無上限，過大可能受瀏覽器單域名連線數限制',
+        '自定义并行数（无上限，过大可能受浏览器单域名连接数限制）': '自訂並行數（無上限，過大可能受瀏覽器單域名連線數限制）',
+        '请输入用户名和密码': '請輸入使用者名稱和密碼',
+        '正在登录...': '正在登入...',
+        '登录成功！': '登入成功！',
+        '服务正常': '服務正常',
+        '服务异常': '服務異常',
+        '（管理员）': '（管理員）',
+        '显示密码': '顯示密碼',
+        '隐藏密码': '隱藏密碼',
+        '请先登录': '請先登入',
+        '头像 URL 必须以 http:// 或 https:// 开头': '頭像 URL 必須以 http:// 或 https:// 開頭',
+        '正在保存头像...': '正在儲存頭像...',
+        '请输入当前密码和新密码': '請輸入目前密碼和新密碼',
+        '两次输入的新密码不一致': '兩次輸入的新密碼不一致',
+        '正在修改...': '正在修改...',
+        '密码修改成功！': '密碼修改成功！',
+        '密码加密失败': '密碼加密失敗',
+        '请输入密码以确认注销': '請輸入密碼以確認註銷',
+        '正在注销...': '正在註銷...',
+        '账户已注销': '帳戶已註銷',
+        '正在添加...': '正在新增...',
+        '需要管理员权限或身份验证失败': '需要管理員權限或身份驗證失敗',
+        '正在获取授权...': '正在取得授權...',
+        '保存成功！': '儲存成功！',
+        '网络错误，保存失败': '網路錯誤，儲存失敗',
+        '获取文件信息失败': '取得檔案資訊失敗',
+        '网络错误，无法获取文件信息': '網路錯誤，無法取得檔案資訊',
+        '正在删除...': '正在刪除...',
+        '网络错误，删除失败': '網路錯誤，刪除失敗',
+        '删除成功！': '刪除成功！',
+        '获取文件夹内容失败': '取得資料夾內容失敗',
+        '正在获取文件夹内容...': '正在取得資料夾內容...',
+        '文件夹为空或不存在': '資料夾為空或不存在',
+        '正在停止（等待当前文件删除完成）...': '正在停止（等待目前檔案刪除完成）...',
+        '请先登录后再上传文件': '請先登入後再上傳檔案',
+        '文件夹为空': '資料夾為空',
+        '已取消打包下载': '已取消打包下載',
+        '文件下载失败，打包中止': '檔案下載失敗，打包中止',
+        '下载失败，请重试': '下載失敗，請重試',
+        '上传已转入后台，点击右下角浮泡可查看': '上傳已轉入後台，點擊右下角浮泡可查看',
+        '已关闭外部多代理下载': '已關閉外部多代理下載',
+        '正在获取可用外部代理...': '正在取得可用外部代理...',
+        '至少保留一个下载通道': '至少保留一個下載通道',
+        '至少保留一个上传通道': '至少保留一個上傳通道',
+        '上传双通道已启用（EO + CF）': '上傳雙通道已啟用（EO + CF）',
+        '当前位置:': '目前位置:',
+        '总用量': '總用量',
+        '未知错误': '未知錯誤'
+    },
+    'ja': {
+        '登录': 'ログイン',
+        '用户名': 'ユーザー名',
+        '请输入用户名': 'ユーザー名を入力',
+        '密码': 'パスワード',
+        '请输入密码': 'パスワードを入力',
+        '记住密码': 'パスワードを保存',
+        '上传文件': 'ファイルをアップロード',
+        '拖拽文件或文件夹到此处<br>或点击选择文件': 'ここにファイルやフォルダをドラッグ<br>またはクリックして選択',
+        '选择文件': 'ファイルを選択',
+        '选择文件夹': 'フォルダを選択',
+        '上传并行数': 'アップロード並列数',
+        '自适应': '自動',
+        '自定义': 'カスタム',
+        '上传通道': 'アップロード経路',
+        '重启在途任务': '転送中のタスクを再開',
+        '停止上传并回退': 'アップロードを停止してロールバック',
+        '开始上传': 'アップロード開始',
+        '删除文件': 'ファイルを削除',
+        '确认删除': '削除を確認',
+        '停止删除': '削除を停止',
+        '预览文件': 'ファイルをプレビュー',
+        '保存修改': '変更を保存',
+        '属性': 'プロパティ',
+        '我的账户': 'マイアカウント',
+        '头像': 'アバター',
+        '头像 URL（留空使用默认图标）': 'アバター URL（空欄でデフォルトアイコン）',
+        '保存头像': 'アバターを保存',
+        '修改密码': 'パスワード変更',
+        '当前密码': '現在のパスワード',
+        '请输入当前密码': '現在のパスワードを入力',
+        '新密码': '新しいパスワード',
+        '大于8位，含大小写字母和数字': '8文字以上、大文字・小文字・数字を含む',
+        '确认新密码': '新しいパスワード（確認）',
+        '再次输入新密码': '新しいパスワードを再入力',
+        '注销账户': 'アカウント削除',
+        '输入密码确认注销': 'パスワードを入力して削除を確認',
+        '注销后账户将被永久删除': '削除するとアカウントは完全に消去されます',
+        '永久注销账户': 'アカウントを完全に削除',
+        '用户管理': 'ユーザー管理',
+        '刷新': '更新',
+        '搜索用户名': 'ユーザー名を検索',
+        '用户列表': 'ユーザー一覧',
+        '添加用户': 'ユーザーを追加',
+        '密码（明文，将加密存储）': 'パスワード（平文・暗号化して保存）',
+        '新用户名': '新しいユーザー名',
+        '新用户密码': '新しいユーザーのパスワード',
+        '角色': 'ロール',
+        '头像 URL（可选）': 'アバター URL（任意）',
+        '账户菜单': 'アカウントメニュー',
+        '用户信息修改': 'ユーザー情報を編集',
+        '退出登录': 'ログアウト',
+        '正在刷新': '更新中',
+        '服务检测中…': 'サービス確認中…',
+        '搜索全盘文件…': 'すべてのファイルを検索…',
+        '加载中...': '読み込み中...',
+        '关闭提示': '閉じる',
+        '全选': 'すべて選択',
+        '反选': '選択を反転',
+        '批量下载': '一括ダウンロード',
+        '停止下载': 'ダウンロード停止',
+        '批量删除': '一括削除',
+        '取消': 'キャンセル',
+        '预览': 'プレビュー',
+        '修改': '編集',
+        '下载': 'ダウンロード',
+        '删除': '削除',
+        '多代理': 'マルチプロキシ',
+        '曲线': 'グラフ',
+        '停止': '停止',
+        '并行': '並列',
+        '并行: 自适应': '並列: 自動',
+        '并行: 自定义': '並列: カスタム',
+        '下载并行数': 'ダウンロード並列数',
+        '当前实际并行数': '現在の実並列数',
+        'EO 下载通道开关（实时生效）': 'EO ダウンロード経路スイッチ（即時反映）',
+        'CF 下载通道开关（实时生效）': 'CF ダウンロード経路スイッチ（即時反映）',
+        '外部多代理下载（公共镜像加速，仅下载）': '外部マルチプロキシダウンロード（公開ミラー加速・ダウンロードのみ）',
+        '重启在途任务（换源重发）': '転送中のタスクを再開（ソース切替再送）',
+        'EO 上传通道开关（实时生效）': 'EO アップロード経路スイッチ（即時反映）',
+        'CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）': 'CF アップロード経路スイッチ（即時反映・CF 側にサーバーキー設定が必要）',
+        '外部代理上传通道（仅管理员，blob 直传不动引用零冲突）': '外部プロキシアップロード経路（管理者のみ・blob 直送で参照競合ゼロ）',
+        '外部': '外部',
+        '总': '合計',
+        '跟随系统': 'システムに従う',
+        '浅色': 'ライト',
+        '深色': 'ダーク',
+        '主题': 'テーマ',
+        '分片详情': 'チャンク詳細',
+        '速度曲线': '速度グラフ',
+        '手动并行数无上限，过大可能受浏览器单域名连接数限制': '手動並列数に上限なし（大きすぎる場合はブラウザの単一ドメイン接続数制限を受けます）',
+        '自定义并行数（无上限，过大可能受浏览器单域名连接数限制）': 'カスタム並列数（上限なし・大きすぎる場合はブラウザの単一ドメイン接続数制限を受けます）',
+        '请输入用户名和密码': 'ユーザー名とパスワードを入力してください',
+        '正在登录...': 'ログイン中...',
+        '登录成功！': 'ログインしました！',
+        '服务正常': 'サービス正常',
+        '服务异常': 'サービス異常',
+        '（管理员）': '（管理者）',
+        '显示密码': 'パスワードを表示',
+        '隐藏密码': 'パスワードを隠す',
+        '请先登录': '先にログインしてください',
+        '头像 URL 必须以 http:// 或 https:// 开头': 'アバター URL は http:// または https:// で始まる必要があります',
+        '正在保存头像...': 'アバターを保存中...',
+        '请输入当前密码和新密码': '現在のパスワードと新しいパスワードを入力してください',
+        '两次输入的新密码不一致': '新しいパスワードが一致しません',
+        '正在修改...': '変更中...',
+        '密码修改成功！': 'パスワードを変更しました！',
+        '密码加密失败': 'パスワードの暗号化に失敗しました',
+        '请输入密码以确认注销': '削除を確認するにはパスワードを入力してください',
+        '正在注销...': '削除中...',
+        '账户已注销': 'アカウントを削除しました',
+        '正在添加...': '追加中...',
+        '需要管理员权限或身份验证失败': '管理者権限が必要か、認証に失敗しました',
+        '正在获取授权...': '認証を取得中...',
+        '保存成功！': '保存しました！',
+        '网络错误，保存失败': 'ネットワークエラーで保存に失敗しました',
+        '获取文件信息失败': 'ファイル情報の取得に失敗しました',
+        '网络错误，无法获取文件信息': 'ネットワークエラーでファイル情報を取得できません',
+        '正在删除...': '削除中...',
+        '网络错误，删除失败': 'ネットワークエラーで削除に失敗しました',
+        '删除成功！': '削除しました！',
+        '获取文件夹内容失败': 'フォルダ内容の取得に失敗しました',
+        '正在获取文件夹内容...': 'フォルダ内容を取得中...',
+        '文件夹为空或不存在': 'フォルダが空か存在しません',
+        '正在停止（等待当前文件删除完成）...': '停止中（現在のファイル削除完了を待機）...',
+        '请先登录后再上传文件': 'ログインしてからアップロードしてください',
+        '文件夹为空': 'フォルダは空です',
+        '已取消打包下载': '一括ダウンロードをキャンセルしました',
+        '文件下载失败，打包中止': 'ファイルのダウンロードに失敗、パックを中止しました',
+        '下载失败，请重试': 'ダウンロードに失敗しました。再試行してください',
+        '上传已转入后台，点击右下角浮泡可查看': 'アップロードはバックグラウンドに移行しました。右下のバブルで確認できます',
+        '已关闭外部多代理下载': '外部マルチプロキシダウンロードをオフにしました',
+        '正在获取可用外部代理...': '利用可能な外部プロキシを取得中...',
+        '至少保留一个下载通道': 'ダウンロード経路を少なくとも1つ残してください',
+        '至少保留一个上传通道': 'アップロード経路を少なくとも1つ残してください',
+        '上传双通道已启用（EO + CF）': 'アップロードデュアル経路を有効化しました（EO + CF）',
+        '当前位置:': '現在位置:',
+        '总用量': '総使用量',
+        '未知错误': '不明なエラー'
+    }
+};
+
+function t(s) {
+    if (LANG === 'zh-CN') return s;
+    var d = I18N[LANG];
+    return (d && d[s] !== undefined) ? d[s] : s;
+}
+
+// [选择器, 属性, 文案key]；属性：text/html/ph(placeholder)/title/owntext(元素自身文本节点)
+var I18N_BINDINGS = [
+    ['#authBtn', 'text', '登录'],
+    ['#searchInput', 'ph', '搜索全盘文件…'],
+    ['#fileListContainer', 'text', '加载中...'],
+    ['button[onclick="openUploadModal()"]', 'text', '上传文件'],
+    ['#userAvatarBtn', 'title', '账户菜单'],
+    ['#userMenu div:nth-of-type(2)', 'text', '用户信息修改'],
+    ['#userMenuAdmin', 'text', '用户管理'],
+    ['#userMenu div:nth-of-type(4)', 'text', '退出登录'],
+    ['#refreshIndicator', 'title', '正在刷新'],
+    ['#svcStatusText', 'text', '服务检测中…'],
+    ['#loginModal h2', 'text', '登录'],
+    ['#loginModal div:nth-of-type(1) label', 'text', '用户名'],
+    ['#loginModal div:nth-of-type(2) label', 'text', '密码'],
+    ['#loginUsername', 'ph', '请输入用户名'],
+    ['#loginPassword', 'ph', '请输入密码'],
+    ['#loginModal label[for="loginRememberPwd"]', 'text', '记住密码'],
+    ['#loginBtn', 'text', '登录'],
+    ['#uploadModal h2', 'text', '上传文件'],
+    ['#dropZone', 'html', '拖拽文件或文件夹到此处<br>或点击选择文件'],
+    ['#pickFileBtn', 'text', '选择文件'],
+    ['#pickFolderBtn', 'text', '选择文件夹'],
+    ['#uploadModal label[for="concurrencySelect"]', 'text', '上传并行数'],
+    ['#concurrencySelect option[value="auto"]', 'text', '自适应'],
+    ['#concurrencySelect option[value="custom"]', 'text', '自定义'],
+    ['#concurrencyCustom', 'title', '手动并行数无上限，过大可能受浏览器单域名连接数限制'],
+    ['#uploadModal div:nth-of-type(4) label', 'text', '上传通道'],
+    ['#ulEoBtn', 'title', 'EO 上传通道开关（实时生效）'],
+    ['#ulCfBtn', 'title', 'CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）'],
+    ['#ulExtBtn', 'title', '外部代理上传通道（仅管理员，blob 直传不动引用零冲突）'],
+    ['#ulExtBtn', 'text', '外部'],
+    ['#chunkPanelToggle', 'owntext', '分片详情'],
+    ['#speedPanelToggle', 'owntext', '速度曲线'],
+    ['#restartUploadBtn', 'text', '重启在途任务'],
+    ['#stopUploadBtn', 'text', '停止上传并回退'],
+    ['#uploadBtn', 'text', '开始上传'],
+    ['#ulLegendTot', 'text', '总'],
+    ['#ulLegendExt', 'text', '外部'],
+    ['#deleteModal h2', 'text', '删除文件'],
+    ['#deleteAuthFields div:nth-of-type(1) label', 'text', '用户名'],
+    ['#deleteAuthFields div:nth-of-type(2) label', 'text', '密码'],
+    ['#deleteUsername', 'ph', '请输入用户名'],
+    ['#deletePassword', 'ph', '请输入密码'],
+    ['#deleteBtn', 'text', '确认删除'],
+    ['#deleteStopBtn', 'text', '停止删除'],
+    ['#previewTitle', 'text', '预览文件'],
+    ['#savePreviewBtn', 'text', '保存修改'],
+    ['#propertiesTitle', 'text', '属性'],
+    ['#accountModal h2', 'text', '我的账户'],
+    ['#accountModal h3:nth-of-type(1)', 'text', '头像'],
+    ['#accountModal h3:nth-of-type(2)', 'text', '修改密码'],
+    ['#accountModal h3:nth-of-type(3)', 'text', '注销账户'],
+    ['#accountModal div:nth-of-type(1) label', 'text', '头像 URL（留空使用默认图标）'],
+    ['#accountModal div:nth-of-type(2) label', 'text', '当前密码'],
+    ['#accountModal div:nth-of-type(3) label', 'text', '新密码'],
+    ['#accountModal div:nth-of-type(4) label', 'text', '确认新密码'],
+    ['#accountModal div:nth-of-type(5) label', 'text', '输入密码确认注销'],
+    ['#cpCurrent', 'ph', '请输入当前密码'],
+    ['#cpNew', 'ph', '大于8位，含大小写字母和数字'],
+    ['#cpConfirm', 'ph', '再次输入新密码'],
+    ['#daPassword', 'ph', '注销后账户将被永久删除'],
+    ['#avBtn', 'text', '保存头像'],
+    ['#cpBtn', 'text', '修改密码'],
+    ['#daBtn', 'text', '永久注销账户'],
+    ['#adminModal h2', 'owntext', '用户管理'],
+    ['#adminRefreshBtn', 'title', '刷新'],
+    ['#adminSearchInput', 'ph', '搜索用户名'],
+    ['#adminListToggle', 'owntext', '用户列表'],
+    ['#adminModal h3:nth-of-type(1)', 'text', '添加用户'],
+    ['#adminModal div:nth-of-type(4) label', 'text', '用户名'],
+    ['#adminModal div:nth-of-type(5) label', 'text', '密码（明文，将加密存储）'],
+    ['#adminModal div:nth-of-type(6) label', 'text', '角色'],
+    ['#adminModal div:nth-of-type(7) label', 'text', '头像 URL（可选）'],
+    ['#adminNewUsername', 'ph', '新用户名'],
+    ['#adminNewPassword', 'ph', '新用户密码'],
+    ['#adminAddBtn', 'text', '添加用户'],
+    ['#bgTaskClose', 'title', '关闭提示'],
+    ['#taskDlCur', 'title', '当前实际并行数'],
+    ['#taskDlConc', 'title', '下载并行数'],
+    ['#taskDlConc option[value="auto"]', 'text', '并行: 自适应'],
+    ['#taskDlConc option[value="custom"]', 'text', '并行: 自定义'],
+    ['#taskDlConcCustom', 'title', '自定义并行数（无上限，过大可能受浏览器单域名连接数限制）'],
+    ['#taskDlEoBtn', 'title', 'EO 下载通道开关（实时生效）'],
+    ['#taskDlCfBtn', 'title', 'CF 下载通道开关（实时生效）'],
+    ['#taskDlExtBtn', 'title', '外部多代理下载（公共镜像加速，仅下载）'],
+    ['#taskDlExtBtn', 'text', '多代理'],
+    ['#taskDlGraphToggle', 'title', '速度曲线'],
+    ['#taskDlGraphToggle', 'text', '曲线'],
+    ['#taskProgressRestart', 'title', '重启在途任务（换源重发）'],
+    ['#taskProgressCancel', 'title', '停止'],
+    ['#taskDlLegendTot', 'text', '总'],
+    ['#taskDlLegendExt', 'text', '外部'],
+    ['#batchSelectAllBtn', 'text', '全选'],
+    ['#batchInvertBtn', 'text', '反选'],
+    ['#batchDownloadBtn', 'text', '批量下载'],
+    ['#batchStopBtn', 'text', '停止下载'],
+    ['#batchDeleteBtn', 'text', '批量删除'],
+    ['#batchCancelBtn', 'text', '取消'],
+    ['#menuProperties', 'text', '属性'],
+    ['#menuPreview', 'text', '预览'],
+    ['#menuEdit', 'text', '修改'],
+    ['#menuDownload', 'text', '下载'],
+    ['#menuDelete', 'text', '删除'],
+    ['#themeSelect', 'title', '主题'],
+    ['#themeSelect option[value="auto"]', 'text', '跟随系统'],
+    ['#themeSelect option[value="light"]', 'text', '浅色'],
+    ['#themeSelect option[value="dark"]', 'text', '深色']
+];
+
+// 替换元素自身第一个非空文本节点（保留内部子元素，如箭头/按钮）
+function applyOwnText(el, key) {
+    var node = el._i18nOwnNode;
+    if (!node || node.parentNode !== el) {
+        node = null;
+        for (var i = 0; i < el.childNodes.length; i++) {
+            var n = el.childNodes[i];
+            if (n.nodeType === 3 && n.nodeValue.trim()) { node = n; break; }
+        }
+        if (!node) return;
+        el._i18nOwnNode = node;
+    }
+    node.nodeValue = ' ' + t(key) + ' ';
+}
+
+function applyI18nStatic() {
+    for (var i = 0; i < I18N_BINDINGS.length; i++) {
+        var b = I18N_BINDINGS[i];
+        var el = document.querySelector(b[0]);
+        if (!el) continue;
+        if (b[1] === 'text') el.textContent = t(b[2]);
+        else if (b[1] === 'html') el.innerHTML = t(b[2]);
+        else if (b[1] === 'ph') el.placeholder = t(b[2]);
+        else if (b[1] === 'title') el.title = t(b[2]);
+        else if (b[1] === 'owntext') applyOwnText(el, b[2]);
+    }
+    // 下载并行数数字档：'并行: N' 前缀随语言切换
+    var conc = document.getElementById('taskDlConc');
+    if (conc) {
+        for (var j = 0; j < conc.options.length; j++) {
+            var opt = conc.options[j];
+            if (/^\d+$/.test(opt.value)) opt.textContent = t('并行') + ': ' + opt.value;
+        }
+    }
+}
+
+function langDetect() {
+    var saved = null;
+    try { saved = localStorage.getItem(LANG_STORAGE_KEY); } catch (e) {}
+    if (saved && I18N_LANGS.indexOf(saved) !== -1) return saved;
+    var nav = (navigator.language || 'zh-CN').toLowerCase();
+    if (nav.indexOf('zh') === 0) {
+        return (nav.indexOf('tw') !== -1 || nav.indexOf('hk') !== -1 || nav.indexOf('mo') !== -1 || nav.indexOf('hant') !== -1) ? 'zh-TW' : 'zh-CN';
+    }
+    if (nav.indexOf('ja') === 0) return 'ja';
+    if (nav.indexOf('en') === 0) return 'en';
+    return 'zh-CN';
+}
+
+function langSet(l) {
+    if (I18N_LANGS.indexOf(l) === -1) l = 'zh-CN';
+    LANG = l;
+    try { localStorage.setItem(LANG_STORAGE_KEY, l); } catch (e) {}
+    applyI18nStatic();
+    // 动态渲染区即时刷新
+    updateAuthBtn();
+    updateBreadcrumbs();
+    renderSvcStatus();
+    var eyes = document.querySelectorAll('.pwd-eye');
+    for (var i = 0; i < eyes.length; i++) {
+        var input = eyes[i].parentNode.querySelector('input');
+        var show = input && input.type === 'password';
+        eyes[i].title = show ? t('显示密码') : t('隐藏密码');
+    }
+}
+
+function initLang() {
+    LANG = langDetect();
+    var sel = document.getElementById('langSelect');
+    if (sel) {
+        sel.value = LANG;
+        sel.addEventListener('change', function() { langSet(this.value); });
+    }
+    applyI18nStatic();
 }
 
 // ---- 用户头像：优先使用 user.json 中保存的头像 URL（随登录下发，存于本地凭据），
@@ -883,7 +1565,7 @@ function updateAuthBtn() {
         wrap.style.display = saved ? '' : 'none';
         if (saved) {
             var nameEl = document.getElementById('userMenuName');
-            if (nameEl) nameEl.textContent = saved.u + (saved.role === 'admin' ? '（管理员）' : '');
+            if (nameEl) nameEl.textContent = saved.u + (saved.role === 'admin' ? t('（管理员）') : '');
             var adminItem = document.getElementById('userMenuAdmin');
             if (adminItem) adminItem.style.display = saved.role === 'admin' ? '' : 'none';
             renderUserAvatar();
@@ -1494,7 +2176,7 @@ function renderSvcStatus() {
     // 角标常驻不淡出；点击展开/折叠三路详情
     if (!a && !g && !c) {
         el.className = 'svc-status' + (svcExpanded ? ' expanded' : '');
-        text.textContent = '服务检测中…';
+        text.textContent = t('服务检测中…');
         tip.textContent = '';
         return;
     }
@@ -1506,7 +2188,7 @@ function renderSvcStatus() {
         }
     });
     el.className = 'svc-status ' + (badCount ? 'fail' : 'ok') + (svcExpanded ? ' expanded' : '');
-    text.textContent = doneCount < 3 ? '服务检测中…' : (badCount ? '服务异常 ×' + badCount : '服务正常');
+    text.textContent = doneCount < 3 ? t('服务检测中…') : (badCount ? t('服务异常') + ' ×' + badCount : t('服务正常'));
     tip.textContent = '';
     addSvcTipLine(tip, 'EO 边缘函数', '', a);
     addGitSvcTip(tip, g);
@@ -1736,6 +2418,7 @@ function closeUploadModal() {
     document.getElementById('speedLegend').style.display = 'none';
     document.getElementById('speedPanelArrow').textContent = '▸';
     document.getElementById('stopUploadBtn').style.display = 'none';
+    document.getElementById('restartUploadBtn').style.display = 'none';
     resetUploadSpeedHist();
     pendingFiles = [];
     document.getElementById('selectedFiles').textContent = '';
@@ -1813,6 +2496,63 @@ function fetchFolderSizes() {
     fetchFileTree(updateFolderSizes);
 }
 
+// ---- 全盘文件搜索（复用 git 全量文件树 fileTreeCache，随增删改自动失效） ----
+var searchDebounceTimer = null;
+var searchSeq = 0;   // 代数令牌：树加载慢响应到达时输入已变则丢弃
+
+function renderSearchResults(q) {
+    var seq = ++searchSeq;
+    var container = document.getElementById('fileListContainer');
+    container.className = '';
+    container.innerHTML = '<div style="padding: 16px; color: #999;">正在搜索…</div>';
+    fetchFileTree(function() {
+        if (seq !== searchSeq) return;
+        var lq = q.toLowerCase();
+        var matches = [];
+        for (var i = 0; i < fileTreeCache.length; i++) {
+            var ent = fileTreeCache[i];
+            if (ent.type !== 'blob' || !ent.path) continue;
+            if (ent.path.toLowerCase().indexOf(lq) === -1) continue;
+            matches.push(ent);
+            if (matches.length >= 200) break;
+        }
+        if (!matches.length) {
+            container.innerHTML = '<div style="padding: 16px; color: #999;">没有匹配「' + escapeHtml(q) + '」的文件</div>';
+            return;
+        }
+        var html = '<div style="padding: 6px 8px; color: #888; font-size: 0.9em;">搜索到 ' + matches.length + (matches.length >= 200 ? '+' : '') + ' 个文件（点击跳转所在目录）</div>';
+        matches.forEach(function(ent) {
+            var slash = ent.path.lastIndexOf('/');
+            var dir = slash === -1 ? '' : ent.path.slice(0, slash);
+            var name = slash === -1 ? ent.path : ent.path.slice(slash + 1);
+            var href = dir ? '/' + encodePath(dir) + '/' : '/';
+            html += '<a href="' + href + '" style="display: block; padding: 8px; border-bottom: 1px solid #f0f0f0; text-decoration: none; color: inherit;">' +
+                '<div style="color: #2c82c9; word-break: break-all;">' + escapeHtml(displayName(name)) + '</div>' +
+                '<div style="color: #999; font-size: 0.85em; word-break: break-all;">' + escapeHtml(dir ? displayName(dir) : '/') + (ent.size ? ' · ' + formatSize(ent.size) : '') + '</div></a>';
+        });
+        container.innerHTML = html;
+    }, function() {
+        if (seq !== searchSeq) return;
+        container.innerHTML = '<div style="padding: 16px; color: #e74c3c;">搜索失败：无法获取仓库文件树</div>';
+    });
+}
+
+function initSearchBox() {
+    var input = document.getElementById('searchInput');
+    if (!input) return;
+    input.addEventListener('input', function() {
+        var q = input.value.trim();
+        clearTimeout(searchDebounceTimer);
+        if (!q) {
+            // 清空搜索：恢复正常目录列表
+            searchSeq++;
+            searchDebounceTimer = setTimeout(loadFileList, 200);
+            return;
+        }
+        searchDebounceTimer = setTimeout(function() { renderSearchResults(q); }, 350);
+    });
+}
+
 function updateFolderSizes() {
     if (!fileTreeCache) return;
     // Single pass over the tree: accumulate each blob's size into all ancestor dirs
@@ -1833,7 +2573,7 @@ function updateFolderSizes() {
     // 全仓总用量（数据量），显示在标题右侧
     var usageEl = document.getElementById('totalUsage');
     if (usageEl) {
-        var usageText = '总用量 ' + formatSize(rootTotal);
+        var usageText = t('总用量') + ' ' + formatSize(rootTotal);
         if (usageEl.textContent !== usageText) usageEl.textContent = usageText;
     }
     var sizeSpans = document.querySelectorAll('.dir-size');
@@ -2211,8 +2951,10 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
             if (!total) segments[0].end = null;
         } else {
             // 段数多于并发数：小步快跑，配合调度器按当前并发限制滚动补位；
-            // 段数下限随当前限制抬升（最小 1MB/段），单文件也能吃满高并行数
-            var count = Math.min(Math.max(DUAL_DL_PARTS, getLimit()), Math.ceil(total / (1024 * 1024)));
+            // 段数下限随当前限制与自适应上限抬升（最小 1MB/段）——外部多代理
+            // 把上限放大到数十后，单文件也有足够段数吃满放大后的并行数
+            var partsWant = Math.max(DUAL_DL_PARTS, getLimit(), dlLimit.adaptive ? dlGetLimitCap() : 0);
+            var count = Math.min(partsWant, Math.ceil(total / (1024 * 1024)));
             var segSize = Math.ceil(total / count);
             segments = [];
             for (var i = 0; i < count; i++) {
@@ -2230,7 +2972,14 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
     // 总大小从响应 Content-Length 补出（上面的 fetchSeg 处理）
     start(total);
 
-    return { cancel: cancel };
+    // 重启全部在途段：不置取消标志直接中止当前连接，既有失败重试路径会
+    // 自动换源续传——多代理下个别站点挂起/慢速时可手动洗牌
+    function restart() {
+        if (state.failed || state.cancelled || !segments) return;
+        state.controllers.forEach(function(c) { try { c.abort(); } catch (e) {} });
+    }
+
+    return { cancel: cancel, restart: restart };
 }
 
 // ---- ZIP 打包（store 模式：媒体文件本无压缩收益，速度快且 CPU 占用低） ----
@@ -2804,6 +3553,8 @@ function downloadFile(filePath, fileName, onDone, onProgress, sizeHint) {
             cancelled = true;
             handle.cancel();
             hideTaskProgress();
+        }, function() {
+            if (handle.restart) handle.restart();
         });
     }
     function finish(ok, blob) {
@@ -2817,12 +3568,12 @@ function downloadFile(filePath, fileName, onDone, onProgress, sizeHint) {
 function setMsg(id, text, type) {
     var msg = document.getElementById(id);
     msg.className = 'message ' + type;
-    msg.textContent = text;
+    msg.textContent = t(text);   // 消息出口统一翻译（未收录的拼接文案回退中文）
 }
 
 function showToast(text) {
     var toast = document.getElementById('toast');
-    toast.textContent = text;
+    toast.textContent = t(text);
     toast.classList.add('show');
 }
 
@@ -2843,7 +3594,7 @@ function showBgTask(text, restoreFn, interrupted) {
     b.style.display = 'flex';
     bgTaskInterrupted = !!interrupted;
     b.classList.toggle('interrupted', bgTaskInterrupted);
-    document.getElementById('bgTaskText').textContent = text;
+    document.getElementById('bgTaskText').textContent = t(text);
     bgTaskRestore = restoreFn || null;
 }
 
@@ -2888,12 +3639,15 @@ function restoreBgTaskHint() {
 
 // ---- 全局任务进度条（单文件/批量/文件夹下载共用） ----
 var taskProgressCancelFn = null;
+var taskProgressRestartFn = null;
 
-function showTaskProgress(text, pct, onCancel) {
+function showTaskProgress(text, pct, onCancel, onRestart) {
     var el = document.getElementById('taskProgress');
     el.classList.add('show');
     taskProgressCancelFn = onCancel || null;
+    taskProgressRestartFn = onRestart || null;
     document.getElementById('taskProgressCancel').style.display = onCancel ? '' : 'none';
+    document.getElementById('taskProgressRestart').style.display = onRestart ? '' : 'none';
     persistBgTask('download', text);
     updateTaskProgress(text, pct);
 }
@@ -2917,6 +3671,7 @@ function updateTaskProgress(text, pct) {
 function hideTaskProgress() {
     document.getElementById('taskProgress').classList.remove('show');
     taskProgressCancelFn = null;
+    taskProgressRestartFn = null;
     clearBgTaskPersist();
 }
 
@@ -2948,6 +3703,11 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
         }
     }
     var actives = [];
+    // 在途片字节数护栏：外部多代理把自适应并发上限放大后，N 片大分片
+    // （单片可达 33MB）同时在途的 arraybuffer 可达 GB 级压垮标签页——
+    // 超过上限暂停派发，片完成释放后续派（与上传 UL_MAX_INFLIGHT_BYTES 同理）
+    var inflightBytes = 0;
+    var MERGE_MAX_INFLIGHT_BYTES = 256 * 1024 * 1024;
     var lastPrefix = 0;
     var totalBytes = 0;
     parts.forEach(function(p) { totalBytes += p.size || 0; });
@@ -3026,6 +3786,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
         }
         if (nextIndex >= parts.length) return;
         var i = nextIndex++;
+        inflightBytes += parts[i].size || 0;
         if (budget) {
             budget.active++;
             parts[i]._budgetHeld = true;
@@ -3097,6 +3858,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 if (xhr.status === 200) {
                     buffers[i] = xhr.response;
                     dlChanDec(chan);
+                    inflightBytes = Math.max(0, inflightBytes - (parts[i].size || 0));
                     releaseBudget(parts[i]);
                     if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
                     loadedBytes += (parts[i].size || 0) - (parts[i]._loaded || 0);
@@ -3164,6 +3926,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
     var pumpMerge = function() {
         while (!failed && !cancelled && actives.length < getLimit() && nextIndex < parts.length) {
             if (budget && budget.active >= dlGetLimit()) return;
+            if (inflightBytes + (parts[nextIndex].size || 0) > MERGE_MAX_INFLIGHT_BYTES && actives.length > 0) return;
             next();
         }
     };
@@ -3180,6 +3943,11 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
             // 中止的在途片不会回调 dlChanDec，直接清零在途计数避免负载均衡失真
             dlActive.eo = dlActive.cf = dlActive.ext = 0;
             hideToast();
+        },
+        // 重启全部在途片：不置取消标志直接中止，既有重试路径自动换源重下
+        restart: function() {
+            if (failed || cancelled) return;
+            actives.slice().forEach(function(x) { try { x.abort(); } catch (e) {} });
         }
     };
 }
@@ -3729,7 +4497,9 @@ function downloadMergedFile(parts, fileName, onDone, onProgress) {
         }
     }, null, true);
     if (standalone) {
-        showTaskProgress('正在下载: ' + fileName, 0, function() { handle.cancel(); });
+        showTaskProgress('正在下载: ' + fileName, 0, function() { handle.cancel(); }, function() {
+            if (handle.restart) handle.restart();
+        });
     }
     return handle;
 }
@@ -5695,7 +6465,7 @@ function updateBreadcrumbs() {
     if (path === '') {
         var homeSpan = document.createElement('span');
         homeSpan.style.color = '#666';
-        homeSpan.textContent = '当前位置:';
+        homeSpan.textContent = t('当前位置:');
         var homeStrong = document.createElement('strong');
         homeStrong.textContent = ' Home';
         homeSpan.appendChild(homeStrong);
@@ -5706,7 +6476,7 @@ function updateBreadcrumbs() {
     var parts = path.split('/');
     var labelSpan = document.createElement('span');
     labelSpan.style.color = '#666';
-    labelSpan.textContent = '当前位置: ';
+    labelSpan.textContent = t('当前位置:') + ' ';
     crumbs.appendChild(labelSpan);
 
     var homeLink = document.createElement('a');
@@ -6680,9 +7450,30 @@ var DL_LIMIT_MAX = 8;
 var DL_LIMIT_ADAPTIVE_START = 3;
 var dlLimit = { adaptive: true, limit: DL_LIMIT_ADAPTIVE_START };
 
+// 外部多代理可用时的自适应上限放大：每个代理站点都是独立域名，不受浏览器
+// "单域名 6 连接"限制——按可用代理数放大全局连接（每站约 2 路，封顶 48），
+// 把整个代理池的聚合吞吐吃满；外部通道关闭或全部熔断后自动回落 DL_LIMIT_MAX
+var DL_LIMIT_EXT_PER_PROXY = 2;
+var DL_LIMIT_EXT_HARD_MAX = 48;
+
+// 未熔断的外部代理数（下载通道视角）
+function extUsableProxyCount() {
+    var n = 0;
+    for (var i = 0; i < extProxyState.list.length; i++) {
+        if ((extProxyState.fails[extProxyState.list[i]] || 0) < 2) n++;
+    }
+    return n;
+}
+
+function dlGetLimitCap() {
+    if (!extDlAvailable()) return DL_LIMIT_MAX;
+    return Math.min(DL_LIMIT_EXT_HARD_MAX, Math.max(DL_LIMIT_MAX, extUsableProxyCount() * DL_LIMIT_EXT_PER_PROXY));
+}
+
 function dlGetLimit() {
-    // 自适应上限 DL_LIMIT_MAX；手动/自定义无上限（过大受浏览器单域名连接数限制）
-    var cap = dlLimit.adaptive ? DL_LIMIT_MAX : Infinity;
+    // 自适应上限 dlGetLimitCap()（外部多代理可用时放大）；手动/自定义无上限
+    // （过大受浏览器单域名连接数限制，多代理模式下各站独立域名不受此限）
+    var cap = dlLimit.adaptive ? dlGetLimitCap() : Infinity;
     return Math.max(DL_LIMIT_MIN, Math.min(cap, dlLimit.limit));
 }
 
@@ -6721,13 +7512,19 @@ function dlSetMode(v) {
     dlNotify();
 }
 
-// 自适应升档：连续 3 个段快速完成（<3s）说明带宽宽裕
+// 自适应升档：连续若干个段快速完成（<3s）说明带宽宽裕；
+// 外部多代理可用时需要爬升的幅度大（8→数十），升档激进提速（每个快段 +2）——
+// 爬升过慢会让大文件下到一半才爬到高并发，前半程代理池一直闲置
 function dlAdaptiveSuccess(durMs) {
     if (!dlLimit.adaptive) return;
+    var cap = dlGetLimitCap();
     if (durMs < 3000) {
         dlLimit._fast = (dlLimit._fast || 0) + 1;
-        if (dlLimit._fast >= 3 && dlLimit.limit < DL_LIMIT_MAX) {
-            dlLimit.limit++;
+        var extOn = extDlAvailable();
+        var need = extOn ? 1 : 3;
+        var step = extOn ? 2 : 1;
+        if (dlLimit._fast >= need && dlLimit.limit < cap) {
+            dlLimit.limit = Math.min(cap, dlLimit.limit + step);
             dlLimit._fast = 0;
             dlNotify();
         }
@@ -6736,9 +7533,12 @@ function dlAdaptiveSuccess(durMs) {
     }
 }
 
-// 自适应降档：EO 段失败暗示链路饱和
+// 自适应降档：EO 段失败暗示链路饱和。
+// 外部多代理可用时 EO 段失败多为 EO 侧自身问题（停滞看门狗/慢速换源会处理），
+// 不再连坐拉低全局并发——避免整个代理池的吞吐被 EO 状态拖垮
 function dlAdaptiveFail() {
     if (!dlLimit.adaptive) return;
+    if (extDlAvailable()) return;
     if (dlLimit.limit > DL_LIMIT_MIN) {
         dlLimit.limit--;
         dlNotify();
@@ -6755,7 +7555,7 @@ var dlActive = { eo: 0, cf: 0, ext: 0 };
 // 时判定"异常慢"，自动中止换源重试——防止某个慢连接长期拖尾
 var dlChanPeak = { eo: 0, cf: 0, ext: 0 };
 var DL_SLOW_RATIO = 0.3;        // 低于峰值 30% 判定异常慢
-var DL_SLOW_MIN_BYTES = 1048576; // 已收 1MB 以上才判定（小文件/小分段速度低属正常）
+var DL_SLOW_MIN_BYTES = 524288;  // 已收 512KB 以上才判定（1MB 小分段也能在拖尾时换源）
 var DL_SLOW_MIN_ELAPSED = 4000;  // 起步 4 秒内不判定（慢启动期）
 var DL_SLOW_MAX_SWITCH = 2;      // 每段/片最多慢速换源 2 次（防止死循环）
 
@@ -6967,20 +7767,12 @@ function drawDlGraph() {
     ctx.beginPath();
     ctx.rect(x0, ctxBox.y0, W, H + 1);
     ctx.clip();
-    var plot = function(series, color, fill) {
+    // 只画线条不画面积填充：大面积半透明填充在速度衰减段会呈现为
+    // 左侧一大块"三角形背景"，多次被误报为渲染错误，故移除
+    var plot = function(series, color) {
         var pts = [];
         for (var i = 0; i < n; i++) {
             pts.push([xStart + i * dx, ctxBox.y0 + H - (series[i] / max) * (H - 4)]);
-        }
-        if (fill) {
-            ctx.beginPath();
-            ctx.moveTo(pts[0][0], ctxBox.y0 + H);
-            ctx.lineTo(pts[0][0], pts[0][1]);
-            traceSmoothPath(ctx, pts);
-            ctx.lineTo(pts[pts.length - 1][0], ctxBox.y0 + H);
-            ctx.closePath();
-            ctx.fillStyle = 'rgba(44, 130, 201, 0.12)';
-            ctx.fill();
         }
         ctx.beginPath();
         traceSmoothPath(ctx, pts);
@@ -6988,10 +7780,10 @@ function drawDlGraph() {
         ctx.lineWidth = color === '#2c82c9' ? 1.8 : 1.2;
         ctx.stroke();
     };
-    plot(tot, '#2c82c9', true);
-    plot(eo, '#28a745', false);
-    plot(cf, '#e67e22', false);
-    if (extProxyState.enabled) plot(ext, '#9b59b6', false);
+    plot(tot, '#2c82c9');
+    plot(eo, '#28a745');
+    plot(cf, '#e67e22');
+    if (extProxyState.enabled) plot(ext, '#9b59b6');
     ctx.restore();
     updateDlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0, ext[n - 1] || 0);
 }
@@ -7117,20 +7909,11 @@ function drawSpeedGraph() {
     ctx.beginPath();
     ctx.rect(x0, box.y0, W, H + 1);
     ctx.clip();
-    var plot = function(series, color, fill, width) {
+    // 只画线条不画面积填充（同下载曲线：填充在衰减段像一块三角形背景）
+    var plot = function(series, color, width) {
         var pts = [];
         for (var i = 0; i < n; i++) {
             pts.push([xStart + i * dx, box.y0 + H - (series[i] / max) * (H - 4)]);
-        }
-        if (fill) {
-            ctx.beginPath();
-            ctx.moveTo(pts[0][0], box.y0 + H);
-            ctx.lineTo(pts[0][0], pts[0][1]);
-            traceSmoothPath(ctx, pts);
-            ctx.lineTo(pts[pts.length - 1][0], box.y0 + H);
-            ctx.closePath();
-            ctx.fillStyle = 'rgba(44, 130, 201, 0.15)';
-            ctx.fill();
         }
         ctx.beginPath();
         traceSmoothPath(ctx, pts);
@@ -7138,10 +7921,10 @@ function drawSpeedGraph() {
         ctx.lineWidth = width;
         ctx.stroke();
     };
-    plot(tot, '#2c82c9', true, 1.8);
-    plot(eo, '#28a745', false, 1.2);
-    plot(cf, '#e67e22', false, 1.2);
-    if (ulChanSwitch.ext) plot(ext, '#9b59b6', false, 1.2);
+    plot(tot, '#2c82c9', 1.8);
+    plot(eo, '#28a745', 1.2);
+    plot(cf, '#e67e22', 1.2);
+    if (ulChanSwitch.ext) plot(ext, '#9b59b6', 1.2);
     ctx.restore();
     updateUlLegend(tot[n - 1] || 0, eo[n - 1] || 0, cf[n - 1] || 0, ext[n - 1] || 0);
 }
@@ -7219,7 +8002,8 @@ function startUpload(doneBases) {
         cancelled: false,
         smallRatio: 0,
         readCache: {},   // 分片预读缓存 relativePath -> {data, error, cbs}
-        cacheIdx: 0      // 预读游标（领先 nextIndex 最多 UPLOAD_READAHEAD 个任务）
+        cacheIdx: 0,     // 预读游标（领先 nextIndex 最多 UPLOAD_READAHEAD 个任务）
+        inflightBytes: 0 // 在途任务总字节数（内存保护：超过 UL_MAX_INFLIGHT_BYTES 暂停派发）
     };
     var smallCount = 0;
     uploadTasks.forEach(function(t) {
@@ -7231,6 +8015,7 @@ function startUpload(doneBases) {
     });
     document.querySelector('.progress-container').style.display = 'block';
     document.getElementById('stopUploadBtn').style.display = '';
+    document.getElementById('restartUploadBtn').style.display = '';
     // 重置并显示速度曲线面板（保持用户上次的展开/折叠状态）
     resetUploadSpeedHist();
     document.getElementById('speedPanel').style.display = 'block';
@@ -7280,6 +8065,9 @@ function ulChannels(exclude) {
 // 外部通道可用时的优先份额：blob 直传不移动引用、任意并行零冲突，
 // 期望行为是"有外部走外部"——外部固定 80% 份额，EO/CF 按速率比分剩余 20%
 var UL_EXT_PREFER_SHARE = 0.8;
+// 每个非外部通道（EO/CF）的最低任务份额：保证可用通道始终分到任务、
+// 维持速率采样，避免"零速率→零份额→永远零速率"的饿死循环
+var UL_OTHER_MIN_SHARE = 0.08;
 
 // 按通道负载分配上传任务：在途任务数均衡优先；尚无速率数据时轮转；
 // 有数据后按各通道实测速率比例加权（带概率地板，避免零速率通道被永久饿死），
@@ -7298,8 +8086,13 @@ function pickUploadChannel(size, exclude, noCount) {
     if (chans.length === 1) {
         useChan = chans[0];
     } else if (chans.indexOf('ext') !== -1) {
-        // 外部优先：外部固定 UL_EXT_PREFER_SHARE 份额，其余通道按实测速率比
-        // 分剩余份额（带 25% 地板，无速率数据时均分），不做在途均衡纠偏
+        // 外部优先的确定性份额分配：外部固定 UL_EXT_PREFER_SHARE；EO/CF 各自
+        // 保底 UL_OTHER_MIN_SHARE（修复：旧版地板只作用于"剩余 20% 内部的比例"，
+        // 零速率通道实际份额被稀释到约 5%，低并发下全程分不到任务——CF 曾被
+        // 饿死在 0 任务），保底之上的余额再按实测速率比例分配。
+        // 选通道分两层：先看"累计派发亏欠"（落后目标半个任务即强制补位，保证
+        // 任何可用通道都能持续拿到任务、维持速率采样），再看"在途缺口"（吞吐
+        // 优先：完成快的通道自然占更多在途槽位）
         var rates = { eo: st._eoRate || 0, cf: st._cfRate || 0, ext: st._extRate || 0 };
         var others = [], totRate = 0, anyRate = false, i;
         for (i = 0; i < chans.length; i++) {
@@ -7308,21 +8101,42 @@ function pickUploadChannel(size, exclude, noCount) {
             totRate += rates[chans[i]];
             if (rates[chans[i]] >= 1024) anyRate = true;
         }
-        var weights = [], sum = 0;
-        for (i = 0; i < chans.length; i++) {
-            var w;
-            if (chans[i] === 'ext') w = UL_EXT_PREFER_SHARE;
-            else if (others.length === 1) w = 1 - UL_EXT_PREFER_SHARE;
-            else if (!anyRate) w = (1 - UL_EXT_PREFER_SHARE) / others.length;
-            else w = (1 - UL_EXT_PREFER_SHARE) * Math.max(rates[chans[i]] / (totRate || 1), 0.25);
-            weights.push(w);
-            sum += w;
+        var rest = 1 - UL_EXT_PREFER_SHARE;
+        var floorEach = Math.min(UL_OTHER_MIN_SHARE, rest / others.length);
+        var extra = rest - floorEach * others.length;
+        var targets = { ext: UL_EXT_PREFER_SHARE, eo: 0, cf: 0 };
+        for (i = 0; i < others.length; i++) {
+            var ratio = anyRate ? (rates[others[i]] || 0) / (totRate || 1) : 1 / others.length;
+            targets[others[i]] = floorEach + extra * ratio;
         }
-        var px = Math.random() * sum;
-        useChan = chans[chans.length - 1];
+        var tsum = 0;
+        for (i = 0; i < chans.length; i++) tsum += targets[chans[i]] || 0;
+        for (i = 0; i < chans.length; i++) targets[chans[i]] = (targets[chans[i]] || 0) / (tsum || 1);
+        // 第一层：累计派发亏欠兜底（平滑加权轮询，长期比例不漂移、无通道饿死）
+        var disp = { eo: st.eoTasks || 0, cf: st.cfTasks || 0, ext: st.extTasks || 0 };
+        var totalDisp = disp.eo + disp.cf + disp.ext + 1;   // 含即将派发的新任务
+        var oweChan = null, oweMax = 0.5;
         for (i = 0; i < chans.length; i++) {
-            px -= weights[i];
-            if (px <= 0) { useChan = chans[i]; break; }
+            var owe = targets[chans[i]] * totalDisp - (disp[chans[i]] || 0);
+            if (owe > oweMax) { oweMax = owe; oweChan = chans[i]; }
+        }
+        if (oweChan) {
+            useChan = oweChan;
+        } else {
+            // 第二层：在途缺口——补给"实际在途占比落后目标最多"的通道，
+            // 多代理站点各自匀速异步收发，快通道占更多槽位、吞吐最大化
+            var act = { eo: 0, cf: 0, ext: 0 }, totalAct = 0;
+            for (var key in st.activeTasks) {
+                var ac = st.activeTasks[key].chan || 'eo';
+                if (chans.indexOf(ac) !== -1) { act[ac]++; totalAct++; }
+            }
+            var bestScore = -Infinity;
+            useChan = chans[0];
+            for (i = 0; i < chans.length; i++) {
+                var c = chans[i];
+                var score = targets[c] - (totalAct ? act[c] / totalAct : 0);
+                if (score > bestScore) { bestScore = score; useChan = c; }
+            }
         }
     } else {
         // 在途均衡优先：某通道在途任务明显更多时先补给在途最少通道
@@ -7375,17 +8189,28 @@ function pickUploadChannel(size, exclude, noCount) {
     return useChan;
 }
 
+// 单次 tick 最多派发的任务数：超出后 40ms 后继续派发——任务分拍异步发布，
+// 避免一次性铺出全部连接（尤其高并行 + 多代理时，瞬时建连风暴会让各站
+// 速度剧烈起伏）；在途任务完成时本函数会被再次调用，流水线不会断
+var UL_DISPATCH_BURST = 6;
+// 在途任务总字节数上限：手动高并行 + 大分片（33MB）时 N 路 base64 同时驻留
+// 内存可达 GB 级直接压垮标签页——超过即暂停派发，任务完成释放后续派
+var UL_MAX_INFLIGHT_BYTES = 300 * 1024 * 1024;
+
 // Keep the pipeline filled up to the current concurrency limit.
 // The limit may change at runtime in adaptive mode.
 function fillUploads() {
     var st = uploadState;
     if (!st) return;
-    // blob 上传不移动引用，无需提交阶段限流，全速并行
-    while (!st.failedMsg && !st.downgrading && st.active < st.limit && st.nextIndex < uploadTasks.length) {
+    var dispatched = 0;
+    // blob 上传不移动引用，无需提交阶段限流，全速并行（受在途字节数内存保护约束）
+    while (!st.failedMsg && !st.downgrading && st.active < st.limit && st.nextIndex < uploadTasks.length &&
+           st.inflightBytes + uploadTasks[st.nextIndex].blob.size <= UL_MAX_INFLIGHT_BYTES) {
         var task = uploadTasks[st.nextIndex++];
-        // 按通道负载（在途均衡 + 实测速率比例）分配任务通道
+        // 按通道负载（外部优先份额缺口 / 在途均衡 + 实测速率比例）分配任务通道
         task.chan = pickUploadChannel(task.blob.size);
         st.active++;
+        st.inflightBytes += task.blob.size;
         st.activeTasks[task.relativePath] = task;
         renderChunkPanel();
         (function(t) {
@@ -7393,6 +8218,7 @@ function fillUploads() {
                 var st2 = uploadState;
                 if (!st2) return;
                 st2.active--;
+                st2.inflightBytes = Math.max(0, st2.inflightBytes - t.blob.size);
                 delete st2.activeTasks[t.relativePath];
                 renderChunkPanel();
                 if (ok) {
@@ -7431,6 +8257,11 @@ function fillUploads() {
                 fillUploads();
             });
         })(task);
+        // 分拍发布：本 tick 已派发足够任务，剩余 40ms 后继续（连接错峰建立）
+        if (++dispatched >= UL_DISPATCH_BURST && st.active < st.limit && st.nextIndex < uploadTasks.length) {
+            setTimeout(fillUploads, 40);
+            break;
+        }
     }
     prefetchUploadReads(st);   // 预读游标保持领先，下一批任务数据提前就绪
     checkUploadSettled();
@@ -7521,6 +8352,14 @@ function runUploadTask(task, done) {
                     stAddChanBytes(st, task.chan, -(task.loadedBytes || 0));
                     task.loadedBytes = 0;
 
+                    // 用户手动重启：不计失败、不消耗重试次数，换源立即重发
+                    if (task._restart) {
+                        task._restart = false;
+                        task.chan = pickUploadChannel(task.blob.size, task.chan, true);
+                        setTimeout(tryOnce, 100);
+                        return;
+                    }
+
                     if (/too large/i.test(responseText || '') && chunkSizeLevel < CHUNK_SIZE_LEVELS.length - 1) {
                         if (!st.downgrading) {
                             st.downgrading = true;
@@ -7580,6 +8419,23 @@ function stopUploadTimer() {
     }
 }
 
+// 重启全部在途分片任务：中止当前网络传输并立即重新调度（不消耗失败重试
+// 次数；重挑通道时避开原通道，多代理下个别站点挂起/慢速时可手动洗牌）
+function restartUploadTasks() {
+    var st = uploadState;
+    if (!st || st.cancelled) return;
+    var n = 0;
+    for (var key in st.activeTasks) {
+        var t = st.activeTasks[key];
+        if (t.xhr) {
+            t._restart = true;
+            try { t.xhr.abort(); } catch (e) {}
+            n++;
+        }
+    }
+    setMsg('uploadMessage', n ? ('已重启 ' + n + ' 个在途任务（自动换源重发）') : '当前没有网络传输中的任务（读盘中的任务会自然继续）', 'success');
+}
+
 // 全部 blob 传完后进入批量提交阶段：每 COMMIT_GROUP_SIZE 个 blob 合成
 // 一个 tree + commit，引用移动次数从任务数降到组数，冲突概率趋近于零；
 // 组间以 sessionRef 链式推进（上一组的新引用直接作为下一组基点），
@@ -7587,6 +8443,7 @@ function stopUploadTimer() {
 function finishUpload() {
     stopUploadTimer();
     document.getElementById('stopUploadBtn').style.display = 'none';
+    document.getElementById('restartUploadBtn').style.display = 'none';
     var st = uploadState;
     var blobs = st ? st.blobs.slice() : [];
     uploadState = null;
@@ -7662,6 +8519,7 @@ function stopUploadRollback() {
     renderChunkPanel();
     clearBgTask();
     document.getElementById('stopUploadBtn').style.display = 'none';
+    document.getElementById('restartUploadBtn').style.display = 'none';
     setMsg('uploadMessage', '已停止上传：未产生任何提交，仓库保持不变（已传输的内容随悬空 blob 自动回收）', 'error');
     document.getElementById('uploadBtn').disabled = false;
 }
@@ -7672,6 +8530,7 @@ function failUpload(finalMsg) {
     renderChunkPanel();
     clearBgTask();
     document.getElementById('stopUploadBtn').style.display = 'none';
+    document.getElementById('restartUploadBtn').style.display = 'none';
     // blob 管线：传输阶段失败时尚未产生任何提交，仓库保持不变
     setMsg('uploadMessage', finalMsg + '（未写入任何提交，仓库保持不变）', 'error');
     document.getElementById('uploadBtn').disabled = false;
@@ -7756,7 +8615,33 @@ function sampleUploadSpeed() {
     renderChunkPanel();
 }
 
+// 分片详情渲染节流：高并行时每个任务的每个进度事件都会触发渲染，
+// 未节流的 innerHTML 重建会让主线程被 DOM  churn 占满（文件多线程多即卡死）
+var chunkRenderTimer = null;
+var lastChunkRenderAt = 0;
 function renderChunkPanel() {
+    // 面板隐藏（无上传状态）必须立即执行
+    if (!uploadState) {
+        if (chunkRenderTimer) { clearTimeout(chunkRenderTimer); chunkRenderTimer = null; }
+        renderChunkPanelNow();
+        return;
+    }
+    var now = Date.now();
+    if (now - lastChunkRenderAt < 250) {
+        if (!chunkRenderTimer) {
+            chunkRenderTimer = setTimeout(function() {
+                chunkRenderTimer = null;
+                lastChunkRenderAt = Date.now();
+                renderChunkPanelNow();
+            }, 260 - (now - lastChunkRenderAt));
+        }
+        return;
+    }
+    lastChunkRenderAt = now;
+    renderChunkPanelNow();
+}
+
+function renderChunkPanelNow() {
     var panel = document.getElementById('chunkPanel');
     if (!panel) return;
     var st = uploadState;
@@ -8074,6 +8959,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     updateBreadcrumbs();
+    initTheme();
+    initLang();
     updateAuthBtn();
     initPwdEyes();
 
@@ -8102,6 +8989,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载与服务检测
     loadFileList();
     checkSvcStatus();
+    initSearchBox();
 
     var dropZone = document.getElementById('dropZone');
     dropZone.addEventListener('click', function() {
@@ -8145,6 +9033,9 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     document.getElementById('taskProgressCancel').addEventListener('click', function() {
         if (taskProgressCancelFn) taskProgressCancelFn();
+    });
+    document.getElementById('taskProgressRestart').addEventListener('click', function() {
+        if (taskProgressRestartFn) taskProgressRestartFn();
     });
     // 点击页面其他位置关闭用户头像二级菜单
     document.addEventListener('click', function(e) {
