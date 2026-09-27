@@ -922,7 +922,7 @@ var I18N = {
         '退出登录': 'Sign out',
         '正在刷新': 'Refreshing',
         '服务检测中…': 'Checking services…',
-        '搜索全盘文件…': 'Search all files…',
+        '搜索当前目录…': 'Search current folder…',
         '加载中...': 'Loading...',
         '关闭提示': 'Dismiss',
         '全选': 'Select all',
@@ -1074,7 +1074,7 @@ var I18N = {
         '退出登录': '登出',
         '正在刷新': '正在重新整理',
         '服务检测中…': '服務檢測中…',
-        '搜索全盘文件…': '搜尋所有檔案…',
+        '搜索当前目录…': '搜尋目前目錄…',
         '加载中...': '載入中...',
         '关闭提示': '關閉提示',
         '全选': '全選',
@@ -1226,7 +1226,7 @@ var I18N = {
         '退出登录': 'ログアウト',
         '正在刷新': '更新中',
         '服务检测中…': 'サービス確認中…',
-        '搜索全盘文件…': 'すべてのファイルを検索…',
+        '搜索当前目录…': '現在のフォルダを検索…',
         '加载中...': '読み込み中...',
         '关闭提示': '閉じる',
         '全选': 'すべて選択',
@@ -1335,7 +1335,7 @@ function t(s) {
 // [选择器, 属性, 文案key]；属性：text/html/ph(placeholder)/title/owntext(元素自身文本节点)
 var I18N_BINDINGS = [
     ['#authBtn', 'text', '登录'],
-    ['#searchInput', 'ph', '搜索全盘文件…'],
+    ['#searchInput', 'ph', '搜索当前目录…'],
     ['#searchBtn', 'title', '搜索'],
     ['#bgTaskStop', 'title', '停止任务'],
     // 注意：#fileListContainer 是动态渲染区，绝不能进静态绑定——
@@ -2547,11 +2547,16 @@ function renderSearchResults(q) {
         if (searchBtn) searchBtn.classList.remove('searching');
         if (seq !== searchSeq) return;
         var lq = q.toLowerCase();
+        // 搜索范围限定当前目录（含其子目录；根目录即全盘）：
+        // 身在哪个目录就搜哪个目录，不再默认搜全盘
+        var scope = getCurrentPath();
+        var scopePrefix = scope ? scope + '/' : '';
         var models = [];
         var partGroups = {};
         for (var i = 0; i < fileTreeCache.length; i++) {
             var ent = fileTreeCache[i];
             if (ent.type !== 'blob' || !ent.path) continue;
+            if (scopePrefix && ent.path.indexOf(scopePrefix) !== 0) continue;
             var slash = ent.path.lastIndexOf('/');
             var name = slash === -1 ? ent.path : ent.path.slice(slash + 1);
             if (PART_SUFFIX.test(name)) {
