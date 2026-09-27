@@ -1017,8 +1017,7 @@ var I18N = {
         '已停止之前的同类型任务': 'Previous task of the same type stopped',
         '跳转到所在目录并定位': 'Go to folder & locate',
         '返回顶部': 'Back to top',
-        '个文件（点击预览 · 右键操作 · 可定位到所在目录）': 'file(s) (click to preview, right-click for more)',
-        '后台': 'Background',
+        '个文件（点击多选 · 右键操作 · 可定位到所在目录）': 'file(s) (click to select, right-click for more)',
         '未知错误': 'Unknown error'
     },
     'zh-TW': {
@@ -1170,8 +1169,7 @@ var I18N = {
         '已停止之前的同类型任务': '已停止之前的同類型任務',
         '跳转到所在目录并定位': '跳轉到所在目錄並定位',
         '返回顶部': '返回頂部',
-        '个文件（点击预览 · 右键操作 · 可定位到所在目录）': '個檔案（點擊預覽 · 右鍵操作 · 可定位到所在目錄）',
-        '后台': '背景',
+        '个文件（点击多选 · 右键操作 · 可定位到所在目录）': '個檔案（點擊多選 · 右鍵操作 · 可定位到所在目錄）',
         '未知错误': '未知錯誤'
     },
     'ja': {
@@ -1323,8 +1321,7 @@ var I18N = {
         '已停止之前的同类型任务': '同種類の前のタスクを停止しました',
         '跳转到所在目录并定位': 'フォルダへ移動して位置を表示',
         '返回顶部': 'トップへ戻る',
-        '个文件（点击预览 · 右键操作 · 可定位到所在目录）': '件（クリックでプレビュー・右クリックで操作）',
-        '后台': 'バックグラウンド',
+        '个文件（点击多选 · 右键操作 · 可定位到所在目录）': '件（クリックで選択・右クリックで操作）',
         '未知错误': '不明なエラー'
     }
 };
@@ -1533,7 +1530,11 @@ var USER_AVATAR_DEFAULT_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" f
 
 function userAvatarUrl(saved) {
     if (!saved) return null;
-    return saved.avatar || USER_AVATAR_MAP[saved.u] || null;
+    var url = saved.avatar || USER_AVATAR_MAP[saved.u] || null;
+    // 站点全 HTTPS：http 头像 URL 统一升级为 https（消除 Mixed Content 警告；
+    // 不支持 https 的图床会加载失败并回退默认图标）
+    if (url && url.indexOf('http://') === 0) url = 'https://' + url.slice(7);
+    return url;
 }
 
 function renderUserAvatar() {
@@ -2578,13 +2579,18 @@ function renderSearchResults(q) {
             container.innerHTML = '<div style="padding: 16px; color: #999;">' + t('没有匹配「') + escapeHtml(q) + t('」的文件') + '</div>';
             return;
         }
-        container.innerHTML = '<div style="padding: 6px 8px; color: #888; font-size: 0.9em;">' + t('搜索到') + ' ' + models.length + (models.length >= 200 ? '+' : '') + ' ' + t('个文件（点击预览 · 右键操作 · 可定位到所在目录）') + '</div>';
+        container.innerHTML = '<div style="padding: 6px 8px; color: #888; font-size: 0.9em;">' + t('搜索到') + ' ' + models.length + (models.length >= 200 ? '+' : '') + ' ' + t('个文件（点击多选 · 右键操作 · 可定位到所在目录）') + '</div>';
+        // 新一批结果渲染前清掉旧行的选中视觉（选中集合本身保留在 selectedKeys，
+        // 批量操作对当前结果与之前目录列表的选择一并生效）
+        var oldRows = document.querySelectorAll('.search-result.entry-selected');
+        for (var or = 0; or < oldRows.length; or++) oldRows[or].classList.remove('entry-selected');
         models.forEach(function(ent, mi) {
             var slash = ent.path.lastIndexOf('/');
             var dir = slash === -1 ? '' : ent.path.slice(0, slash);
             var name = slash === -1 ? ent.path : ent.path.slice(slash + 1);
+            var key = 'f:' + ent.path;
             var row = document.createElement('div');
-            row.className = 'search-result';
+            row.className = 'search-result' + (selectedKeys[key] ? ' entry-selected' : '');
             var nameDiv = document.createElement('div');
             nameDiv.className = 'sr-name';
             nameDiv.textContent = displayName(name);
@@ -2593,11 +2599,27 @@ function renderSearchResults(q) {
             dirDiv.textContent = (dir ? displayName(dir) : '/') + (ent.size ? ' · ' + formatSize(ent.size) : '') + (ent.chunked ? ' · ' + ent.parts.length + ' 个分片' : '');
             row.appendChild(nameDiv);
             row.appendChild(dirDiv);
-            // 左键预览（与目录列表一致的文件操作能力），右键完整操作菜单
+            // 左键多选（与目录列表一致的交互：点击切换选中，批量栏统一下载/删除）；
+            // 右键完整操作菜单（属性/预览/修改/下载/删除/定位）
             row.addEventListener('click', function() {
                 if (Date.now() - menuOpenedAt < 400) return;
-                menuFileInfo = searchModelToMenuInfo(ent);
-                previewFile(ent.path, name);
+                if (selectedKeys[key]) {
+                    delete selectedKeys[key];
+                    row.classList.remove('entry-selected');
+                } else {
+                    selectedKeys[key] = {
+                        kind: 'file',
+                        name: name,
+                        displayName: displayName(name),
+                        path: ent.path,
+                        sha: ent.sha || '',
+                        size: ent.size || 0,
+                        chunked: !!ent.chunked,
+                        parts: ent.parts || null
+                    };
+                    row.classList.add('entry-selected');
+                }
+                updateBatchBar();
             });
             row.addEventListener('contextmenu', function(e) {
                 e.preventDefault();
@@ -4185,6 +4207,9 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 }
             }, 3000);
             xhr.onprogress = function(e) {
+                // 取消/失败后到达的迟到进度事件不再驱动界面（切歌后上一首的
+                // 加载信息不会再冒出来）
+                if (failed || cancelled) return;
                 parts[i]._lastRecvAt = Date.now();
                 var delta = e.loaded - (parts[i]._loaded || 0);
                 parts[i]._loaded = e.loaded;
@@ -4928,7 +4953,6 @@ function teardownAudioPlaylist() {
     }
     audioEqStop();
     audioPl = null;
-    mediaSessionUpdateTrack(null);   // 预览关闭：交出系统媒体控制
 }
 
 function audioPlRefreshHighlight() {
@@ -5104,42 +5128,6 @@ function audioPlMaybePreload() {
     }
 }
 
-// ---- 后台播放（Media Session）：锁屏/切后台保持音频会话并显示系统控制 ----
-var BG_AUDIO_KEY = 'cloud_web_bg_audio';   // 默认开启，播放列表栏可关
-function bgAudioEnabled() {
-    var v = '1';
-    try { v = localStorage.getItem(BG_AUDIO_KEY) || '1'; } catch (e) {}
-    return v !== '0';
-}
-
-function mediaSessionUpdateTrack(m) {
-    if (!('mediaSession' in navigator)) return;
-    try {
-        if (!m || !bgAudioEnabled()) {
-            navigator.mediaSession.metadata = null;
-            ['play', 'pause', 'previoustrack', 'nexttrack'].forEach(function(a) {
-                try { navigator.mediaSession.setActionHandler(a, null); } catch (e) {}
-            });
-            return;
-        }
-        navigator.mediaSession.metadata = new MediaMetadata({
-            title: m.name,
-            artist: 'boring_student',
-            album: '网盘音频'
-        });
-        navigator.mediaSession.setActionHandler('play', function() {
-            if (audioPl) { var p = audioPl.audio.play(); if (p && p.catch) p.catch(function() {}); }
-        });
-        navigator.mediaSession.setActionHandler('pause', function() { if (audioPl) audioPl.audio.pause(); });
-        navigator.mediaSession.setActionHandler('previoustrack', function() {
-            if (audioPl && audioPl.list.length > 1) audioPlPlay((audioPl.index - 1 + audioPl.list.length) % audioPl.list.length, true);
-        });
-        navigator.mediaSession.setActionHandler('nexttrack', function() {
-            if (audioPl && audioPl.list.length > 1) audioPlPlay((audioPl.index + 1) % audioPl.list.length, true);
-        });
-    } catch (e) {}
-}
-
 // 切换播放指定曲目；autoplay=true 切换后立即播放。
 // 分片与 >2MB 未分片统一走"多通道渐进播放"：前缀就绪即播、完整后无缝换源
 // （恢复进度/音量/倍速）；小文件直链边下边播
@@ -5149,7 +5137,6 @@ function audioPlPlay(idx, autoplay) {
     audioPl.index = idx;
     audioPl.randNext = null;   // 切歌后随机模式的预定曲目作废
     audioPlRefreshHighlight();
-    mediaSessionUpdateTrack(m);
     previewFileInfo = { path: m.path, name: m.name, ext: getFileExtension(m.name) };
     document.getElementById('previewTitle').textContent = '预览: ' + m.name;
     var audioEl = audioPl.audio;
@@ -5161,6 +5148,10 @@ function audioPlPlay(idx, autoplay) {
         previewMerge = null;
     }
     if (audioPl.rateTag) audioPl.rateTag.textContent = '';
+    // 预览级加载提示（"加载中 n% · 速度 · 预计剩余"）属于上一首的分片合并，
+    // 切歌后旧合并已取消但该提示不会被 onDone 收尾——切歌即隐藏，不再残留
+    var staleLoading = document.querySelector('#previewContent .loading');
+    if (staleLoading) staleLoading.style.display = 'none';
     try { audioEl.pause(); } catch (e) {}
     var startPlay = function() {
         if (autoplay) {
@@ -5337,26 +5328,12 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
             try { active.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
         }
     });
-    // 后台播放开关（Media Session）：锁屏/切后台保持播放并显示系统控制
-    var bgBtn = document.createElement('button');
-    bgBtn.type = 'button';
-    bgBtn.className = 'audio-pl-btn' + (bgAudioEnabled() ? ' active' : '');
-    bgBtn.textContent = t('后台');
-    bgBtn.title = '后台播放（锁屏/切后台继续播放）';
-    bgBtn.addEventListener('click', function() {
-        var on = !bgAudioEnabled();
-        try { localStorage.setItem(BG_AUDIO_KEY, on ? '1' : '0'); } catch (e) {}
-        bgBtn.classList.toggle('active', on);
-        if (audioPl) mediaSessionUpdateTrack(on ? audioPl.list[audioPl.index] : null);
-    });
     bar.appendChild(modeBtn);
     bar.appendChild(toggleBtn);
     bar.appendChild(locateBtn);
-    bar.appendChild(bgBtn);
     bar.appendChild(countSpan);
     wrap.appendChild(bar);
     wrap.appendChild(listEl);
-    mediaSessionUpdateTrack(list[index]);
 
     // 首次播放时启动跳动图标（用户手势上下文，AudioContext 可恢复）
     audioEl.addEventListener('play', function() {
@@ -7334,6 +7311,9 @@ function clearSelection() {
         delete selectedKeys[k];
         applySelectionVisual(k);
     });
+    // 搜索结果行的选中视觉（不在 entryMap 内）一并清除
+    var rows = document.querySelectorAll('.search-result.entry-selected');
+    for (var i = 0; i < rows.length; i++) rows[i].classList.remove('entry-selected');
     updateBatchBar();
 }
 
