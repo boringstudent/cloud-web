@@ -1015,6 +1015,10 @@ var I18N = {
         '个文件（点击跳转所在目录）': 'file(s) (click to open folder)',
         '搜索失败：无法获取仓库文件树': 'Search failed: cannot fetch repo file tree',
         '已停止之前的同类型任务': 'Previous task of the same type stopped',
+        '跳转到所在目录并定位': 'Go to folder & locate',
+        '返回顶部': 'Back to top',
+        '个文件（点击预览 · 右键操作 · 可定位到所在目录）': 'file(s) (click to preview, right-click for more)',
+        '后台': 'Background',
         '未知错误': 'Unknown error'
     },
     'zh-TW': {
@@ -1164,6 +1168,10 @@ var I18N = {
         '个文件（点击跳转所在目录）': '個檔案（點擊跳轉所在目錄）',
         '搜索失败：无法获取仓库文件树': '搜尋失敗：無法取得倉庫檔案樹',
         '已停止之前的同类型任务': '已停止之前的同類型任務',
+        '跳转到所在目录并定位': '跳轉到所在目錄並定位',
+        '返回顶部': '返回頂部',
+        '个文件（点击预览 · 右键操作 · 可定位到所在目录）': '個檔案（點擊預覽 · 右鍵操作 · 可定位到所在目錄）',
+        '后台': '背景',
         '未知错误': '未知錯誤'
     },
     'ja': {
@@ -1313,6 +1321,10 @@ var I18N = {
         '个文件（点击跳转所在目录）': '件（クリックでフォルダへ）',
         '搜索失败：无法获取仓库文件树': '検索失敗：リポジトリのファイルツリーを取得できません',
         '已停止之前的同类型任务': '同種類の前のタスクを停止しました',
+        '跳转到所在目录并定位': 'フォルダへ移動して位置を表示',
+        '返回顶部': 'トップへ戻る',
+        '个文件（点击预览 · 右键操作 · 可定位到所在目录）': '件（クリックでプレビュー・右クリックで操作）',
+        '后台': 'バックグラウンド',
         '未知错误': '不明なエラー'
     }
 };
@@ -1329,7 +1341,8 @@ var I18N_BINDINGS = [
     ['#searchInput', 'ph', '搜索全盘文件…'],
     ['#searchBtn', 'title', '搜索'],
     ['#bgTaskStop', 'title', '停止任务'],
-    ['#fileListContainer', 'text', '加载中...'],
+    // 注意：#fileListContainer 是动态渲染区，绝不能进静态绑定——
+    // 覆盖成"加载中..."后 304 路径不重渲染，页面会一直卡在加载态
     ['#uploadFabBtn', 'text', '上传文件'],
     ['#userAvatarBtn', 'title', '账户菜单'],
     ['#userMenu div:nth-of-type(2)', 'text', '用户信息修改'],
@@ -1421,6 +1434,8 @@ var I18N_BINDINGS = [
     ['#batchStopBtn', 'text', '停止下载'],
     ['#batchDeleteBtn', 'text', '批量删除'],
     ['#batchCancelBtn', 'text', '取消'],
+    ['#menuLocate', 'text', '跳转到所在目录并定位'],
+    ['#backToTopBtn', 'title', '返回顶部'],
     ['#menuProperties', 'text', '属性'],
     ['#menuPreview', 'text', '预览'],
     ['#menuEdit', 'text', '修改'],
@@ -1553,9 +1568,19 @@ function closeUserMenu() {
     if (menu) menu.classList.remove('show');
 }
 
+// 未登录隐藏需登录才解锁的功能：上传入口、批量删除、预览保存等
+// （body.auth-visitor 由 CSS 统一隐藏，登录态变化时调用）
+function applyAuthVisibility() {
+    var loggedIn = !!getSavedAuth();
+    document.body.classList.toggle('auth-visitor', !loggedIn);
+    var bd = document.getElementById('batchDeleteBtn');
+    if (bd) bd.style.display = loggedIn ? '' : 'none';
+}
+
 function updateAuthBtn() {
     var btn = document.getElementById('authBtn');
     var wrap = document.getElementById('userMenuWrap');
+    applyAuthVisibility();
     var saved = getSavedAuth();
     if (btn) {
         btn.style.display = saved ? 'none' : '';
@@ -2499,6 +2524,16 @@ function fetchFolderSizes() {
 var searchDebounceTimer = null;
 var searchSeq = 0;   // 代数令牌：树加载慢响应到达时输入已变则丢弃
 
+// 当前搜索词（去除首尾空白；空串表示未在搜索）
+function currentSearchQuery() {
+    var input = document.getElementById('searchInput');
+    return input ? input.value.trim() : '';
+}
+
+// 搜索结果对应的文件模型（右键操作用）：普通文件直接命中，分片按基名归并
+// 为单个逻辑文件（搜索结果不显示 .partN 分片）
+var searchResultModels = [];
+
 function renderSearchResults(q) {
     var seq = ++searchSeq;
     listViewSearch = true;
@@ -2511,34 +2546,122 @@ function renderSearchResults(q) {
         if (searchBtn) searchBtn.classList.remove('searching');
         if (seq !== searchSeq) return;
         var lq = q.toLowerCase();
-        var matches = [];
+        var models = [];
+        var partGroups = {};
         for (var i = 0; i < fileTreeCache.length; i++) {
             var ent = fileTreeCache[i];
             if (ent.type !== 'blob' || !ent.path) continue;
+            var slash = ent.path.lastIndexOf('/');
+            var name = slash === -1 ? ent.path : ent.path.slice(slash + 1);
+            if (PART_SUFFIX.test(name)) {
+                // 分片不直接显示：按基名归并（基名命中才显示为单个逻辑文件）
+                var base = ent.path.replace(PART_SUFFIX, '');
+                if (base.toLowerCase().indexOf(lq) === -1) continue;
+                var g = partGroups[base] || (partGroups[base] = { size: 0, parts: [] });
+                g.size += ent.size || 0;
+                g.parts.push(ent);
+                continue;
+            }
             if (ent.path.toLowerCase().indexOf(lq) === -1) continue;
-            matches.push(ent);
-            if (matches.length >= 200) break;
+            models.push(ent);
+            if (models.length >= 200) break;
         }
-        if (!matches.length) {
+        for (var basePath in partGroups) {
+            var gp = partGroups[basePath];
+            gp.parts.sort(function(a, b) { return getPartNumber(a.path) - getPartNumber(b.path); });
+            models.push({ path: basePath, size: gp.size, type: 'blob', chunked: true, parts: gp.parts });
+        }
+        models.sort(function(a, b) { return a.path < b.path ? -1 : 1; });
+        if (models.length > 200) models = models.slice(0, 200);
+        searchResultModels = models;
+        if (!models.length) {
             container.innerHTML = '<div style="padding: 16px; color: #999;">' + t('没有匹配「') + escapeHtml(q) + t('」的文件') + '</div>';
             return;
         }
-        var html = '<div style="padding: 6px 8px; color: #888; font-size: 0.9em;">' + t('搜索到') + ' ' + matches.length + (matches.length >= 200 ? '+' : '') + ' ' + t('个文件（点击跳转所在目录）') + '</div>';
-        matches.forEach(function(ent) {
+        container.innerHTML = '<div style="padding: 6px 8px; color: #888; font-size: 0.9em;">' + t('搜索到') + ' ' + models.length + (models.length >= 200 ? '+' : '') + ' ' + t('个文件（点击预览 · 右键操作 · 可定位到所在目录）') + '</div>';
+        models.forEach(function(ent, mi) {
             var slash = ent.path.lastIndexOf('/');
             var dir = slash === -1 ? '' : ent.path.slice(0, slash);
             var name = slash === -1 ? ent.path : ent.path.slice(slash + 1);
-            var href = dir ? '/' + encodePath(dir) + '/' : '/';
-            html += '<a href="' + href + '" style="display: block; padding: 8px; border-bottom: 1px solid #f0f0f0; text-decoration: none; color: inherit;">' +
-                '<div style="color: #2c82c9; word-break: break-all;">' + escapeHtml(displayName(name)) + '</div>' +
-                '<div style="color: #999; font-size: 0.85em; word-break: break-all;">' + escapeHtml(dir ? displayName(dir) : '/') + (ent.size ? ' · ' + formatSize(ent.size) : '') + '</div></a>';
+            var row = document.createElement('div');
+            row.className = 'search-result';
+            var nameDiv = document.createElement('div');
+            nameDiv.className = 'sr-name';
+            nameDiv.textContent = displayName(name);
+            var dirDiv = document.createElement('div');
+            dirDiv.className = 'sr-dir';
+            dirDiv.textContent = (dir ? displayName(dir) : '/') + (ent.size ? ' · ' + formatSize(ent.size) : '') + (ent.chunked ? ' · ' + ent.parts.length + ' 个分片' : '');
+            row.appendChild(nameDiv);
+            row.appendChild(dirDiv);
+            // 左键预览（与目录列表一致的文件操作能力），右键完整操作菜单
+            row.addEventListener('click', function() {
+                if (Date.now() - menuOpenedAt < 400) return;
+                menuFileInfo = searchModelToMenuInfo(ent);
+                previewFile(ent.path, name);
+            });
+            row.addEventListener('contextmenu', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                openContextMenu(e.clientX, e.clientY, searchModelToMenuInfo(ent), true);
+            });
+            container.appendChild(row);
         });
-        container.innerHTML = html;
     }, function() {
         if (searchBtn) searchBtn.classList.remove('searching');
         if (seq !== searchSeq) return;
         container.innerHTML = '<div style="padding: 16px; color: #e74c3c;">' + t('搜索失败：无法获取仓库文件树') + '</div>';
     });
+}
+
+// 搜索结果条目 → 右键菜单模型（含分片信息，下载/删除/属性/预览全可用）
+function searchModelToMenuInfo(ent) {
+    var slash = ent.path.lastIndexOf('/');
+    return {
+        path: ent.path,
+        name: slash === -1 ? ent.path : ent.path.slice(slash + 1),
+        type: 'file',
+        sha: ent.sha || '',
+        size: ent.size || 0,
+        chunked: !!ent.chunked,
+        parts: ent.parts || null
+    };
+}
+
+// 跳转到文件所在目录并定位：滚动到目标条目并闪动 3 下提示
+function locateFileInList(filePath) {
+    var slash = filePath.lastIndexOf('/');
+    var dir = slash === -1 ? '' : filePath.slice(0, slash);
+    var name = slash === -1 ? filePath : filePath.slice(slash + 1);
+    // 清空搜索框恢复正常列表视图
+    var input = document.getElementById('searchInput');
+    if (input && input.value.trim()) {
+        input.value = '';
+        searchSeq++;
+    }
+    var doFlash = function() {
+        var tries = 0;
+        var timer = setInterval(function() {
+            tries++;
+            var rec = entryMap['f:' + name];
+            if (rec && rec.el && rec.el.isConnected) {
+                clearInterval(timer);
+                try { rec.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
+                rec.el.classList.remove('entry-flash');
+                void rec.el.offsetWidth;
+                rec.el.classList.add('entry-flash');
+            } else if (tries > 80) {   // 大目录/慢网络下分批渲染可能需数秒
+                clearInterval(timer);
+            }
+        }, 100);
+    };
+    if (getCurrentPath() === dir) {
+        loadFileList();
+    } else {
+        history.pushState({}, '', dir ? '/' + encodePath(dir) + '/' : '/');
+        updateBreadcrumbs();
+        loadFileList();
+    }
+    setTimeout(doFlash, 300);
 }
 
 // 搜索按钮：有词立即搜索（带弹跳动画），空词强制恢复目录列表——
@@ -3559,14 +3682,18 @@ function bindEntryEvents(entry) {
     });
 }
 
-function openContextMenu(x, y, fileInfo) {
+function openContextMenu(x, y, fileInfo, fromSearch) {
     menuFileInfo = fileInfo;
     menuOpenedAt = Date.now();
 
+    var loggedIn = !!getSavedAuth();
     document.getElementById('menuPreview').style.display = fileInfo.type === 'dir' ? 'none' : '';
-    document.getElementById('menuEdit').style.display = (fileInfo.type === 'dir' || fileInfo.chunked) ? 'none' : '';
+    document.getElementById('menuEdit').style.display = (loggedIn && fileInfo.type !== 'dir' && !fileInfo.chunked) ? '' : 'none';
     document.getElementById('menuDownload').style.display = '';
-    document.getElementById('menuDelete').style.display = '';
+    // 未登录不显示需登录功能（修改/删除）
+    document.getElementById('menuDelete').style.display = loggedIn ? '' : 'none';
+    // 定位项只在搜索结果/跨目录场景显示（当前目录列表中无必要）
+    document.getElementById('menuLocate').style.display = fromSearch ? '' : 'none';
 
     var menu = document.getElementById('contextMenu');
     menu.classList.add('show');
@@ -3605,6 +3732,8 @@ function handleMenuAction(action) {
 
     if (action === 'properties') {
         showProperties(filePath, fileName, fileType);
+    } else if (action === 'locate') {
+        locateFileInList(filePath);
     } else if (action === 'preview') {
         previewFile(filePath, fileName);
     } else if (action === 'edit') {
@@ -3853,6 +3982,31 @@ function hideTaskProgress() {
 // limitOverride>0 时限制本合并下载的并发；budget 为多文件并行池的共享连接
 // 预算（工作窃取，见 fetchFileBlobDual），传入后 per-file 配额失效、由全局槽位兜底
 function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limitOverride, budget) {
+    // 片内子段拆分：大分片（>16MB）按 8MB 子段展开——尾部仅剩一个大分片时
+    // 其子段也能铺满全部空闲连接（多通道/多代理并行），不再"最后一个分片
+    // 变单通道慢慢爬"；子段带 range 偏移（支持虚拟分片=同文件 Range 切片，
+    // 未分片大文件也能走这条统一管线做多通道渐进加载）；展开保持文件序，
+    // onPart 前缀语义不变
+    var MERGE_SUBPART = 8 * 1024 * 1024;
+    var expanded = [];
+    parts.forEach(function(p) {
+        var size = p.size || 0;
+        var base0 = p.range ? p.range[0] : 0;
+        if (size > MERGE_SUBPART * 2) {
+            for (var s = 0; s < size; s += MERGE_SUBPART) {
+                var subSize = Math.min(MERGE_SUBPART, size - s);
+                expanded.push({
+                    path: p.path,
+                    sha: p.sha,
+                    size: subSize,
+                    range: [base0 + s, base0 + s + subSize - 1]
+                });
+            }
+        } else {
+            expanded.push({ path: p.path, sha: p.sha, size: size, range: p.range || null });
+        }
+    });
+    parts = expanded;
     var buffers = new Array(parts.length);
     var nextIndex = 0;
     var doneCount = 0;
@@ -4005,6 +4159,9 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
             var xhr = new XMLHttpRequest();
             actives.push(xhr);
             xhr.open('GET', url, true);
+            // 子段（range）：请求指定字节区间，响应必须是 206——
+            // 代理无视 Range 回 200 全文件则数据错位，按失败换源
+            if (parts[i].range) xhr.setRequestHeader('Range', 'bytes=' + parts[i].range[0] + '-' + parts[i].range[1]);
             xhr.responseType = 'arraybuffer';
             // 停滞看门狗：15 秒无进度即中止换源（代理挂起会在途槽位被永久占住）；
             // 慢速换源：当前速率远低于本通道历史峰值时中止换源（每片最多 2 次，
@@ -4041,7 +4198,8 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 clearInterval(wd);
                 actives.splice(actives.indexOf(xhr), 1);
                 if (cancelled) return;
-                if (xhr.status === 200) {
+                var statusOk = parts[i].range ? xhr.status === 206 : xhr.status === 200;
+                if (statusOk) {
                     buffers[i] = xhr.response;
                     dlChanDec(chan);
                     if (chan === 'ext') {
@@ -4522,6 +4680,11 @@ function fmtMediaTime(sec) {
     return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (s < 10 ? '0' : '') + s;
 }
 
+// 媒体控制图标用内联 SVG：文本字符 ▶/⏸ 在移动端会被渲染成彩色表情符号
+var MEDIA_SVG_PLAY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>';
+var MEDIA_SVG_PAUSE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>';
+var MEDIA_SVG_FULLSCREEN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+
 function buildMediaControls(mediaEl, isVideo) {
     mediaEl.controls = false;
     mediaEl.removeAttribute('controls');
@@ -4532,7 +4695,7 @@ function buildMediaControls(mediaEl, isVideo) {
     playBtn.type = 'button';
     playBtn.className = 'media-ctl-btn';
     playBtn.title = '播放/暂停';
-    playBtn.textContent = '▶';
+    playBtn.innerHTML = MEDIA_SVG_PLAY;
 
     var track = document.createElement('div');
     track.className = 'media-ctl-track';
@@ -4569,7 +4732,7 @@ function buildMediaControls(mediaEl, isVideo) {
         return (isFinite(d) && d > 0) ? d : 0;
     };
     var updatePlay = function() {
-        playBtn.textContent = mediaEl.paused ? '▶' : '⏸';
+        playBtn.innerHTML = mediaEl.paused ? MEDIA_SVG_PLAY : MEDIA_SVG_PAUSE;
     };
     var updateTime = function() {
         var d = getDur();
@@ -4649,7 +4812,7 @@ function buildMediaControls(mediaEl, isVideo) {
         fsBtn.type = 'button';
         fsBtn.className = 'media-ctl-btn';
         fsBtn.title = '全屏';
-        fsBtn.textContent = '⛶';
+        fsBtn.innerHTML = MEDIA_SVG_FULLSCREEN;
         fsBtn.addEventListener('click', function() {
             try {
                 var target = mediaEl.parentNode || mediaEl;
@@ -4756,15 +4919,16 @@ function audioPlModeLoad() {
 function teardownAudioPlaylist() {
     if (!audioPl) return;
     audioPlStopLoadingUx();
-    if (audioPl.preloadXhr) {
-        try { audioPl.preloadXhr.abort(); } catch (e) {}
-        audioPl.preloadXhr = null;
+    if (audioPl.preloadHandle) {
+        try { audioPl.preloadHandle.cancel(); } catch (e) {}
+        audioPl.preloadHandle = null;
     }
     for (var p in audioPl.cache) {
         try { URL.revokeObjectURL(audioPl.cache[p]); } catch (e) {}
     }
     audioEqStop();
     audioPl = null;
+    mediaSessionUpdateTrack(null);   // 预览关闭：交出系统媒体控制
 }
 
 function audioPlRefreshHighlight() {
@@ -4886,50 +5050,117 @@ function audioEqStart(audioEl, eqEl) {
     }
 }
 
-// 限量预加载：仅顺序播放模式预载下一首（单曲循环重播当前、随机无法预测，
-// 均不预载）；最多缓存 1 首，分片/超大文件跳过
+// 虚拟分片：未分片文件按 4MB Range 切片，走与真分片相同的多通道合并管线
+// （下载/预览不再只有 EO 单通道——移动端预览单通道的根因就是直链播放）
+function makeVirtualParts(path, size) {
+    var parts = [];
+    var SUB = 4 * 1024 * 1024;
+    for (var s = 0; s < size; s += SUB) {
+        var subSize = Math.min(SUB, size - s);
+        parts.push({ path: path, size: subSize, range: [s, s + subSize - 1] });
+    }
+    return parts;
+}
+
+// 限量预加载：顺序/随机模式都预载下一首（随机先锁定预定曲目），最多缓存 1 首；
+// 预载走多通道（分片=合并管线，大文件=多段双通道，小文件=单请求），
+// 命中的曲目切换即免等待播放
 function audioPlMaybePreload() {
-    if (!audioPl || audioPl.mode !== 'seq') return;
-    var next = audioPl.list[audioPl.index + 1];
-    if (!next || next.chunked) return;
+    if (!audioPl || audioPl.mode === 'loop') return;
+    var next = null;
+    if (audioPl.mode === 'seq') {
+        next = audioPl.list[(audioPl.index + 1) % audioPl.list.length];
+    } else if (audioPl.mode === 'rand' && audioPl.list.length > 1) {
+        if (audioPl.randNext == null) {
+            var n;
+            do { n = Math.floor(Math.random() * audioPl.list.length); } while (n === audioPl.index);
+            audioPl.randNext = n;
+        }
+        next = audioPl.list[audioPl.randNext];
+    }
+    if (!next) return;
     if ((next.size || 0) > AUDIO_PRELOAD_SIZE_MAX) return;
-    if (audioPl.cache[next.path] || audioPl.preloadXhr) return;
+    if (audioPl.cache[next.path] || audioPl.preloadHandle) return;
     var cachedCount = 0;
     for (var p in audioPl.cache) cachedCount++;
     if (cachedCount >= AUDIO_PRELOAD_MAX) return;
-    var xhr = new XMLHttpRequest();
-    audioPl.preloadXhr = xhr;
-    xhr.open('GET', rawUrlFor(next.path), true);
-    xhr.responseType = 'blob';
-    xhr.onload = function() {
-        if (audioPl && audioPl.preloadXhr === xhr) audioPl.preloadXhr = null;
-        if (xhr.status === 200 && audioPl) {
-            audioPl.cache[next.path] = URL.createObjectURL(xhr.response);
-        }
+    var done = function(blob) {
+        if (!audioPl) return;
+        audioPl.preloadHandle = null;
+        if (blob) audioPl.cache[next.path] = URL.createObjectURL(blob);
     };
-    var clear = function() {
-        if (audioPl && audioPl.preloadXhr === xhr) audioPl.preloadXhr = null;
-    };
-    xhr.onerror = clear;
-    xhr.onabort = clear;
-    xhr.send();
+    if (next.chunked && next.parts) {
+        audioPl.preloadHandle = fetchMergedBlob(next.parts, done, function() { done(null); }, null, null, true, 2);
+    } else if ((next.size || 0) > DUAL_DL_MIN) {
+        audioPl.preloadHandle = fetchFileBlobDual(next.path, next.size, null, done, function() { done(null); }, 2);
+    } else {
+        var xhr = new XMLHttpRequest();
+        audioPl.preloadHandle = { cancel: function() { try { xhr.abort(); } catch (e) {} } };
+        xhr.open('GET', rawUrlFor(next.path), true);
+        xhr.responseType = 'blob';
+        xhr.onload = function() { done(xhr.status === 200 ? xhr.response : null); };
+        xhr.onerror = function() { done(null); };
+        xhr.send();
+    }
 }
 
-// 切换播放指定曲目；autoplay=true 切换后立即播放
+// ---- 后台播放（Media Session）：锁屏/切后台保持音频会话并显示系统控制 ----
+var BG_AUDIO_KEY = 'cloud_web_bg_audio';   // 默认开启，播放列表栏可关
+function bgAudioEnabled() {
+    var v = '1';
+    try { v = localStorage.getItem(BG_AUDIO_KEY) || '1'; } catch (e) {}
+    return v !== '0';
+}
+
+function mediaSessionUpdateTrack(m) {
+    if (!('mediaSession' in navigator)) return;
+    try {
+        if (!m || !bgAudioEnabled()) {
+            navigator.mediaSession.metadata = null;
+            ['play', 'pause', 'previoustrack', 'nexttrack'].forEach(function(a) {
+                try { navigator.mediaSession.setActionHandler(a, null); } catch (e) {}
+            });
+            return;
+        }
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: m.name,
+            artist: 'boring_student',
+            album: '网盘音频'
+        });
+        navigator.mediaSession.setActionHandler('play', function() {
+            if (audioPl) { var p = audioPl.audio.play(); if (p && p.catch) p.catch(function() {}); }
+        });
+        navigator.mediaSession.setActionHandler('pause', function() { if (audioPl) audioPl.audio.pause(); });
+        navigator.mediaSession.setActionHandler('previoustrack', function() {
+            if (audioPl && audioPl.list.length > 1) audioPlPlay((audioPl.index - 1 + audioPl.list.length) % audioPl.list.length, true);
+        });
+        navigator.mediaSession.setActionHandler('nexttrack', function() {
+            if (audioPl && audioPl.list.length > 1) audioPlPlay((audioPl.index + 1) % audioPl.list.length, true);
+        });
+    } catch (e) {}
+}
+
+// 切换播放指定曲目；autoplay=true 切换后立即播放。
+// 分片与 >2MB 未分片统一走"多通道渐进播放"：前缀就绪即播、完整后无缝换源
+// （恢复进度/音量/倍速）；小文件直链边下边播
 function audioPlPlay(idx, autoplay) {
     if (!audioPl || idx < 0 || idx >= audioPl.list.length) return;
     var m = audioPl.list[idx];
     audioPl.index = idx;
+    audioPl.randNext = null;   // 切歌后随机模式的预定曲目作废
     audioPlRefreshHighlight();
+    mediaSessionUpdateTrack(m);
     previewFileInfo = { path: m.path, name: m.name, ext: getFileExtension(m.name) };
     document.getElementById('previewTitle').textContent = '预览: ' + m.name;
     var audioEl = audioPl.audio;
-    // 中止上一首的加载反馈、分片合并与旧源
+    audioEl._plInteracted = false;   // 新曲目：允许渐进前缀换源
+    // 中止上一首的加载反馈、分片合并与旧源，并清掉残留的加载信息
     audioPlStopLoadingUx();
     if (previewMerge) {
         previewMerge.cancel();
         previewMerge = null;
     }
+    if (audioPl.rateTag) audioPl.rateTag.textContent = '';
     try { audioEl.pause(); } catch (e) {}
     var startPlay = function() {
         if (autoplay) {
@@ -4937,37 +5168,71 @@ function audioPlPlay(idx, autoplay) {
             if (p && p.catch) p.catch(function() {});
         }
     };
-    if (m.chunked && m.parts) {
-        // 分片音频：合并拉取后整体播放
+    // 优先消费预加载缓存（命中即免等待）
+    var cached = audioPl.cache[m.path];
+    if (cached) {
+        delete audioPl.cache[m.path];   // 移交播放器使用，不再由缓存管理
+        setPreviewBlobUrl(cached);
+        audioEl.src = cached;
+        startPlay();
+        audioPlMaybePreload();
+        return;
+    }
+    var parts = (m.chunked && m.parts) ? m.parts :
+        ((m.size || 0) > DUAL_DL_MIN ? makeVirtualParts(m.path, m.size || 0) : null);
+    if (parts) {
         if (audioPl.rateTag) audioPl.rateTag.textContent = '加载中...';
-        previewMerge = fetchMergedBlob(m.parts, function(blob) {
+        var started = false;
+        var tmpUrl = null;
+        previewMerge = fetchMergedBlob(parts, function(blob) {
             previewMerge = null;
             if (!audioPl) return;
-            var u = URL.createObjectURL(blob);
-            setPreviewBlobUrl(u);
-            audioEl.src = u;
-            if (audioPl.rateTag) setTimeout(function() { if (audioPl && audioPl.rateTag) audioPl.rateTag.textContent = ''; }, 1500);
-            startPlay();
+            var finalUrl = URL.createObjectURL(blob);
+            setPreviewBlobUrl(finalUrl);
+            var pos = 0, resume = false, vol = 1, muted = false, rate = 1;
+            try {
+                pos = audioEl.currentTime;
+                resume = !audioEl.paused && !audioEl.ended;
+                vol = audioEl.volume;
+                muted = audioEl.muted;
+                rate = audioEl.playbackRate;
+            } catch (e) {}
+            audioEl.addEventListener('loadedmetadata', function() {
+                try { audioEl.currentTime = pos; } catch (e) {}
+                try { audioEl.volume = vol; audioEl.muted = muted; audioEl.playbackRate = rate; } catch (e) {}
+                if (resume) { var p = audioEl.play(); if (p && p.catch) p.catch(function() {}); }
+            }, { once: true });
+            audioEl.src = finalUrl;
+            if (tmpUrl) {
+                URL.revokeObjectURL(tmpUrl);
+                tmpUrl = null;
+            }
+            if (audioPl && audioPl.rateTag) {
+                setTimeout(function() { if (audioPl && audioPl.rateTag) audioPl.rateTag.textContent = ''; }, 2000);
+            }
         }, function() {
             previewMerge = null;
             if (audioPl && audioPl.rateTag) audioPl.rateTag.textContent = '加载失败';
         }, function(pct, speed, chanSpeeds) {
             if (audioPl && audioPl.rateTag) {
-                audioPl.rateTag.textContent = '加载中 ' + (pct !== null ? pct + '%' : '...') + (chanSpeeds || speed ? ' · ' + (chanSpeeds || speed) : '');
+                audioPl.rateTag.textContent = '加载中 ' + (pct !== null ? pct + '%' : '...') + ((chanSpeeds || speed) ? ' · ' + (chanSpeeds || speed) : '');
             }
+        }, function(prefix, buffers) {
+            // 前缀就绪即播：未播放且未交互过时换源无感知（用户操作过播放
+            // 状态即不再换源，等完整 blob 统一切换恢复进度）
+            if (!audioPl || started || audioEl._plInteracted) return;
+            var bytes = 0;
+            for (var i = 0; i < prefix; i++) bytes += buffers[i] ? buffers[i].byteLength : 0;
+            if (bytes < 1536 * 1024) return;
+            started = true;
+            tmpUrl = URL.createObjectURL(new Blob(buffers.slice(0, prefix)));
+            audioEl.src = tmpUrl;
+            startPlay();
         }, null, true);
     } else {
-        // 优先消费预加载缓存（命中即免等待），否则直链边下边播
-        var cached = audioPl.cache[m.path];
-        if (cached) {
-            delete audioPl.cache[m.path];   // 移交播放器使用，不再由缓存管理
-            setPreviewBlobUrl(cached);
-            audioEl.src = cached;
-        } else {
-            audioEl.src = rawUrlFor(m.path);
-            // 未命中缓存：显示新歌的加载速度（三通道测速）与缓冲进度
-            audioPlStartLoadingUx(m, audioEl);
-        }
+        // 小文件：直链边下边播 + 三通道测速与缓冲进度展示
+        audioEl.src = rawUrlFor(m.path);
+        audioPlStartLoadingUx(m, audioEl);
         startPlay();
     }
     audioPlMaybePreload();
@@ -4992,7 +5257,8 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
         audio: audioEl,
         rateTag: rateTag,
         cache: {},
-        preloadXhr: null,
+        preloadHandle: null,
+        randNext: null,
         listEl: null,
         modeBtn: null,
         countEl: null,
@@ -5002,6 +5268,11 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
     // 不依赖 loop 属性：循环/顺序/随机统一由 ended 处理，行为在所有源
     // （直链/blob/分片合并）与列表任意位置（含最后一首）保持一致
     audioEl.loop = false;
+    // 用户任何交互（播放/拖进度/调音量）即标记：渐进下载期间不再替换播放源
+    audioEl._plInteracted = false;
+    ['play', 'volumechange', 'seeking'].forEach(function(ev) {
+        audioEl.addEventListener(ev, function() { audioEl._plInteracted = true; });
+    });
 
     var wrap = document.createElement('div');
     wrap.className = 'audio-pl';
@@ -5066,12 +5337,26 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
             try { active.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
         }
     });
+    // 后台播放开关（Media Session）：锁屏/切后台保持播放并显示系统控制
+    var bgBtn = document.createElement('button');
+    bgBtn.type = 'button';
+    bgBtn.className = 'audio-pl-btn' + (bgAudioEnabled() ? ' active' : '');
+    bgBtn.textContent = t('后台');
+    bgBtn.title = '后台播放（锁屏/切后台继续播放）';
+    bgBtn.addEventListener('click', function() {
+        var on = !bgAudioEnabled();
+        try { localStorage.setItem(BG_AUDIO_KEY, on ? '1' : '0'); } catch (e) {}
+        bgBtn.classList.toggle('active', on);
+        if (audioPl) mediaSessionUpdateTrack(on ? audioPl.list[audioPl.index] : null);
+    });
     bar.appendChild(modeBtn);
     bar.appendChild(toggleBtn);
     bar.appendChild(locateBtn);
+    bar.appendChild(bgBtn);
     bar.appendChild(countSpan);
     wrap.appendChild(bar);
     wrap.appendChild(listEl);
+    mediaSessionUpdateTrack(list[index]);
 
     // 首次播放时启动跳动图标（用户手势上下文，AudioContext 可恢复）
     audioEl.addEventListener('play', function() {
@@ -5079,9 +5364,13 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
     });
 
     // 播放结束按播放方式推进（手动实现，三种模式在列表任意位置行为一致）：
-    // loop 单曲循环重播当前；seq 顺序播放（到尾回到第一首）；rand 随机（不重复当前）
+    // loop 单曲循环重播当前；seq 顺序播放（到尾回到第一首）；rand 随机（优先
+    // 消费预载时锁定的预定曲目）
     audioEl.addEventListener('ended', function() {
         if (!audioPl || audioEl !== audioPl.audio) return;
+        // 渐进播放的前缀到头但整体仍在下载：不是真结束——等完整 blob 换源
+        // 从断点续播，绝不能按结束切歌
+        if (previewMerge) return;
         if (audioPl.mode === 'loop') {
             try { audioEl.currentTime = 0; } catch (e) {}
             var pl = audioEl.play();
@@ -5093,8 +5382,10 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
             return;
         }
         if (audioPl.list.length > 1) {
-            var n;
-            do { n = Math.floor(Math.random() * audioPl.list.length); } while (n === audioPl.index);
+            var n = audioPl.randNext;
+            if (n == null || n === audioPl.index) {
+                do { n = Math.floor(Math.random() * audioPl.list.length); } while (n === audioPl.index);
+            }
             audioPlPlay(n, true);
         }
     });
@@ -5843,11 +6134,11 @@ function renderTextView(text, editable) {
     var detected = detectLang(previewFileInfo.ext);
     var isMd = previewFileInfo.ext === 'md' || previewFileInfo.ext === 'markdown';
     var toolbar = document.createElement('div');
-    toolbar.style.cssText = 'display: flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; color: #666;';
+    toolbar.className = 'text-view-toolbar';
     var label = document.createElement('span');
     label.textContent = '显示方式';
     var select = document.createElement('select');
-    select.style.cssText = 'padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; background: white;';
+    select.className = 'text-view-select';
     var options = [['plain', '纯文本'], ['auto', '代码着色(自动)'], ['js', 'JavaScript'], ['json', 'JSON'], ['py', 'Python'], ['c', 'C/C++']];
     if (isMd) {
         options.unshift(['md', 'Markdown 预览']);
@@ -5984,42 +6275,48 @@ function previewFile(filePath, fileName) {
     setPreviewBlobUrl(null);
 
     if (menuFileInfo.chunked) {
-        // 分片音频边下边播：音频元素立即创建，每连续收完一段分片就更新播放源
-        // （未播放时换源无感知；一旦开始播放则不再换源，最后完整 blob 恢复进度）
+        // 分片音频/视频边下边播：媒体元素立即创建，每连续收完一段分片就更新
+        // 播放源（未播放/未交互时换源无感知；一旦交互则不再换源，最后完整
+        // blob 恢复进度）；视频前缀无法解码（moov 在文件尾）时自动放弃渐进、
+        // 等完整合并再播——两种媒体都与无分片一样可以实时加载
         var isAudioPreview = AUDIO_EXTS.indexOf(ext) !== -1;
+        var isVideoPreview = VIDEO_EXTS.indexOf(ext) !== -1;
         var audioEl = null;
         var audioRateTag = null;
         var tmpAudioUrl = null;
         var startedPlaying = false;
-        if (isAudioPreview) {
+        var progressiveFailed = false;
+        if (isAudioPreview || isVideoPreview) {
             content.innerHTML = '';
             content.appendChild(loadingDiv);
-            audioEl = document.createElement('audio');
+            audioEl = document.createElement(isAudioPreview ? 'audio' : 'video');
             audioEl.preload = 'auto';
-            audioEl.className = 'preview-audio';
-            bindAudioVolume(audioEl);
+            audioEl.className = isAudioPreview ? 'preview-audio' : 'preview-video';
+            if (isAudioPreview) bindAudioVolume(audioEl);
             var audioWrap = document.createElement('div');
-            audioWrap.className = 'media-wrap media-wrap-audio';
+            audioWrap.className = isAudioPreview ? 'media-wrap media-wrap-audio' : 'media-wrap';
             audioRateTag = document.createElement('div');
-            audioRateTag.className = 'media-rate-below';
+            audioRateTag.className = isAudioPreview ? 'media-rate-below' : 'media-rate';
             audioWrap.appendChild(audioEl);
-            audioWrap.appendChild(buildMediaControls(audioEl, false));
+            audioWrap.appendChild(buildMediaControls(audioEl, isVideoPreview));
             audioWrap.appendChild(audioRateTag);
-            var plWrapC = setupAudioPlaylist(audioEl, filePath, audioRateTag);
-            if (plWrapC) audioWrap.appendChild(plWrapC);
+            if (isAudioPreview) {
+                var plWrapC = setupAudioPlaylist(audioEl, filePath, audioRateTag);
+                if (plWrapC) audioWrap.appendChild(plWrapC);
+            }
             content.appendChild(audioWrap);
-            audioEl.addEventListener('play', function() { startedPlaying = true; });
             // 用户任何交互（播放/拖进度/调音量）即停止换源：
             // 换源会重置已调节的播放状态
-            ['volumechange', 'seeking'].forEach(function(ev) {
+            ['play', 'volumechange', 'seeking'].forEach(function(ev) {
                 audioEl.addEventListener(ev, function() { startedPlaying = true; });
             });
-            // 部分前缀数据可能暂时无法解码（如头部不完整），忽略，等更多分片后重试
-            audioEl.addEventListener('error', function() {});
+            // 前缀数据暂时无法解码（视频 moov 在文件尾/头部不完整）：
+            // 放弃渐进换源，等完整合并一次性播放
+            audioEl.addEventListener('error', function() { progressiveFailed = true; });
         }
         previewMerge = fetchMergedBlob(menuFileInfo.parts, function(blob) {
             previewMerge = null;
-            if (isAudioPreview && audioEl) {
+            if ((isAudioPreview || isVideoPreview) && audioEl) {
                 loadingDiv.style.display = 'none';
                 var finalUrl = URL.createObjectURL(blob);
                 setPreviewBlobUrl(finalUrl);
@@ -6046,19 +6343,12 @@ function previewFile(filePath, fileName) {
                 return;
             }
             var mediaUrl = null;
-            if (VIDEO_EXTS.indexOf(ext) !== -1 || IMAGE_EXTS.indexOf(ext) !== -1) {
+            if (IMAGE_EXTS.indexOf(ext) !== -1) {
                 mediaUrl = URL.createObjectURL(blob);
                 setPreviewBlobUrl(mediaUrl);
                 content.innerHTML = '';
             }
-            if (VIDEO_EXTS.indexOf(ext) !== -1) {
-                var video = document.createElement('video');
-                video.src = mediaUrl;
-                video.controls = true;
-                video.preload = 'auto';
-                video.className = 'preview-video';
-                content.appendChild(video);
-            } else if (IMAGE_EXTS.indexOf(ext) !== -1) {
+            if (IMAGE_EXTS.indexOf(ext) !== -1) {
                 var viewerWrapC = buildImageViewer();
                 imgViewer.img.src = mediaUrl;
                 imgViewer.img.alt = fileName;
@@ -6085,7 +6375,8 @@ function previewFile(filePath, fileName) {
             // 速率标签展示各通道（EO/CF/外部）各自速度
             if (audioRateTag && (chanSpeeds || speed)) audioRateTag.textContent = chanSpeeds || speed;
         }, function onPart(prefix, buffers) {
-            if (!isAudioPreview || startedPlaying || !audioEl) return;
+            // 音/视频统一渐进换源：交互过/前缀解码失败则不再换源
+            if ((!isAudioPreview && !isVideoPreview) || startedPlaying || progressiveFailed || !audioEl) return;
             var u = URL.createObjectURL(new Blob(buffers.slice(0, prefix)));
             if (tmpAudioUrl) URL.revokeObjectURL(tmpAudioUrl);
             tmpAudioUrl = u;
@@ -6795,9 +7086,13 @@ function loadFileList() {
         hideRefreshIndicator();
 
         if (status === 304) {
-            // 视图被搜索结果替换过时，304 也必须用缓存体重渲染目录列表——
+            // 搜索框有词：自动刷新不重渲染目录、改为刷新搜索结果（保持搜索状态）；
+            // 视图被搜索结果替换过（框已空）时，304 也必须用缓存体重渲染目录列表——
             // 否则清空搜索（或自动填充被清除）后永远停在搜索结果页
-            if (listViewSearch && body) {
+            var sq = currentSearchQuery();
+            if (sq) {
+                renderSearchResults(sq);
+            } else if (listViewSearch && body) {
                 try {
                     renderFileList(JSON.parse(body));
                 } catch (e) {}
@@ -6819,7 +7114,10 @@ function loadFileList() {
                     pageTitle.textContent = dirName;
                     document.title = dirName + ' - boring_student';
                 }
-                renderFileList(items);
+                // 搜索框有词时保持搜索视图（自动刷新不打断搜索状态，结果随文件树刷新）
+                var sq = currentSearchQuery();
+                if (sq) renderSearchResults(sq);
+                else renderFileList(items);
             } catch (e) {
                 showListError('解析文件列表失败');
             }
@@ -9215,6 +9513,18 @@ document.addEventListener('DOMContentLoaded', function() {
             try { runningTasks[type].stop(); } catch (err) {}
         }
         clearBgTask();
+    });
+    // 返回顶部：滚动超过一屏显示，点击平滑回顶
+    var backToTopBtn = document.getElementById('backToTopBtn');
+    window.addEventListener('scroll', function() {
+        backToTopBtn.classList.toggle('show', window.scrollY > 400);
+    }, { passive: true });
+    backToTopBtn.addEventListener('click', function() {
+        try {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        } catch (e) {
+            window.scrollTo(0, 0);
+        }
     });
     restoreBgTaskHint();
     dlUpdateCurUi();
