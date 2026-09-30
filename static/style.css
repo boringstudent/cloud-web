@@ -250,15 +250,6 @@ a:hover {
     margin: 0 0 15px;
     line-height: 1.7;
 }
-.admin-list-toggle {
-    cursor: pointer;
-    font-weight: 600;
-    color: #333;
-    margin: 5px 0;
-    user-select: none;
-    font-size: 13px;
-    letter-spacing: 0.5px;
-}
 .admin-user-list {
     max-height: 40vh;
     overflow-y: auto;
@@ -1428,6 +1419,60 @@ h1 {
     color: #dc3545;
 }
 
+/* 三级子菜单（用户信息修改 → 头像/密码/注销） */
+.user-menu-item.has-sub {
+    position: relative;
+}
+.user-menu-item.has-sub > span {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.user-menu-item.has-sub > span::after {
+    content: '›';
+    font-size: 14px;
+    color: #999;
+    margin-left: 8px;
+}
+.user-sub-menu {
+    display: none;
+    position: absolute;
+    top: -6px;
+    left: calc(100% - 4px);
+    min-width: 120px;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    padding: 6px;
+    z-index: 1301;
+    animation: menuIn 0.15s ease;
+}
+.user-menu-item.has-sub:hover .user-sub-menu {
+    display: block;
+}
+
+/* 二维码弹窗 */
+#qrModal .modal-content {
+    max-width: 300px;
+    text-align: center;
+}
+#qrTitle {
+    margin-bottom: 16px;
+}
+#qrCanvasHolder {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 12px;
+}
+#qrCanvasHolder .qr-canvas {
+    border-radius: 8px;
+    border: 1px solid #eee;
+}
+#qrHint {
+    font-size: 12px;
+    color: #999;
+}
+
 /* ---- 音频播放列表（预览弹窗） ---- */
 .audio-pl {
     width: 100%;
@@ -1789,9 +1834,6 @@ h1 {
 :root[data-theme="dark"] #deleteConfirmText {
     color: #9aa4b0;
 }
-:root[data-theme="dark"] .admin-list-toggle {
-    color: #e6edf3;
-}
 :root[data-theme="dark"] .admin-user-row {
     border-bottom-color: #30363d;
 }
@@ -1995,6 +2037,20 @@ h1 {
 :root[data-theme="dark"] .user-menu-item:hover {
     background: #30363d;
     color: #58a6ff;
+}
+:root[data-theme="dark"] .user-sub-menu {
+    background: #21262d;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.65);
+}
+:root[data-theme="dark"] .user-sub-menu .user-menu-item {
+    color: #e6edf3;
+}
+:root[data-theme="dark"] .user-sub-menu .user-menu-item:hover {
+    background: #30363d;
+    color: #58a6ff;
+}
+:root[data-theme="dark"] #qrHint {
+    color: #8b949e;
 }
 :root[data-theme="dark"] .pref-wrap select {
     background: rgba(33, 38, 45, 0.9);

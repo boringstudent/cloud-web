@@ -57,7 +57,14 @@
                 <button type="button" id="userAvatarBtn" class="user-avatar-btn" title="账户菜单" onclick="toggleUserMenu(event)"></button>
                 <div id="userMenu" class="user-menu">
                     <div class="user-menu-name" id="userMenuName"></div>
-                    <div class="user-menu-item" onclick="closeUserMenu(); openAccountModal();">用户信息修改</div>
+                    <div class="user-menu-item has-sub" id="userMenuProfile">
+                        <span>用户信息修改</span>
+                        <div class="user-sub-menu">
+                            <div class="user-menu-item" onclick="closeUserMenu(); openAccountModal('avatar');">头像</div>
+                            <div class="user-menu-item" onclick="closeUserMenu(); openAccountModal('password');">密码</div>
+                            <div class="user-menu-item danger" onclick="closeUserMenu(); openAccountModal('delete');">注销</div>
+                        </div>
+                    </div>
                     <div class="user-menu-item" id="userMenuAdmin" onclick="closeUserMenu(); openAdminModal();" style="display: none;">用户管理</div>
                     <div class="user-menu-item danger" id="userMenuLogout" onclick="closeUserMenu(); logout();">退出登录</div>
                 </div>
@@ -249,7 +256,6 @@
                 <div class="form-group">
                     <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="nope" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="admin-search-no-autofill" oninput="renderAdminUserList()" readonly>
                 </div>
-                <div id="adminListToggle" class="admin-list-toggle" onclick="toggleAdminUserList()">用户列表 <span id="adminListArrow">▾</span></div>
                 <div id="adminUserList" class="admin-user-list">
                     <div class="loading">加载中...</div>
                 </div>
@@ -340,7 +346,8 @@
             <button class="btn" id="batchSelectAllBtn" style="background: #6c757d;">全选</button>
             <button class="btn" id="batchInvertBtn" style="background: #6c757d;">反选</button>
             <button class="btn" id="batchDownloadBtn">批量下载</button>
-            <button class="btn" id="batchShareBtn" style="background: #6c5ce7;">分享链接</button>
+            <button class="btn" id="batchShareBtn" style="background: #6c5ce7;">复制链接</button>
+            <button class="btn" id="batchQrBtn" style="background: #16a085;">二维码</button>
             <button class="btn" id="batchStopBtn" style="background: #e67e22; display: none;">停止下载</button>
             <button class="btn" id="batchDeleteBtn" style="background: #dc3545;">批量删除</button>
             <button class="btn" id="batchCancelBtn" style="background: #999;">取消</button>
@@ -357,22 +364,12 @@
             <div class="context-menu-item danger" id="menuDelete" onclick="handleMenuAction('delete')">删除</div>
         </div>
 
-        <div id="shareModal" class="modal-overlay">
-            <div class="modal-content" style="max-width: 420px;">
-                <span class="modal-close" onclick="closeShareModal()">&times;</span>
-                <h2 id="shareTitle">分享</h2>
-                <div class="form-group">
-                    <label>分享链接</label>
-                    <input type="text" id="shareUrl" readonly onclick="this.select()">
-                </div>
-                <div class="btn-row" style="margin-bottom: 12px;">
-                    <button class="btn" onclick="copyShareUrl()" id="copyShareBtn" style="flex: 1;">复制链接</button>
-                    <button class="btn" onclick="openSharePage()" id="openSharePageBtn" style="flex: 1; background: #16a085;">打开下载页</button>
-                </div>
-                <div style="text-align: center; margin-top: 8px;">
-                    <img id="shareQrImg" alt="二维码" style="max-width: 200px; border: 1px solid #eee; border-radius: 8px; display: none;">
-                </div>
-                <div id="shareMessage" class="message"></div>
+        <div id="qrModal" class="modal-overlay">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeQrModal()">&times;</span>
+                <h2 id="qrTitle">二维码下载</h2>
+                <div id="qrCanvasHolder"></div>
+                <div id="qrHint">扫码在手机上下载</div>
             </div>
         </div>
 

@@ -1038,6 +1038,8 @@ var I18N = {
         '分享链接无效': 'Invalid share link',
         '链接已复制到剪贴板': 'Link copied to clipboard',
         '复制失败，请手动复制': 'Copy failed, please copy manually',
+        '二维码': 'QR code',
+        '内容过长，无法生成二维码': 'Content too long to generate QR code',
         '下载中...': 'Downloading...',
         '未知错误': 'Unknown error'
     },
@@ -1210,6 +1212,8 @@ var I18N = {
         '分享链接无效': '分享連結無效',
         '链接已复制到剪贴板': '連結已複製到剪貼簿',
         '复制失败，请手动复制': '複製失敗，請手動複製',
+        '二维码': '二維碼',
+        '内容过长，无法生成二维码': '內容過長，無法生成二維碼',
         '下载中...': '下載中...',
         '未知错误': '未知錯誤'
     },
@@ -1382,6 +1386,8 @@ var I18N = {
         '分享链接无效': '共有リンクが無効です',
         '链接已复制到剪贴板': 'リンクをクリップボードにコピーしました',
         '复制失败，请手动复制': 'コピーに失敗しました。手動でコピーしてください',
+        '二维码': 'QRコード',
+        '内容过长，无法生成二维码': '内容が長すぎてQRコードを生成できません',
         '下载中...': 'ダウンロード中...',
         '未知错误': '不明なエラー'
     }
@@ -1403,7 +1409,10 @@ var I18N_BINDINGS = [
     // 覆盖成"加载中..."后 304 路径不重渲染，页面会一直卡在加载态
     ['#uploadFabBtn', 'text', '上传文件'],
     ['#userAvatarBtn', 'title', '账户菜单'],
-    ['#userMenu div:nth-of-type(2)', 'text', '用户信息修改'],
+    ['#userMenuProfile > span', 'text', '用户信息修改'],
+    ['#userMenuProfile .user-sub-menu div:nth-of-type(1)', 'text', '头像'],
+    ['#userMenuProfile .user-sub-menu div:nth-of-type(2)', 'text', '密码'],
+    ['#userMenuProfile .user-sub-menu div:nth-of-type(3)', 'text', '注销'],
     ['#userMenuAdmin', 'text', '用户管理'],
     ['#userMenuLogout', 'text', '退出登录'],
     ['#refreshIndicator', 'title', '正在刷新'],
@@ -1461,7 +1470,6 @@ var I18N_BINDINGS = [
     ['#adminModal h2', 'owntext', '用户管理'],
     ['#adminRefreshBtn', 'title', '刷新'],
     ['#adminSearchInput', 'ph', '搜索用户名'],
-    ['#adminListToggle', 'owntext', '用户列表'],
     ['#adminAddOpenBtn', 'text', '添加用户'],
     ['#adminNewUsernameLabel', 'text', '用户名'],
     ['#adminNewPasswordLabel', 'text', '密码（明文，将加密存储）'],
@@ -1492,20 +1500,20 @@ var I18N_BINDINGS = [
     ['#batchSelectAllBtn', 'text', '全选'],
     ['#batchInvertBtn', 'text', '反选'],
     ['#batchDownloadBtn', 'text', '批量下载'],
-    ['#batchShareBtn', 'text', '分享链接'],
+    ['#batchShareBtn', 'text', '复制链接'],
+    ['#batchQrBtn', 'text', '二维码'],
     ['#batchStopBtn', 'text', '停止下载'],
     ['#batchDeleteBtn', 'text', '批量删除'],
     ['#batchCancelBtn', 'text', '取消'],
     ['#menuLocate', 'text', '跳转到所在目录并定位'],
     ['#backToTopBtn', 'title', '返回顶部'],
-    ['#copyShareBtn', 'text', '复制链接'],
-    ['#openSharePageBtn', 'text', '打开下载页'],
     ['#menuProperties', 'text', '属性'],
     ['#menuPreview', 'text', '预览'],
     ['#menuEdit', 'text', '修改'],
     ['#menuDownload', 'text', '下载'],
     ['#menuShare', 'text', '复制外链'],
     ['#menuQr', 'text', '二维码下载'],
+    ['#qrHint', 'text', '扫码在手机上下载'],
     ['#menuDelete', 'text', '删除'],
     ['#themeSelect', 'title', '主题'],
     ['#themeSelect option[value="auto"]', 'text', '跟随系统'],
@@ -1741,7 +1749,7 @@ function logout() {
 }
 
 // ---- Self-service account (change password / avatar / delete account) ----
-function openAccountModal() {
+function openAccountModal(tab) {
     document.getElementById('accountMessage').className = 'message';
     document.getElementById('accountMessage').textContent = '';
     document.getElementById('cpCurrent').value = '';
@@ -1751,6 +1759,7 @@ function openAccountModal() {
     var auth = getSavedAuth();
     var avatarInput = document.getElementById('avUrl');
     if (avatarInput) avatarInput.value = (auth && auth.avatar) || '';
+    switchAccountTab(tab || 'avatar');
     document.getElementById('accountModal').classList.add('show');
 }
 
@@ -1982,14 +1991,6 @@ function loadAdminUsers() {
                 done(null, data.users);
             });
     });
-}
-
-function toggleAdminUserList() {
-    var list = document.getElementById('adminUserList');
-    var arrow = document.getElementById('adminListArrow');
-    var open = list.style.display !== 'none';
-    list.style.display = open ? 'none' : '';
-    if (arrow) arrow.textContent = open ? '▸' : '▾';
 }
 
 function renderAdminUserList() {
@@ -3936,10 +3937,346 @@ function handleMenuAction(action) {
     } else if (action === 'delete') {
         openDeleteModal(filePath, fileSha, fileName, menuFileInfo.chunked ? 'chunked' : fileType);
     } else if (action === 'share') {
-        openShareModal([{ path: filePath, name: fileName, type: fileType, size: menuFileInfo.size }], fileName);
+        copyShareLink([{ path: filePath, name: fileName, type: fileType, size: menuFileInfo.size }]);
     } else if (action === 'qr') {
-        openShareModal([{ path: filePath, name: fileName, type: fileType, size: menuFileInfo.size }], fileName, true);
+        openQrModal([{ path: filePath, name: fileName, type: fileType, size: menuFileInfo.size }], fileName);
     }
+}
+
+// ==================== QR 码生成（零依赖，byte 模式，纠错级别 M，版本 1-40 自动） ====================
+// 算法遵循 ISO/IEC 18004：GF(256) Reed-Solomon 纠错、8 掩码惩罚评估选最优。
+// 已对照 segno（Python QR 库）全版本逐位验证。
+var QR_ALIGN_POS = [
+    [],
+    [6, 18], [6, 22], [6, 26], [6, 30], [6, 34],
+    [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50], [6, 30, 54], [6, 32, 58], [6, 34, 62],
+    [6, 26, 46, 66], [6, 26, 48, 70], [6, 26, 50, 74], [6, 30, 54, 78], [6, 30, 56, 82], [6, 30, 58, 86], [6, 34, 62, 90],
+    [6, 28, 50, 72, 94], [6, 26, 50, 74, 98], [6, 30, 54, 78, 102], [6, 28, 54, 80, 106], [6, 32, 58, 84, 110], [6, 30, 58, 86, 114], [6, 34, 62, 90, 118],
+    [6, 26, 50, 74, 98, 122], [6, 30, 54, 78, 102, 126], [6, 26, 52, 78, 104, 130], [6, 30, 56, 82, 108, 134], [6, 34, 60, 86, 112, 138], [6, 30, 58, 86, 114, 142], [6, 34, 62, 90, 118, 146],
+    [6, 30, 54, 78, 102, 126, 150], [6, 24, 50, 76, 102, 128, 154], [6, 28, 54, 80, 106, 132, 158], [6, 32, 58, 84, 110, 136, 162], [6, 26, 54, 82, 110, 138, 166], [6, 30, 58, 86, 114, 142, 170]
+];
+// 每版本 [组1块数, 组1数据字数, 组2块数, 组2数据字数, 每块纠错字数]（级别 M）
+var QR_RS_M = [
+    [1, 16, 0, 0, 10], [1, 28, 0, 0, 16], [1, 44, 0, 0, 26], [2, 32, 0, 0, 18], [2, 43, 0, 0, 24],
+    [4, 27, 0, 0, 16], [4, 31, 0, 0, 18], [2, 38, 2, 39, 22], [3, 36, 2, 37, 22], [4, 43, 1, 44, 26],
+    [1, 50, 4, 51, 30], [6, 36, 2, 37, 22], [8, 37, 1, 38, 22], [4, 40, 5, 41, 24], [5, 41, 5, 42, 24],
+    [7, 45, 3, 46, 28], [10, 46, 1, 47, 28], [9, 43, 4, 44, 26], [3, 44, 11, 45, 26], [3, 41, 13, 42, 26],
+    [17, 42, 0, 0, 26], [17, 46, 0, 0, 28], [4, 47, 14, 48, 28], [6, 45, 14, 46, 28], [8, 47, 13, 48, 28],
+    [19, 46, 4, 47, 28], [22, 45, 3, 46, 28], [3, 45, 23, 46, 28], [21, 45, 7, 46, 28], [19, 47, 10, 48, 28],
+    [2, 46, 29, 47, 28], [10, 46, 23, 47, 28], [14, 46, 21, 47, 28], [14, 46, 23, 47, 28], [12, 47, 26, 48, 28],
+    [6, 47, 34, 48, 28], [29, 46, 14, 47, 28], [13, 46, 32, 47, 28], [40, 47, 7, 48, 28], [18, 47, 31, 48, 28]
+];
+
+var QR_GF_EXP = new Uint8Array(512);
+var QR_GF_LOG = new Uint8Array(256);
+(function() {
+    var x = 1;
+    for (var i = 0; i < 255; i++) {
+        QR_GF_EXP[i] = x;
+        QR_GF_LOG[x] = i;
+        x <<= 1;
+        if (x & 0x100) x ^= 0x11D;
+    }
+    for (var j = 255; j < 512; j++) QR_GF_EXP[j] = QR_GF_EXP[j - 255];
+})();
+
+function qrGfMul(a, b) {
+    if (!a || !b) return 0;
+    return QR_GF_EXP[QR_GF_LOG[a] + QR_GF_LOG[b]];
+}
+
+// RS 生成多项式（按度数缓存，系数最高次在前，首项恒为 1）
+var QR_GEN_CACHE = {};
+function qrRsGen(deg) {
+    if (QR_GEN_CACHE[deg]) return QR_GEN_CACHE[deg];
+    var g = [1];
+    for (var i = 0; i < deg; i++) {
+        var ng = new Array(g.length + 1).fill(0);
+        for (var j = 0; j < g.length; j++) {
+            ng[j] ^= g[j];                              // × x 项
+            ng[j + 1] ^= qrGfMul(g[j], QR_GF_EXP[i]);   // × α^i 项
+        }
+        g = ng;
+    }
+    QR_GEN_CACHE[deg] = g;
+    return g;
+}
+
+function qrRsRemainder(data, deg) {
+    var g = qrRsGen(deg);
+    var rem = new Array(deg);
+    for (var i = 0; i < deg; i++) rem[i] = 0;
+    for (var d = 0; d < data.length; d++) {
+        var factor = data[d] ^ rem[0];
+        rem.shift();
+        rem.push(0);
+        if (factor) {
+            for (var k = 0; k < deg; k++) {
+                // g 首项系数恒为 1，只对余项异或生成式其余系数
+                rem[k] ^= qrGfMul(g[k + 1], factor);
+            }
+        }
+    }
+    return rem;
+}
+
+// 主入口：文本 → { size, modules, version }；超长返回 null
+function qrGenerate(text) {
+    var bytes = Array.from(new TextEncoder().encode(text));
+    var version = 0;
+    for (var v = 1; v <= 40; v++) {
+        var rsCap = QR_RS_M[v - 1];
+        var capBits = (rsCap[0] * rsCap[1] + rsCap[2] * rsCap[3]) * 8;
+        var lenBits = v < 10 ? 8 : 16;
+        if (bytes.length * 8 <= capBits - 4 - lenBits) { version = v; break; }
+    }
+    if (!version) return null;
+
+    // 数据位流：0100 模式 + 长度 + 数据 + 终止符 + 填充
+    var rs = QR_RS_M[version - 1];
+    var totalDataCW = rs[0] * rs[1] + rs[2] * rs[3];
+    var bits = [];
+    function pushBits(val, n) {
+        for (var i = n - 1; i >= 0; i--) bits.push((val >> i) & 1);
+    }
+    pushBits(0x4, 4);
+    pushBits(bytes.length, version < 10 ? 8 : 16);
+    bytes.forEach(function(b) { pushBits(b, 8); });
+    var capacity = totalDataCW * 8;
+    pushBits(0, Math.min(4, capacity - bits.length));
+    while (bits.length % 8) bits.push(0);
+    var padByte = 0xEC;
+    while (bits.length < capacity) {
+        pushBits(padByte, 8);
+        padByte = padByte === 0xEC ? 0x11 : 0xEC;
+    }
+    var codewords = [];
+    for (var cw = 0; cw < bits.length / 8; cw++) {
+        var b = 0;
+        for (var k = 0; k < 8; k++) b = (b << 1) | bits[cw * 8 + k];
+        codewords.push(b);
+    }
+
+    // 分块 + RS 纠错
+    var blocks = [];
+    var off = 0;
+    var groups = [[rs[0], rs[1]], [rs[2], rs[3]]];
+    groups.forEach(function(gr) {
+        var cnt = gr[0], dcw = gr[1];
+        for (var i = 0; i < cnt; i++) {
+            var data = codewords.slice(off, off + dcw);
+            off += dcw;
+            blocks.push({ data: data, ec: qrRsRemainder(data, rs[4]) });
+        }
+    });
+    // 数据与纠错码字均按块逐字节交错
+    var interleaved = [];
+    var maxData = Math.max.apply(null, blocks.map(function(b) { return b.data.length; }));
+    var col = 0;
+    for (col = 0; col < maxData; col++) {
+        blocks.forEach(function(b) { if (col < b.data.length) interleaved.push(b.data[col]); });
+    }
+    for (col = 0; col < rs[4]; col++) {
+        blocks.forEach(function(b) { interleaved.push(b.ec[col]); });
+    }
+
+    // 矩阵
+    var size = 21 + (version - 1) * 4;
+    var modules = [];
+    var isFunc = [];
+    for (var r = 0; r < size; r++) {
+        modules.push(new Array(size).fill(0));
+        isFunc.push(new Array(size).fill(false));
+    }
+    function setFunc(x, y, val) {
+        modules[y][x] = val;
+        isFunc[y][x] = true;
+    }
+    // 定位图案 + 分隔符
+    function drawFinder(cx, cy) {
+        for (var dy = -4; dy <= 4; dy++) {
+            for (var dx = -4; dx <= 4; dx++) {
+                var xx = cx + dx, yy = cy + dy;
+                if (xx < 0 || xx >= size || yy < 0 || yy >= size) continue;
+                var d = Math.max(Math.abs(dx), Math.abs(dy));
+                setFunc(xx, yy, d !== 2 && d !== 4 ? 1 : 0);
+            }
+        }
+    }
+    drawFinder(3, 3);
+    drawFinder(size - 4, 3);
+    drawFinder(3, size - 4);
+    // 校正图案
+    var alignPos = QR_ALIGN_POS[version - 1];
+    alignPos.forEach(function(ax) {
+        alignPos.forEach(function(ay) {
+            // 跳过与定位图案重叠的三个角
+            if ((ax === 6 && ay === 6) || (ax === 6 && ay === size - 7) || (ax === size - 7 && ay === 6)) return;
+            for (var dy2 = -2; dy2 <= 2; dy2++) {
+                for (var dx2 = -2; dx2 <= 2; dx2++) {
+                    setFunc(ax + dx2, ay + dy2, Math.max(Math.abs(dx2), Math.abs(dy2)) !== 1 ? 1 : 0);
+                }
+            }
+        });
+    });
+    // 时序图案
+    for (var t = 8; t < size - 8; t++) {
+        setFunc(6, t, t % 2 === 0 ? 1 : 0);
+        setFunc(t, 6, t % 2 === 0 ? 1 : 0);
+    }
+    // 格式信息占位（先标记功能区，真实值掩码确定后写入）
+    for (var f = 0; f <= 5; f++) setFunc(8, f, 0);
+    setFunc(8, 7, 0);
+    setFunc(8, 8, 0);
+    setFunc(7, 8, 0);
+    for (var f2 = 9; f2 < 15; f2++) setFunc(14 - f2, 8, 0);
+    for (var f3 = 0; f3 < 8; f3++) setFunc(size - 1 - f3, 8, 0);
+    for (var f4 = 8; f4 < 15; f4++) setFunc(8, size - 15 + f4, 0);
+    setFunc(8, size - 8, 1);   // 固定暗模块
+    // 版本信息（v7+）
+    if (version >= 7) {
+        var rem2 = version;
+        for (var vi = 0; vi < 12; vi++) rem2 = (rem2 << 1) ^ ((rem2 >> 11) * 0x1F25);
+        var vbits = (version << 12) | (rem2 & 0xFFF);
+        for (var vb = 0; vb < 18; vb++) {
+            var bit = (vbits >> vb) & 1;
+            var a = size - 11 + vb % 3, b2 = Math.floor(vb / 3);
+            setFunc(a, b2, bit);
+            setFunc(b2, a, bit);
+        }
+    }
+    // 数据填充（之字形）
+    var di = 0;
+    var dataBitsLen = interleaved.length * 8;
+    for (var right = size - 1; right >= 1; right -= 2) {
+        if (right === 6) right = 5;
+        for (var vert = 0; vert < size; vert++) {
+            for (var j2 = 0; j2 < 2; j2++) {
+                var x2 = right - j2;
+                var upward = ((right + 1) & 2) === 0;
+                var y2 = upward ? size - 1 - vert : vert;
+                if (!isFunc[y2][x2]) {
+                    if (di < dataBitsLen) {
+                        modules[y2][x2] = (interleaved[di >> 3] >> (7 - (di & 7))) & 1;
+                        di++;
+                    }
+                }
+            }
+        }
+    }
+    // 掩码
+    var maskFuncs = [
+        function(x, y) { return (x + y) % 2 === 0; },
+        function(x, y) { return y % 2 === 0; },
+        function(x, y) { return x % 3 === 0; },
+        function(x, y) { return (x + y) % 3 === 0; },
+        function(x, y) { return (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0; },
+        function(x, y) { return (x * y) % 2 + (x * y) % 3 === 0; },
+        function(x, y) { return ((x * y) % 2 + (x * y) % 3) % 2 === 0; },
+        function(x, y) { return ((x + y) % 2 + (x * y) % 3) % 2 === 0; }
+    ];
+    function applyMask(mask, mat) {
+        var fn = maskFuncs[mask];
+        for (var yy = 0; yy < size; yy++) {
+            for (var xx = 0; xx < size; xx++) {
+                if (!isFunc[yy][xx] && fn(xx, yy)) mat[yy][xx] ^= 1;
+            }
+        }
+    }
+    function penalty(mat) {
+        var score = 0;
+        // N1：行/列连续同色
+        for (var i2 = 0; i2 < size; i2++) {
+            var runRow = 1, runCol = 1;
+            for (var j3 = 1; j3 < size; j3++) {
+                if (mat[i2][j3] === mat[i2][j3 - 1]) runRow++;
+                else { if (runRow >= 5) score += runRow - 2; runRow = 1; }
+                if (mat[j3][i2] === mat[j3 - 1][i2]) runCol++;
+                else { if (runCol >= 5) score += runCol - 2; runCol = 1; }
+            }
+            if (runRow >= 5) score += runRow - 2;
+            if (runCol >= 5) score += runCol - 2;
+        }
+        // N2：2x2 同色块
+        for (var y3 = 1; y3 < size; y3++) {
+            for (var x3 = 1; x3 < size; x3++) {
+                if (mat[y3][x3] === mat[y3][x3 - 1] && mat[y3][x3] === mat[y3 - 1][x3] && mat[y3][x3] === mat[y3 - 1][x3 - 1]) score += 3;
+            }
+        }
+        // N3：1:1:3:1:1 前后各 4 浅模块
+        var pat = [1, 0, 1, 1, 1, 0, 1];
+        function checkSeq(seq) {
+            var cnt = 0;
+            for (var s = 0; s + 7 <= size; s++) {
+                var ok = true;
+                for (var p2 = 0; p2 < 7; p2++) {
+                    if (seq[s + p2] !== pat[p2]) { ok = false; break; }
+                }
+                if (!ok) continue;
+                var before = true, after = true;
+                for (var b3 = Math.max(0, s - 4); b3 < s; b3++) if (seq[b3]) { before = false; break; }
+                for (var a3 = s + 7; a3 < Math.min(size, s + 11); a3++) if (seq[a3]) { after = false; break; }
+                if (before || after) cnt += 40;
+            }
+            return cnt;
+        }
+        for (var i3 = 0; i3 < size; i3++) {
+            score += checkSeq(mat[i3]);
+            var colSeq = [];
+            for (var j4 = 0; j4 < size; j4++) colSeq.push(mat[j4][i3]);
+            score += checkSeq(colSeq);
+        }
+        // N4：黑白比例
+        var dark = 0;
+        for (var y4 = 0; y4 < size; y4++) for (var x4 = 0; x4 < size; x4++) dark += mat[y4][x4];
+        var ratio = dark * 100 / (size * size);
+        score += Math.floor(Math.abs(ratio - 50) / 5) * 10;
+        return score;
+    }
+    var bestMask = 0, bestScore = Infinity, bestMat = null;
+    [0, 1, 2, 3, 4, 5, 6, 7].forEach(function(m) {
+        var mat = modules.map(function(row) { return row.slice(); });
+        applyMask(m, mat);
+        var sc = penalty(mat);
+        if (sc < bestScore) { bestScore = sc; bestMask = m; bestMat = mat; }
+    });
+    modules = bestMat;
+    // 写入格式信息（级别 M = 00）
+    var fmtData = (0 << 3) | bestMask;
+    var fmtRem = fmtData;
+    for (var fi = 0; fi < 10; fi++) fmtRem = (fmtRem << 1) ^ ((fmtRem >> 9) * 0x537);
+    var fmtBits = ((fmtData << 10) | (fmtRem & 0x3FF)) ^ 0x5412;
+    function setFmt(x, y, i) { modules[y][x] = (fmtBits >> i) & 1; }
+    for (var fm = 0; fm <= 5; fm++) setFmt(8, fm, fm);
+    setFmt(8, 7, 6);
+    setFmt(8, 8, 7);
+    setFmt(7, 8, 8);
+    for (var fm2 = 9; fm2 < 15; fm2++) setFmt(14 - fm2, 8, fm2);
+    for (var fm3 = 0; fm3 < 8; fm3++) setFmt(size - 1 - fm3, 8, fm3);
+    for (var fm4 = 8; fm4 < 15; fm4++) setFmt(8, size - 15 + fm4, fm4);
+    modules[size - 8][8] = 1;
+    return { size: size, modules: modules, version: version, mask: bestMask };
+}
+
+// 渲染为 canvas（含 4 模块静区）；内容超长返回 null
+function qrMakeCanvas(text, px) {
+    var q = qrGenerate(text);
+    if (!q) return null;
+    var quiet = 4;
+    var total = q.size + quiet * 2;
+    var scale = Math.max(1, Math.floor(px / total));
+    var canvas = document.createElement('canvas');
+    canvas.width = canvas.height = total * scale;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#000';
+    for (var y = 0; y < q.size; y++) {
+        for (var x = 0; x < q.size; x++) {
+            if (q.modules[y][x]) ctx.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
+        }
+    }
+    return canvas;
 }
 
 // ==================== 分享下载外链（蓝奏云风格独立下载页） ====================
@@ -3973,50 +4310,60 @@ function makeShareUrl(items) {
     return window.location.origin + '/s/' + b64urlEncode(JSON.stringify(data));
 }
 
-function openShareModal(items, title, showQr) {
-    var shareUrl = makeShareUrl(items);
-    document.getElementById('shareTitle').textContent = t('分享') + ': ' + title;
-    document.getElementById('shareUrl').value = shareUrl;
-    document.getElementById('shareMessage').className = 'message';
-    document.getElementById('shareMessage').textContent = '';
-    var qrImg = document.getElementById('shareQrImg');
-    qrImg.style.display = 'none';
-    if (showQr) {
-        qrImg.src = '/api/qr?text=' + encodeURIComponent(shareUrl) + '&size=200';
-        qrImg.onload = function() { qrImg.style.display = ''; };
-        qrImg.onerror = function() { qrImg.style.display = 'none'; };
-    }
-    document.getElementById('shareModal').classList.add('show');
-    // 自动复制到剪贴板
-    copyShareUrl();
-}
-
-function closeShareModal() {
-    document.getElementById('shareModal').classList.remove('show');
-}
-
-function copyShareUrl() {
-    var input = document.getElementById('shareUrl');
-    input.select();
-    input.setSelectionRange(0, 99999);
-    var ok = false;
-    try {
-        ok = document.execCommand('copy');
-    } catch (e) {}
-    if (!ok && navigator.clipboard) {
-        navigator.clipboard.writeText(input.value).then(function() {
-            setMsg('shareMessage', t('链接已复制到剪贴板'), 'success');
-        }).catch(function() {
-            setMsg('shareMessage', t('复制失败，请手动复制'), 'error');
+// 复制文本到剪贴板（无弹窗场景：先 clipboard API，失败回退隐藏 textarea + execCommand）
+function copyTextToClipboard(text, onOk, onFail) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(onOk, function() {
+            legacyCopy(text) ? onOk() : onFail();
         });
-        return;
+    } else {
+        legacyCopy(text) ? onOk() : onFail();
     }
-    setMsg('shareMessage', ok ? t('链接已复制到剪贴板') : t('复制失败，请手动复制'), ok ? 'success' : 'error');
+    function legacyCopy(s) {
+        var ta = document.createElement('textarea');
+        ta.value = s;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) {}
+        document.body.removeChild(ta);
+        return ok;
+    }
 }
 
-function openSharePage() {
-    var url = document.getElementById('shareUrl').value;
-    if (url) window.open(url, '_blank');
+// 复制外链：直接复制到剪贴板（不弹窗），toast 反馈
+function copyShareLink(items) {
+    var shareUrl = makeShareUrl(items);
+    copyTextToClipboard(shareUrl, function() {
+        showToast(t('链接已复制到剪贴板'));
+        setTimeout(hideToast, 2000);
+    }, function() {
+        showToast(t('复制失败，请手动复制') + ': ' + shareUrl);
+        setTimeout(hideToast, 4000);
+    });
+}
+
+// 二维码下载：弹窗只显示二维码（手机扫码直达下载页）
+function openQrModal(items, title) {
+    var shareUrl = makeShareUrl(items);
+    document.getElementById('qrTitle').textContent = t('二维码下载') + ': ' + title;
+    var holder = document.getElementById('qrCanvasHolder');
+    holder.innerHTML = '';
+    var canvas = qrMakeCanvas(shareUrl, 220);
+    if (canvas) {
+        canvas.className = 'qr-canvas';
+        holder.appendChild(canvas);
+        document.getElementById('qrHint').textContent = t('扫码在手机上下载');
+    } else {
+        document.getElementById('qrHint').textContent = t('内容过长，无法生成二维码');
+    }
+    document.getElementById('qrModal').classList.add('show');
+}
+
+function closeQrModal() {
+    document.getElementById('qrModal').classList.remove('show');
 }
 
 // ---- 分享下载页（/s/<data> 路由） ----
@@ -4053,21 +4400,9 @@ function renderSharePage() {
     container.className = '';
     container.innerHTML = '';
 
-    // 蓝奏云风格下载页
+    // 蓝奏云风格下载页（无任何图标）
     var card = document.createElement('div');
     card.style.cssText = 'max-width:520px;margin:40px auto;background:#fff;border-radius:16px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.08);text-align:center;';
-
-    // 图标
-    var icon = document.createElement('div');
-    icon.style.cssText = 'font-size:48px;margin-bottom:16px;';
-    var firstItem = data.items[0];
-    if (firstItem.t === 'dir') icon.textContent = '📁';
-    else if (/\.(jpe?g|png|gif|webp|avif|svg|bmp)$/i.test(firstItem.n)) icon.textContent = '🖼️';
-    else if (/\.(mp4|mkv|avi|mov|wmv|flv|webm)$/i.test(firstItem.n)) icon.textContent = '🎬';
-    else if (/\.(mp3|wav|flac|aac|ogg|wma)$/i.test(firstItem.n)) icon.textContent = '🎵';
-    else if (/\.(zip|rar|7z|tar|gz)$/i.test(firstItem.n)) icon.textContent = '📦';
-    else icon.textContent = '📄';
-    card.appendChild(icon);
 
     // 标题
     var title = document.createElement('h2');
@@ -4091,7 +4426,7 @@ function renderSharePage() {
 
         var nameSpan = document.createElement('span');
         nameSpan.style.cssText = 'color:#333;font-size:14px;word-break:break-all;flex:1;';
-        nameSpan.textContent = (item.t === 'dir' ? '📁 ' : '📄 ') + item.n;
+        nameSpan.textContent = item.n;
         row.appendChild(nameSpan);
 
         if (item.s) {
@@ -4137,20 +4472,19 @@ function renderSharePage() {
     });
     card.appendChild(dlBtn);
 
-    // QR 码
-    var qrDiv = document.createElement('div');
-    qrDiv.style.cssText = 'margin-top:24px;padding-top:20px;border-top:1px solid #f0f0f0;';
-    var qrImg = document.createElement('img');
-    qrImg.src = '/api/qr?text=' + encodeURIComponent(window.location.href) + '&size=150';
-    qrImg.style.cssText = 'width:150px;height:150px;border-radius:8px;';
-    qrImg.alt = '扫码下载';
-    qrImg.onerror = function() { qrDiv.style.display = 'none'; };
-    qrDiv.appendChild(qrImg);
-    var qrText = document.createElement('div');
-    qrText.style.cssText = 'font-size:12px;color:#999;margin-top:8px;';
-    qrText.textContent = t('扫码在手机上下载');
-    qrDiv.appendChild(qrText);
-    card.appendChild(qrDiv);
+    // QR 码（本地生成，无服务端依赖）
+    var qrCanvas = qrMakeCanvas(window.location.href, 150);
+    if (qrCanvas) {
+        var qrDiv = document.createElement('div');
+        qrDiv.style.cssText = 'margin-top:24px;padding-top:20px;border-top:1px solid #f0f0f0;';
+        qrCanvas.style.cssText = 'width:150px;height:150px;border-radius:8px;';
+        qrDiv.appendChild(qrCanvas);
+        var qrText = document.createElement('div');
+        qrText.style.cssText = 'font-size:12px;color:#999;margin-top:8px;';
+        qrText.textContent = t('扫码在手机上下载');
+        qrDiv.appendChild(qrText);
+        card.appendChild(qrDiv);
+    }
 
     container.appendChild(card);
 }
@@ -7434,6 +7768,8 @@ function anyModalOpen() {
 
 function loadFileList() {
     if (listLoading) return;
+    // 分享下载页（/s/…）不刷新列表——否则 45s 自动刷新会把下载页冲成目录/错误页
+    if (isSharePage()) return;
     // 弹窗打开时暂停列表刷新（避免弹窗内容被覆盖/页面切换感）
     if (anyModalOpen()) {
         listLoading = false;
@@ -7744,7 +8080,7 @@ function batchDownload() {
     runParallelDownload(models, '');
 }
 
-// 批量分享：生成包含所有选中文件的分享链接
+// 批量分享：复制链接直接复制（不弹窗）
 function batchShare() {
     var keys = Object.keys(selectedKeys);
     if (!keys.length) return;
@@ -7752,7 +8088,18 @@ function batchShare() {
     var items = models.map(function(m) {
         return { path: m.path, name: m.displayName || m.name, type: m.kind === 'dir' ? 'dir' : 'file', size: m.size || 0 };
     });
-    openShareModal(items, t('批量分享') + ' (' + items.length + ')', true);
+    copyShareLink(items);
+}
+
+// 批量分享二维码：只显示二维码的弹窗
+function batchQr() {
+    var keys = Object.keys(selectedKeys);
+    if (!keys.length) return;
+    var models = keys.map(function(k) { return selectedKeys[k]; });
+    var items = models.map(function(m) {
+        return { path: m.path, name: m.displayName || m.name, type: m.kind === 'dir' ? 'dir' : 'file', size: m.size || 0 };
+    });
+    openQrModal(items, t('批量分享') + ' (' + items.length + ')');
 }
 
 // 文件级并行下载池：poolLimit 个文件并行，池内所有文件共享一个全局连接
@@ -10060,6 +10407,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('batchInvertBtn').addEventListener('click', invertSelection);
     document.getElementById('batchDownloadBtn').addEventListener('click', batchDownload);
     document.getElementById('batchShareBtn').addEventListener('click', batchShare);
+    document.getElementById('batchQrBtn').addEventListener('click', batchQr);
     document.getElementById('batchStopBtn').addEventListener('click', stopBatchDownload);
     document.getElementById('concurrencySelect').addEventListener('change', function() {
         document.getElementById('concurrencyCustom').style.display = this.value === 'custom' ? '' : 'none';

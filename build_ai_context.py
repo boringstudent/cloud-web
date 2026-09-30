@@ -118,8 +118,9 @@ DATAFLOW = {
     ],
     'share': [
         'makeShareUrl：{v:1, items:[{p:路径,n:名称,t:类型,s:大小}], ts} JSON → b64url 编码 → {origin}/s/<b64url>，纯前端无服务端存储',
-        'openShareModal 显示链接与二维码（shareQrImg），copyShareUrl 复制；右键菜单/批量栏均可发起',
-        'isSharePage（路径 /s/ 前缀）→ renderSharePage：b64url 解码还原清单，隐藏网盘 UI 展示下载页；损坏链接显示错误提示',
+        '复制外链=copyShareLink 直复制不弹窗（copyTextToClipboard+toast）；二维码=openQrModal 只显示二维码（qrMakeCanvas 本地生成）；右键菜单/批量栏（复制链接+二维码按钮）均可发起',
+        'isSharePage（路径 /s/ 前缀）→ renderSharePage：b64url 解码还原清单，隐藏网盘 UI 展示无图标下载页（loadFileList 已守卫 isSharePage 防自动刷新冲突）；损坏链接显示错误提示',
+        'QR 码前端零依赖生成（qrGenerate：byte 模式/级别 M/版本 1-40/8 掩码惩罚评估），不经服务端',
     ],
 }
 
@@ -301,8 +302,8 @@ FRONTEND_STATIC = {
         'delete*/batch*/toggleSelect/*Selection*': '删除与批量操作（并行删除冲突自适应/批量下载池）',
         'task*/showBgTask/updateBgTask/*BgTask*': '全局任务管理器（同类互斥/后台浮泡/快照持久化）',
         'admin*/withAdminCreds/openAdminUserMenu': '用户管理（仅 admin；用户右键菜单 adminUserMenu、独立添加弹窗 adminAddModal，凭据复用缓存哈希）',
-        'switchAccountTab/changeOwn*/deleteOwnAccount': '我的账户（标签页：头像/改密/注销）',
-        'share*/makeShareUrl/b64url*/isSharePage/renderSharePage/copyShareUrl': '分享链接（b64url 编码 /s/ URL、二维码、分享页渲染，纯前端无服务端存储）',
+        'switchAccountTab/changeOwn*/deleteOwnAccount': '我的账户（用户菜单三级子菜单+弹窗标签页：头像/密码/注销，openAccountModal(tab) 直达对应页）',
+        'share*/makeShareUrl/b64url*/isSharePage/renderSharePage/copyShareLink/openQrModal/qr*/copyTextToClipboard': '分享链接（b64url 编码 /s/ URL、本地 QR 生成、分享页渲染，纯前端无服务端存储）',
         'svc*/check*/measureRtt': '服务状态三路检测（EO/Git外部/CF，10min 自动刷新）',
         'login/logout/saveAuth/getSavedAuth/*Remember': '认证会话（SHA-512/持久化/记住密码哈希迁移）',
         'theme*/applyTheme': '主题切换（auto/light/dark）',
