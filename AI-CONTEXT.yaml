@@ -1,9 +1,9 @@
 meta:
   schema: 1
-  generated_at: '2026-10-01T00:41:20'
-  git_commit: 9e5fc657cb398c2107c4738337b8875248085278
-  git_commit_short: 9e5fc65
-  build_version: '1790786479'
+  generated_at: '2026-10-01T00:42:06'
+  git_commit: ca7a94d7b0951b2b4e164b25fe96461d9e41739b
+  git_commit_short: ca7a94d
+  build_version: '1790786525'
   generator: build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）
 project:
   name: cloud-web
@@ -17,9 +17,9 @@ project:
 files:
 - name: build_eo.py
   role: EO 一体化构建脚本（后端模板+前端资源烘焙→eo.js）
-  bytes: 52897
-  sha1: '14916419'
-  lines: 1245
+  bytes: 53061
+  sha1: 7151dee3
+  lines: 1247
 - name: build_ai_context.py
   role: 本生成器：重建 AI-CONTEXT.yaml
   bytes: 31046
@@ -27,8 +27,8 @@ files:
   lines: 467
 - name: AI-CONTEXT.yaml
   role: AI 专用项目理解文件（本生成器产物，勿手改）
-  bytes: 43177
-  sha1: 5836e3eb
+  bytes: 43730
+  sha1: 2a6db136
 - name: template.html
   role: 唯一 HTML 模板
   bytes: 25060
@@ -86,7 +86,7 @@ files:
 - name: eo.js
   role: EO 部署产物（gitignore，含 key 属服务端机密）
   bytes: 763607
-  sha1: d30f31ce
+  sha1: 05fcf879
   lines: 14463
   gitignored: true
 - name: .eo-key
@@ -310,10 +310,10 @@ backend:
   - line: 1103
     name: make_commit_message
     lang: python
-  - line: 1114
+  - line: 1116
     name: git_commit_and_push
     lang: python
-  - line: 1172
+  - line: 1174
     name: build
     lang: python
 frontend:

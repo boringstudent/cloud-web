@@ -1108,7 +1108,9 @@ def make_commit_message(paths, version):
         if label not in labels:
             labels.append(label)
     summary = '、'.join(labels) if labels else '项目文件'
-    return f'build: 更新{summary}（v{version}）'
+    # 中文与 ASCII 领域名（如 "AI 项目上下文"）之间补空格，保持排版可读
+    sep = ' ' if labels and labels[0][0].isascii() else ''
+    return f'build: 更新{sep}{summary}（v{version}）'
 
 
 def git_commit_and_push(version):
