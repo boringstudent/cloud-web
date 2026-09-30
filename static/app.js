@@ -1018,6 +1018,27 @@ var I18N = {
         '跳转到所在目录并定位': 'Go to folder & locate',
         '返回顶部': 'Back to top',
         '个文件（点击多选 · 右键操作 · 可定位到所在目录）': 'file(s) (click to select, right-click for more)',
+        '分享链接': 'Share link',
+        '批量分享': 'Batch share',
+        '复制外链': 'Copy link',
+        '二维码下载': 'QR download',
+        '复制链接': 'Copy link',
+        '打开下载页': 'Open download page',
+        '分享': 'Share',
+        '文件分享': 'File share',
+        '立即下载': 'Download now',
+        '打包下载 (ZIP)': 'Download ZIP',
+        '扫码在手机上下载': 'Scan to download on phone',
+        '分享时间': 'Shared at',
+        '切换角色': 'Toggle role',
+        '删除用户': 'Delete user',
+        '密码': 'Password',
+        '注销': 'Delete',
+        '分享链接无效或已损坏': 'Share link is invalid or corrupted',
+        '分享链接无效': 'Invalid share link',
+        '链接已复制到剪贴板': 'Link copied to clipboard',
+        '复制失败，请手动复制': 'Copy failed, please copy manually',
+        '下载中...': 'Downloading...',
         '未知错误': 'Unknown error'
     },
     'zh-TW': {
@@ -1170,6 +1191,26 @@ var I18N = {
         '跳转到所在目录并定位': '跳轉到所在目錄並定位',
         '返回顶部': '返回頂部',
         '个文件（点击多选 · 右键操作 · 可定位到所在目录）': '個檔案（點擊多選 · 右鍵操作 · 可定位到所在目錄）',
+        '分享链接': '分享連結',
+        '批量分享': '批次分享',
+        '复制外链': '複製連結',
+        '二维码下载': '二維碼下載',
+        '复制链接': '複製連結',
+        '打开下载页': '開啟下載頁',
+        '分享': '分享',
+        '文件分享': '檔案分享',
+        '立即下载': '立即下載',
+        '打包下载 (ZIP)': '打包下載 (ZIP)',
+        '扫码在手机上下载': '掃碼在手機上下載',
+        '分享时间': '分享時間',
+        '切换角色': '切換角色',
+        '删除用户': '刪除使用者',
+        '注销': '註銷',
+        '分享链接无效或已损坏': '分享連結無效或已損壞',
+        '分享链接无效': '分享連結無效',
+        '链接已复制到剪贴板': '連結已複製到剪貼簿',
+        '复制失败，请手动复制': '複製失敗，請手動複製',
+        '下载中...': '下載中...',
         '未知错误': '未知錯誤'
     },
     'ja': {
@@ -1322,6 +1363,26 @@ var I18N = {
         '跳转到所在目录并定位': 'フォルダへ移動して位置を表示',
         '返回顶部': 'トップへ戻る',
         '个文件（点击多选 · 右键操作 · 可定位到所在目录）': '件（クリックで選択・右クリックで操作）',
+        '分享链接': '共有リンク',
+        '批量分享': '一括共有',
+        '复制外链': 'リンクをコピー',
+        '二维码下载': 'QRコードでダウンロード',
+        '复制链接': 'リンクをコピー',
+        '打开下载页': 'ダウンロードページを開く',
+        '分享': '共有',
+        '文件分享': 'ファイル共有',
+        '立即下载': '今すぐダウンロード',
+        '打包下载 (ZIP)': 'ZIPでダウンロード',
+        '扫码在手机上下载': 'QRコードをスキャンしてスマホでダウンロード',
+        '分享时间': '共有日時',
+        '切换角色': 'ロールを切替',
+        '删除用户': 'ユーザーを削除',
+        '注销': '削除',
+        '分享链接无效或已损坏': '共有リンクが無効または破損しています',
+        '分享链接无效': '共有リンクが無効です',
+        '链接已复制到剪贴板': 'リンクをクリップボードにコピーしました',
+        '复制失败，请手动复制': 'コピーに失敗しました。手動でコピーしてください',
+        '下载中...': 'ダウンロード中...',
         '未知错误': '不明なエラー'
     }
 };
@@ -1344,7 +1405,7 @@ var I18N_BINDINGS = [
     ['#userAvatarBtn', 'title', '账户菜单'],
     ['#userMenu div:nth-of-type(2)', 'text', '用户信息修改'],
     ['#userMenuAdmin', 'text', '用户管理'],
-    ['#userMenu div:nth-of-type(4)', 'text', '退出登录'],
+    ['#userMenuLogout', 'text', '退出登录'],
     ['#refreshIndicator', 'title', '正在刷新'],
     ['#svcStatusText', 'text', '服务检测中…'],
     ['#loginModal h2', 'text', '登录'],
@@ -1382,14 +1443,14 @@ var I18N_BINDINGS = [
     ['#savePreviewBtn', 'text', '保存修改'],
     ['#propertiesTitle', 'text', '属性'],
     ['#accountModal h2', 'text', '我的账户'],
-    ['#accountModal h3:nth-of-type(1)', 'text', '头像'],
-    ['#accountModal h3:nth-of-type(2)', 'text', '修改密码'],
-    ['#accountModal h3:nth-of-type(3)', 'text', '注销账户'],
-    ['#accountModal div:nth-of-type(1) label', 'text', '头像 URL（留空使用默认图标）'],
-    ['#accountModal div:nth-of-type(2) label', 'text', '当前密码'],
-    ['#accountModal div:nth-of-type(3) label', 'text', '新密码'],
-    ['#accountModal div:nth-of-type(4) label', 'text', '确认新密码'],
-    ['#accountModal div:nth-of-type(5) label', 'text', '输入密码确认注销'],
+    ['#tabAvatar', 'text', '头像'],
+    ['#tabPassword', 'text', '密码'],
+    ['#tabDelete', 'text', '注销'],
+    ['#avLabel', 'text', '头像 URL（留空使用默认图标）'],
+    ['#cpCurrentLabel', 'text', '当前密码'],
+    ['#cpNewLabel', 'text', '新密码'],
+    ['#cpConfirmLabel', 'text', '确认新密码'],
+    ['#daLabel', 'text', '输入密码确认注销'],
     ['#cpCurrent', 'ph', '请输入当前密码'],
     ['#cpNew', 'ph', '大于8位，含大小写字母和数字'],
     ['#cpConfirm', 'ph', '再次输入新密码'],
@@ -1401,14 +1462,17 @@ var I18N_BINDINGS = [
     ['#adminRefreshBtn', 'title', '刷新'],
     ['#adminSearchInput', 'ph', '搜索用户名'],
     ['#adminListToggle', 'owntext', '用户列表'],
-    ['#adminModal h3:nth-of-type(1)', 'text', '添加用户'],
-    ['#adminModal div:nth-of-type(4) label', 'text', '用户名'],
-    ['#adminModal div:nth-of-type(5) label', 'text', '密码（明文，将加密存储）'],
-    ['#adminModal div:nth-of-type(6) label', 'text', '角色'],
-    ['#adminModal div:nth-of-type(7) label', 'text', '头像 URL（可选）'],
+    ['#adminAddOpenBtn', 'text', '添加用户'],
+    ['#adminNewUsernameLabel', 'text', '用户名'],
+    ['#adminNewPasswordLabel', 'text', '密码（明文，将加密存储）'],
+    ['#adminNewRoleLabel', 'text', '角色'],
+    ['#adminNewAvatarLabel', 'text', '头像 URL（可选）'],
     ['#adminNewUsername', 'ph', '新用户名'],
     ['#adminNewPassword', 'ph', '新用户密码'],
     ['#adminAddBtn', 'text', '添加用户'],
+    ['#adminMenuPassword', 'text', '修改密码'],
+    ['#adminMenuRole', 'text', '切换角色'],
+    ['#adminMenuDelete', 'text', '删除用户'],
     ['#bgTaskClose', 'title', '关闭提示'],
     ['#taskDlCur', 'title', '当前实际并行数'],
     ['#taskDlConc', 'title', '下载并行数'],
@@ -1428,15 +1492,20 @@ var I18N_BINDINGS = [
     ['#batchSelectAllBtn', 'text', '全选'],
     ['#batchInvertBtn', 'text', '反选'],
     ['#batchDownloadBtn', 'text', '批量下载'],
+    ['#batchShareBtn', 'text', '分享链接'],
     ['#batchStopBtn', 'text', '停止下载'],
     ['#batchDeleteBtn', 'text', '批量删除'],
     ['#batchCancelBtn', 'text', '取消'],
     ['#menuLocate', 'text', '跳转到所在目录并定位'],
     ['#backToTopBtn', 'title', '返回顶部'],
+    ['#copyShareBtn', 'text', '复制链接'],
+    ['#openSharePageBtn', 'text', '打开下载页'],
     ['#menuProperties', 'text', '属性'],
     ['#menuPreview', 'text', '预览'],
     ['#menuEdit', 'text', '修改'],
     ['#menuDownload', 'text', '下载'],
+    ['#menuShare', 'text', '复制外链'],
+    ['#menuQr', 'text', '二维码下载'],
     ['#menuDelete', 'text', '删除'],
     ['#themeSelect', 'title', '主题'],
     ['#themeSelect option[value="auto"]', 'text', '跟随系统'],
@@ -1593,8 +1662,6 @@ function updateAuthBtn() {
             if (nameEl) nameEl.textContent = saved.u + (saved.role === 'admin' ? t('（管理员）') : '');
             var adminItem = document.getElementById('userMenuAdmin');
             if (adminItem) adminItem.style.display = saved.role === 'admin' ? '' : 'none';
-            var statsItem = document.getElementById('userMenuStats');
-            if (statsItem) statsItem.style.display = saved.role === 'admin' ? '' : 'none';
             renderUserAvatar();
         } else {
             closeUserMenu();
@@ -1876,82 +1943,6 @@ function openAdminModal() {
 
 function closeAdminModal() {
     document.getElementById('adminModal').classList.remove('show');
-}
-
-// 访问统计弹窗
-function openStatsModal() {
-    document.getElementById('statsMessage').className = 'message';
-    document.getElementById('statsMessage').textContent = '';
-    document.getElementById('statsModal').classList.add('show');
-    loadStats();
-}
-
-function closeStatsModal() {
-    document.getElementById('statsModal').classList.remove('show');
-}
-
-function loadStats() {
-    var refreshBtn = document.getElementById('statsRefreshBtn');
-    if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.classList.add('spinning'); }
-    document.getElementById('statsContent').innerHTML = '<div class="loading">加载中...</div>';
-    withAdminCreds(function(creds) {
-        if (!creds) {
-            document.getElementById('statsContent').innerHTML = '<div class="message error">需要管理员权限</div>';
-            if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.classList.remove('spinning'); }
-            return;
-        }
-        apiGetJson(API_BASE + '/api/stats?admin_user=' + encodeURIComponent(creds.admin_user)
-            + '&admin_pass=' + encodeURIComponent(creds.admin_pass) + '&_=' + Date.now(),
-            function(err, data) {
-                if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.classList.remove('spinning'); }
-                if (err || !data || data.error) {
-                    document.getElementById('statsContent').innerHTML =
-                        '<div class="message error">加载失败: ' + (err || data && data.error || '未知错误') + '</div>';
-                    return;
-                }
-                renderStats(data);
-            });
-    });
-}
-
-function renderStats(data) {
-    var container = document.getElementById('statsContent');
-    var html = '';
-    html += '<div style="font-size:28px;font-weight:700;color:#2c82c9;margin-bottom:16px;">总访问量: ' + (data.total || 0) + '</div>';
-    if (data.days && data.days.length) {
-        html += '<div style="margin-bottom:12px;font-size:13px;color:#999;">最近7天</div>';
-        html += '<div style="display:flex;align-items:flex-end;gap:6px;height:120px;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #eee;">';
-        var max = 1;
-        data.days.forEach(function(d) { if (d.count > max) max = d.count; });
-        data.days.forEach(function(d) {
-            var h = Math.max(4, Math.round(d.count / max * 100));
-            html += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;">';
-            html += '<div style="font-size:11px;color:#666;">' + d.count + '</div>';
-            html += '<div style="width:100%;height:' + h + 'px;background:#2c82c9;border-radius:4px 4px 0 0;min-width:24px;"></div>';
-            html += '<div style="font-size:11px;color:#999;">' + d.date.slice(5) + '</div>';
-            html += '</div>';
-        });
-        html += '</div>';
-    }
-    if (data.recent && data.recent.length) {
-        html += '<div style="margin-bottom:8px;font-size:13px;color:#999;">最近访问</div>';
-        html += '<div style="max-height:240px;overflow-y:auto;border:1px solid #eee;border-radius:8px;">';
-        data.recent.forEach(function(v) {
-            var t = new Date(v.t);
-            var timeStr = t.toLocaleString('zh-CN');
-            var ua = (v.u || '').substring(0, 60);
-            var path = (v.p || '/');
-            html += '<div style="padding:8px 12px;border-bottom:1px solid #f0f0f0;font-size:13px;">';
-            html += '<div style="display:flex;justify-content:space-between;color:#666;">';
-            html += '<span>' + escapeHtml(path) + '</span>';
-            html += '<span style="color:#999;font-size:12px;">' + timeStr + '</span>';
-            html += '</div>';
-            if (ua) html += '<div style="color:#aaa;font-size:11px;margin-top:2px;word-break:break-all;">' + escapeHtml(ua) + '</div>';
-            html += '</div>';
-        });
-        html += '</div>';
-    }
-    container.innerHTML = html;
 }
 
 // 用户列表走 /api/users（管理员鉴权），服务端返回脱敏数据（密码字段为 ***），
@@ -2611,89 +2602,10 @@ function closeUploadModal() {
     document.getElementById('stopUploadBtn').style.display = 'none';
     document.getElementById('restartUploadBtn').style.display = 'none';
     resetUploadSpeedHist();
-    uploadTargetPathOverride = null;   // 重置媒体上传路径覆盖
     pendingFiles = [];
     document.getElementById('selectedFiles').textContent = '';
     document.getElementById('fileInput').value = '';
     document.getElementById('folderInput').value = '';
-}
-
-// ---- 媒体上传（电影/剧集/漫画等，存储到 media/<type>/<name>/<episode>/） ----
-var mediaPendingFiles = [];
-var uploadTargetPathOverride = null;   // 非空时上传到此路径而非当前目录
-
-function openMediaUploadModal() {
-    if (!getSavedAuth()) {
-        openLoginModal();
-        setMsg('loginMessage', '请先登录后再上传文件', 'error');
-        return;
-    }
-    document.getElementById('mediaUploadModal').classList.add('show');
-    document.getElementById('mediaUploadMessage').className = 'message';
-    document.getElementById('mediaUploadMessage').textContent = '';
-}
-
-function closeMediaUploadModal() {
-    document.getElementById('mediaUploadModal').classList.remove('show');
-    mediaPendingFiles = [];
-    document.getElementById('mediaSelectedFiles').textContent = '';
-    document.getElementById('mediaFileInput').value = '';
-}
-
-function handleMediaFileInput(input) {
-    var list = [];
-    for (var i = 0; i < input.files.length; i++) {
-        list.push(input.files[i]);
-    }
-    mediaPendingFiles = list;
-    var el = document.getElementById('mediaSelectedFiles');
-    if (!list.length) { el.textContent = ''; return; }
-    var names = [];
-    for (var i = 0; i < list.length && i < 5; i++) names.push(list[i].name);
-    el.textContent = '已选择 ' + list.length + ' 个文件: ' + names.join(', ') + (list.length > 5 ? ' 等' : '');
-}
-
-function startMediaUpload() {
-    var type = document.getElementById('mediaType').value;
-    var name = document.getElementById('mediaName').value.trim();
-    var episode = document.getElementById('mediaEpisode').value.trim();
-    if (!name) {
-        setMsg('mediaUploadMessage', '请输入名称', 'error');
-        return;
-    }
-    if (!mediaPendingFiles.length) {
-        setMsg('mediaUploadMessage', '请选择要上传的文件', 'error');
-        return;
-    }
-    // 构建目标路径：media/<type>/<name>[/episode]
-    var targetPath = 'media/' + type + '/' + name;
-    if (episode) targetPath += '/' + episode;
-    uploadTargetPathOverride = targetPath;
-
-    // 将媒体文件转为 pendingFiles 格式（relativePath 只有文件名，无子目录）
-    pendingFiles = mediaPendingFiles.map(function(f) {
-        return { file: f, relativePath: f.name };
-    });
-
-    document.getElementById('mediaUploadBtn').disabled = true;
-    setMsg('mediaUploadMessage', '正在上传到 ' + targetPath + ' ...', 'success');
-
-    // 复用常规上传管线
-    probeCfUpload(function(cfOk) {
-        if (cfOk) {
-            showToast('上传双通道已启用（EO + CF）');
-        } else {
-            showToast('CF 上传通道不可用（' + (cfUploadHint || 'CF 侧未配置服务端 key 或不可达') + '），本次仅经 EO 上传');
-        }
-        setTimeout(hideToast, 4000);
-        chunkSizeLevel = 0;
-        // 关闭媒体弹窗，打开常规上传弹窗显示进度
-        closeMediaUploadModal();
-        document.getElementById('uploadModal').classList.add('show');
-        // 更新已选文件显示
-        setPendingFiles(pendingFiles);
-        startUpload();
-    });
 }
 
 var SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -4063,7 +3975,7 @@ function makeShareUrl(items) {
 
 function openShareModal(items, title, showQr) {
     var shareUrl = makeShareUrl(items);
-    document.getElementById('shareTitle').textContent = '分享: ' + title;
+    document.getElementById('shareTitle').textContent = t('分享') + ': ' + title;
     document.getElementById('shareUrl').value = shareUrl;
     document.getElementById('shareMessage').className = 'message';
     document.getElementById('shareMessage').textContent = '';
@@ -4093,13 +4005,13 @@ function copyShareUrl() {
     } catch (e) {}
     if (!ok && navigator.clipboard) {
         navigator.clipboard.writeText(input.value).then(function() {
-            setMsg('shareMessage', '链接已复制到剪贴板', 'success');
+            setMsg('shareMessage', t('链接已复制到剪贴板'), 'success');
         }).catch(function() {
-            setMsg('shareMessage', '复制失败，请手动复制', 'error');
+            setMsg('shareMessage', t('复制失败，请手动复制'), 'error');
         });
         return;
     }
-    setMsg('shareMessage', ok ? '链接已复制到剪贴板' : '复制失败，请手动复制', ok ? 'success' : 'error');
+    setMsg('shareMessage', ok ? t('链接已复制到剪贴板') : t('复制失败，请手动复制'), ok ? 'success' : 'error');
 }
 
 function openSharePage() {
@@ -4121,12 +4033,12 @@ function renderSharePage() {
         data = JSON.parse(b64urlDecode(encoded));
     } catch (e) {
         document.getElementById('fileListContainer').innerHTML =
-            '<div class="message error">分享链接无效或已损坏</div>';
+            '<div class="message error">' + t('分享链接无效或已损坏') + '</div>';
         return;
     }
     if (!data || !data.items || !data.items.length) {
         document.getElementById('fileListContainer').innerHTML =
-            '<div class="message error">分享链接无效</div>';
+            '<div class="message error">' + t('分享链接无效') + '</div>';
         return;
     }
 
@@ -4135,8 +4047,7 @@ function renderSharePage() {
     document.querySelector('.search-wrap').style.display = 'none';
     document.getElementById('refreshCountdown').style.display = 'none';
     document.getElementById('uploadFabBtn').style.display = 'none';
-    document.getElementById('mediaUploadFabBtn').style.display = 'none';
-    document.getElementById('pageTitle').textContent = '文件分享';
+    document.getElementById('pageTitle').textContent = t('文件分享');
 
     var container = document.getElementById('fileListContainer');
     container.className = '';
@@ -4168,7 +4079,7 @@ function renderSharePage() {
     var subtitle = document.createElement('div');
     subtitle.style.cssText = 'font-size:13px;color:#999;margin-bottom:24px;';
     var date = new Date(data.ts * 1000);
-    subtitle.textContent = '分享时间: ' + date.toLocaleString('zh-CN');
+    subtitle.textContent = t('分享时间') + ': ' + date.toLocaleString(LANG === 'en' ? 'en-US' : LANG === 'ja' ? 'ja-JP' : LANG);
     card.appendChild(subtitle);
 
     // 文件列表
@@ -4198,7 +4109,7 @@ function renderSharePage() {
     var dlBtn = document.createElement('button');
     dlBtn.className = 'btn';
     dlBtn.style.cssText = 'width:100%;padding:12px;font-size:16px;background:#2c82c9;border-radius:10px;';
-    dlBtn.textContent = data.items.length === 1 && data.items[0].t !== 'dir' ? '立即下载' : '打包下载 (ZIP)';
+    dlBtn.textContent = data.items.length === 1 && data.items[0].t !== 'dir' ? t('立即下载') : t('打包下载 (ZIP)');
     dlBtn.addEventListener('click', function() {
         dlBtn.disabled = true;
         dlBtn.textContent = '下载中...';
@@ -4213,15 +4124,15 @@ function renderSharePage() {
             a.click();
             document.body.removeChild(a);
             dlBtn.disabled = false;
-            dlBtn.textContent = '立即下载';
+            dlBtn.textContent = t('立即下载');
         } else {
             // 多文件/文件夹打包下载
             var models = data.items.map(function(it) {
                 return { path: it.p, name: it.n, size: it.s || 0, type: it.t, displayName: it.n };
             });
-            downloadFolderZip(models, data.items.length === 1 ? data.items[0].n : '批量下载');
+            downloadFolderZip(models, data.items.length === 1 ? data.items[0].n : t('批量下载'));
             dlBtn.disabled = false;
-            dlBtn.textContent = '打包下载 (ZIP)';
+            dlBtn.textContent = t('打包下载 (ZIP)');
         }
     });
     card.appendChild(dlBtn);
@@ -4237,7 +4148,7 @@ function renderSharePage() {
     qrDiv.appendChild(qrImg);
     var qrText = document.createElement('div');
     qrText.style.cssText = 'font-size:12px;color:#999;margin-top:8px;';
-    qrText.textContent = '扫码在手机上下载';
+    qrText.textContent = t('扫码在手机上下载');
     qrDiv.appendChild(qrText);
     card.appendChild(qrDiv);
 
@@ -7841,7 +7752,7 @@ function batchShare() {
     var items = models.map(function(m) {
         return { path: m.path, name: m.displayName || m.name, type: m.kind === 'dir' ? 'dir' : 'file', size: m.size || 0 };
     });
-    openShareModal(items, '批量分享 (' + items.length + ' 个文件)', true);
+    openShareModal(items, t('批量分享') + ' (' + items.length + ')', true);
 }
 
 // 文件级并行下载池：poolLimit 个文件并行，池内所有文件共享一个全局连接
@@ -9338,7 +9249,7 @@ function runUploadTask(task, done) {
                 }
                 return;
             }
-            var currentPath = uploadTargetPathOverride !== null ? uploadTargetPathOverride : getCurrentPath();
+            var currentPath = getCurrentPath();
             var filePath = currentPath ? currentPath + '/' + task.relativePath : task.relativePath;
 
             // 以 blob 对象上传内容：不移动 git 引用，任意并行零提交冲突；
@@ -9481,7 +9392,6 @@ function finishUpload() {
             updateUploadProgressText(100, '');
             setMsg('uploadMessage', '全部上传成功！（' + blobs.length + ' 个文件分片，' + groups.length + ' 个提交）', 'success');
             setTimeout(function() {
-                uploadTargetPathOverride = null;   // 重置媒体上传路径覆盖
                 closeUploadModal();
                 document.getElementById('uploadBtn').disabled = false;
                 loadFileList();
@@ -10054,47 +9964,6 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('folderInput').addEventListener('change', function() {
         handleFileInput(this);
     });
-    // ---- 媒体上传事件绑定 ----
-    var mediaDropZone = document.getElementById('mediaDropZone');
-    if (mediaDropZone) {
-        mediaDropZone.addEventListener('click', function() {
-            document.getElementById('mediaFileInput').click();
-        });
-        mediaDropZone.addEventListener('dragover', function(e) {
-            e.preventDefault();
-            mediaDropZone.style.background = 'rgba(108, 92, 231, 0.1)';
-        });
-        mediaDropZone.addEventListener('dragleave', function(e) {
-            e.preventDefault();
-            mediaDropZone.style.background = '';
-        });
-        mediaDropZone.addEventListener('drop', function(e) {
-            e.preventDefault();
-            mediaDropZone.style.background = '';
-            var files = e.dataTransfer.files;
-            if (files && files.length) {
-                var list = [];
-                for (var i = 0; i < files.length; i++) list.push(files[i]);
-                mediaPendingFiles = list;
-                var el = document.getElementById('mediaSelectedFiles');
-                var names = [];
-                for (var i = 0; i < list.length && i < 5; i++) names.push(list[i].name);
-                el.textContent = '已选择 ' + list.length + ' 个文件: ' + names.join(', ') + (list.length > 5 ? ' 等' : '');
-            }
-        });
-    }
-    var mediaPickBtn = document.getElementById('mediaPickFileBtn');
-    if (mediaPickBtn) {
-        mediaPickBtn.addEventListener('click', function() {
-            document.getElementById('mediaFileInput').click();
-        });
-    }
-    var mediaFileInput = document.getElementById('mediaFileInput');
-    if (mediaFileInput) {
-        mediaFileInput.addEventListener('change', function() {
-            handleMediaFileInput(this);
-        });
-    }
     document.getElementById('chunkPanelToggle').addEventListener('click', function() {
         var list = document.getElementById('chunkList');
         var open = list.style.display !== 'none';

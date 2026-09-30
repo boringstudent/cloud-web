@@ -393,113 +393,6 @@ async function handleRequest(request) {
       return await handleBg(request);
     }
 
-    // ---------- 6.5 随机图 API：从存储仓库 jpg/ 文件夹随机取一张并 302 到 raw ----------
-    // 可直接作为 <img src="/api/random-img"> 使用；每次请求实时读取目录列表
-    if (path === '/api/random-img') {
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        return json({ error: 'Method not allowed' }, 405);
-      }
-      try {
-        const apiUrl = `https://api.github.com/repos/${STORAGE_REPOS[0]}/contents/jpg?ref=${BRANCH}&_=${Date.now()}`;
-        const res = await fetch(apiUrl, { headers: ghHeaders() });
-        if (!res.ok) return json({ error: 'Failed to list jpg folder: HTTP ' + res.status }, 502);
-        const items = await res.json();
-        const imgs = items.filter(f => f.type === 'file' && /\.(jpe?g|png|gif|webp|avif)$/i.test(f.name));
-        if (!imgs.length) return json({ error: 'No images found in jpg folder' }, 404);
-        const pick = imgs[Math.floor(Math.random() * imgs.length)];
-        const rawUrl = `/raw.githubusercontent.com/${STORAGE_REPOS[0]}/${BRANCH}/${pick.path.split('/').map(encodeURIComponent).join('/')}`;
-        return new Response(null, {
-          status: 302,
-          headers: { 'Location': rawUrl, 'Cache-Control': 'no-cache', ...corsHeaders() }
-        });
-      } catch (e) {
-        return json({ error: 'Random image failed: ' + (e && e.message || e) }, 502);
-      }
-    }
-
-    // ---------- 6.6 QR 码生成代理（用于分享下载链接的二维码） ----------
-    if (path === '/api/qr') {
-      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
-      const text = url.searchParams.get('text');
-      const size = url.searchParams.get('size') || '200';
-      if (!text) return json({ error: 'Missing text parameter' }, 400);
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(text)}`;
-      try {
-        const res = await fetch(qrUrl, { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) return json({ error: 'QR generation failed' }, 502);
-        return new Response(res.body, {
-          status: 200,
-          headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600', ...corsHeaders() }
-        });
-      } catch (e) {
-        return json({ error: 'QR service unavailable' }, 502);
-      }
-    }
-
-    // ---------- 6.7 访问统计追踪（umami 风格，EO KV 存储） ----------
-    // 前端通过 /api/track 上报访问，/api/stats 查看统计（admin）
-    // 需要在 EO 控制台创建 KV 命名空间并绑定到本函数，变量名: VISIT_KV
-    if (path === '/api/track') {
-      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
-      try {
-        const body = await parseBody(request);
-        const visit = {
-          t: Date.now(),
-          p: body.path || url.searchParams.get('path') || '/',
-          r: body.referrer || '',
-          u: (body.ua || request.headers.get('User-Agent') || '').substring(0, 200),
-          ip: request.headers.get('EO-Client-IP') || request.headers.get('CF-Connecting-IP') || ''
-        };
-        // 尝试使用 KV 绑定（EO 控制台创建）
-        if (typeof VISIT_KV !== 'undefined') {
-          const key = 'visit:' + visit.t + ':' + Math.random().toString(36).slice(2, 8);
-          await VISIT_KV.put(key, JSON.stringify(visit), { expirationTtl: 30 * 86400 });
-          // 更新计数器
-          const today = new Date().toISOString().slice(0, 10);
-          const countKey = 'count:' + today;
-          const cur = await VISIT_KV.get(countKey);
-          await VISIT_KV.put(countKey, String((parseInt(cur || '0', 10) || 0) + 1));
-          const totalKey = 'count:total';
-          const total = await VISIT_KV.get(totalKey);
-          await VISIT_KV.put(totalKey, String((parseInt(total || '0', 10) || 0) + 1));
-        }
-        return json({ ok: true });
-      } catch (e) {
-        return json({ ok: true });   // 追踪失败不阻塞
-      }
-    }
-
-    // ---------- 6.8 访问统计查询（admin） ----------
-    if (path === '/api/stats') {
-      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
-      const auth = await requireAdmin(await parseBody(request));
-      if (!auth.ok) return json({ error: auth.error }, auth.status);
-      if (typeof VISIT_KV === 'undefined') {
-        return json({ error: 'KV not configured. Create KV namespace VISIT_KV in EO console.' }, 500);
-      }
-      try {
-        const total = parseInt(await VISIT_KV.get('count:total') || '0', 10) || 0;
-        // 最近7天计数
-        const days = [];
-        for (let i = 6; i >= 0; i--) {
-          const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
-          const c = parseInt(await VISIT_KV.get('count:' + d) || '0', 10) || 0;
-          days.push({ date: d, count: c });
-        }
-        // 最近50条访问记录
-        const list = await VISIT_KV.list({ prefix: 'visit:', limit: 50 });
-        const visits = [];
-        for (const k of list.keys || []) {
-          const v = await VISIT_KV.get(k.name);
-          if (v) visits.push(JSON.parse(v));
-        }
-        visits.sort((a, b) => b.t - a.t);
-        return json({ total, days, recent: visits.slice(0, 50) });
-      } catch (e) {
-        return json({ error: 'Stats query failed: ' + (e && e.message || e) }, 500);
-      }
-    }
-
     if (path.startsWith('/api/')) {
       return json({
         error: 'Not found',
@@ -515,10 +408,6 @@ async function handleRequest(request) {
           'PUT    /api/users/:username  {admin_user, admin_pass:<sha512>, password?:<sha512>, role?, avatar?}',
           'DELETE /api/users/:username  {admin_user, admin_pass:<sha512>}',
           'GET    /api/bg               (页面背景图中转)',
-          'GET    /api/random-img       (jpg文件夹随机图，302重定向)',
-          'GET    /api/qr?text=xxx      (QR码生成代理)',
-          'POST   /api/track            (访问统计上报)',
-          'GET    /api/stats            (访问统计查询，admin)',
           '*      /api.github.com/<path>           (GitHub REST API 代理，限白名单仓库)',
           '*      /raw.githubusercontent.com/<path> (raw 下载中转，限白名单仓库)',
           '*      /github.com/<owner>/<repo>/archive/<ref>.zip (整仓打包下载中转)'

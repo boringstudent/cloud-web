@@ -1,5 +1,5 @@
 <!--AI_CTX_SCHEMA=cloud-web/v1-->
-<!--AI_CTX_GENERATED=2026-09-30T20:00:16+08:00-->
+<!--AI_CTX_GENERATED=2026-09-30T20:25:02+08:00-->
 <!--AI_CTX_SOURCE=build_eo.py-->
 <!--AI_CTX_BUILD_TOOL=build_eo.py-->
 
@@ -269,9 +269,9 @@ key_source=GITHUB_KEY环境变量 或 .eo-key文件(已gitignore)
 output=eo.js(单文件，含key，仅本地)
 post_build=node --check eo.js(语法校验)
 auto_copy=404.html <- template.html
-last_version=1790769616
-last_eo_size=738KB
-last_app_size=421KB
+last_version=1790771101
+last_eo_size=723KB
+last_app_size=415KB
 last_css_size=53KB
 last_cf_size=21KB
 
