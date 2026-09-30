@@ -4416,63 +4416,57 @@ function renderSharePage() {
         return;
     }
 
-    // 分享页访客没有通道偏好（EO/CF 默认关闭、多代理默认关），下载会退化成
-    // 单 EO 兜底慢速——分享场景自动启用 EO/CF/外部多代理（仅本次会话内存态，
-    // 不写入 localStorage 偏好）
-    dlChanSwitch.eo = true;
-    dlChanSwitch.cf = true;
-    dlChanBtnRefresh();
-    if (!extProxyState.enabled) {
-        extProxyState.enabled = true;
-        extProxyLoad(function() {
-            updateDlLegendExtVisibility();
-            dlNotify();
-        });
-    }
+    // 分享页访客没有通道偏好，下载默认开启三通道（见 shareEnsureChannels）
+    shareEnsureChannels();
 
     // 隐藏正常网盘 UI，展示下载页
     document.getElementById('breadcrumbs').style.display = 'none';
     document.querySelector('.search-wrap').style.display = 'none';
     document.getElementById('refreshCountdown').style.display = 'none';
     document.getElementById('uploadFabBtn').style.display = 'none';
-    document.getElementById('pageTitle').textContent = t('文件分享');
+
+    // 页面标题：顶栏与浏览器标签都带分享对象名，不再只是笼统的"文件分享"
+    var singleItem = data.items.length === 1 ? data.items[0] : null;
+    var shareName = singleItem ? displayName(singleItem.n) : t('批量分享') + ' (' + data.items.length + ')';
+    document.getElementById('pageTitle').textContent = shareName;
+    document.title = shareName + ' - ' + t('文件分享') + ' - boring_student';
 
     var container = document.getElementById('fileListContainer');
     container.className = '';
     container.innerHTML = '';
 
-    // 蓝奏云风格下载页（无任何图标）
+    // 蓝奏云风格下载页（无任何图标；配色走 CSS 类，明暗主题自适应）
     var card = document.createElement('div');
-    card.style.cssText = 'max-width:520px;margin:40px auto;background:#fff;border-radius:16px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.08);text-align:center;';
+    card.className = 'share-card';
 
     // 标题
     var title = document.createElement('h2');
-    title.style.cssText = 'font-size:20px;color:#333;margin:0 0 8px;word-break:break-all;';
-    title.textContent = data.items.length === 1 ? data.items[0].n : '批量分享 (' + data.items.length + ' 个文件)';
+    title.className = 'share-title';
+    title.textContent = singleItem ? singleItem.n : t('批量分享') + ' (' + data.items.length + ')';
     card.appendChild(title);
 
     // 副标题
     var subtitle = document.createElement('div');
-    subtitle.style.cssText = 'font-size:13px;color:#999;margin-bottom:24px;';
+    subtitle.className = 'share-subtitle';
     var date = new Date(data.ts * 1000);
     subtitle.textContent = t('分享时间') + ': ' + date.toLocaleString(LANG === 'en' ? 'en-US' : LANG === 'ja' ? 'ja-JP' : LANG);
     card.appendChild(subtitle);
 
     // 文件列表
     var list = document.createElement('div');
-    list.style.cssText = 'text-align:left;margin-bottom:24px;max-height:300px;overflow-y:auto;';
+    list.className = 'share-list';
     data.items.forEach(function(item) {
         var row = document.createElement('div');
-        row.style.cssText = 'padding:10px 12px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;';
+        row.className = 'share-row';
 
         var nameSpan = document.createElement('span');
-        nameSpan.style.cssText = 'color:#333;font-size:14px;word-break:break-all;flex:1;';
+        nameSpan.className = 'share-name';
         nameSpan.textContent = item.n;
         row.appendChild(nameSpan);
 
         if (item.s) {
             var sizeSpan = document.createElement('span');
-            sizeSpan.style.cssText = 'color:#999;font-size:12px;margin-left:12px;flex-shrink:0;';
+            sizeSpan.className = 'share-size';
             sizeSpan.textContent = formatSize(item.s);
             row.appendChild(sizeSpan);
         }
@@ -4483,10 +4477,10 @@ function renderSharePage() {
 
     // 下载按钮
     var dlBtn = document.createElement('button');
-    dlBtn.className = 'btn';
-    dlBtn.style.cssText = 'width:100%;padding:12px;font-size:16px;background:#2c82c9;border-radius:10px;';
-    dlBtn.textContent = data.items.length === 1 && data.items[0].t !== 'dir' ? t('立即下载') : t('打包下载 (ZIP)');
+    dlBtn.className = 'btn share-dl-btn';
+    dlBtn.textContent = singleItem && singleItem.t !== 'dir' ? t('立即下载') : t('打包下载 (ZIP)');
     dlBtn.addEventListener('click', function() {
+        shareEnsureChannels();   // 兜底：点击下载前再次确认三通道开启
         dlBtn.disabled = true;
         dlBtn.textContent = t('下载中...');
         var single = data.items.length === 1 && data.items[0].t !== 'dir';
@@ -4526,21 +4520,40 @@ function renderSharePage() {
     });
     card.appendChild(dlBtn);
 
-    // QR 码（本地生成，无服务端依赖）
+    // QR 码（本地生成，无服务端依赖；canvas 自带白底，深色主题下照常可扫）
     var qrCanvas = qrMakeCanvas(window.location.href, 150);
     if (qrCanvas) {
         var qrDiv = document.createElement('div');
-        qrDiv.style.cssText = 'margin-top:24px;padding-top:20px;border-top:1px solid #f0f0f0;';
-        qrCanvas.style.cssText = 'width:150px;height:150px;border-radius:8px;';
+        qrDiv.className = 'share-qr';
+        qrCanvas.className = 'share-qr-canvas';
         qrDiv.appendChild(qrCanvas);
         var qrText = document.createElement('div');
-        qrText.style.cssText = 'font-size:12px;color:#999;margin-top:8px;';
+        qrText.className = 'share-qr-text';
         qrText.textContent = t('扫码在手机上下载');
         qrDiv.appendChild(qrText);
         card.appendChild(qrDiv);
     }
 
     container.appendChild(card);
+}
+
+// 分享页下载默认开启三通道（EO/CF/外部多代理）：访客没有通道偏好
+// （EO/CF 默认关闭、多代理默认关），不启用会退化成单 EO 兜底慢速——
+// 仅本次会话内存态生效，不写入 localStorage 偏好
+function shareEnsureChannels() {
+    if (!dlChanSwitch.eo || !dlChanSwitch.cf) {
+        dlChanSwitch.eo = true;
+        dlChanSwitch.cf = true;
+        dlChanBtnRefresh();
+        dlNotify();
+    }
+    if (!extProxyState.enabled) {
+        extProxyState.enabled = true;
+        extProxyLoad(function() {
+            updateDlLegendExtVisibility();
+            dlNotify();
+        });
+    }
 }
 
 // 分享页：在文件树中查找 path 对应的分片（path.partN），存在返回按序号排序的

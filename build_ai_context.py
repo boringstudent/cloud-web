@@ -120,7 +120,7 @@ DATAFLOW = {
         'makeShareUrl：{v:1, items:[{p:路径,n:名称,t:类型,s:大小}], ts} JSON → b64url 编码 → {origin}/s/<b64url>，纯前端无服务端存储',
         '复制外链=copyShareLink 直复制不弹窗（copyTextToClipboard+toast）；二维码=openQrModal 只显示二维码（qrMakeCanvas 本地生成）；右键菜单/批量栏（复制链接+二维码按钮）均可发起',
         'isSharePage（路径 /s/ 前缀）→ renderSharePage：b64url 解码还原清单，隐藏网盘 UI 展示无图标下载页（loadFileList 已守卫 isSharePage 防自动刷新冲突）；损坏链接显示错误提示',
-        '分享页下载：访客无通道偏好，renderSharePage 自动启用 EO/CF/外部多代理（仅内存态不写偏好）；下载前先 fetchFileTree——单文件分片走 downloadMergedFile 合并还原、普通文件走 downloadFile 多通道 blob 保存（手机端不再变在线预览）；多文件/文件夹经 shareCollectZipModels 展开目录+归并分片后 downloadFolderZip 打包',
+        '分享页下载：访客无通道偏好，shareEnsureChannels 默认开启 EO/CF/外部三通道（仅内存态不写偏好，渲染与点击下载双重确保）；下载前先 fetchFileTree——单文件分片走 downloadMergedFile 合并还原、普通文件走 downloadFile 多通道 blob 保存（手机端不再变在线预览）；多文件/文件夹经 shareCollectZipModels 展开目录+归并分片后 downloadFolderZip 打包；卡片样式 share-* CSS 类明暗主题自适应（QR canvas 自带白底可扫）；页面标题=分享对象名（pageTitle 与 document.title 同步）',
         'QR 码前端零依赖生成（qrGenerate：byte 模式/级别 M/版本 1-40/8 掩码惩罚评估），不经服务端',
     ],
 }

@@ -1475,6 +1475,77 @@ h1 {
     color: #999;
 }
 
+/* ---- 分享下载页（/s/ 外链，蓝奏云风格卡片；明暗主题自适应） ---- */
+.share-card {
+    max-width: 520px;
+    margin: 40px auto;
+    background: #fff;
+    border-radius: 16px;
+    padding: 32px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+    text-align: center;
+}
+.share-title {
+    font-size: 20px;
+    color: #333;
+    margin: 0 0 8px;
+    word-break: break-all;
+}
+.share-subtitle {
+    font-size: 13px;
+    color: #999;
+    margin-bottom: 24px;
+}
+.share-list {
+    text-align: left;
+    margin-bottom: 24px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.share-row {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f0f0f0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.share-name {
+    color: #333;
+    font-size: 14px;
+    word-break: break-all;
+    flex: 1;
+}
+.share-size {
+    color: #999;
+    font-size: 12px;
+    margin-left: 12px;
+    flex-shrink: 0;
+}
+.share-dl-btn {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    background: #2c82c9;
+    border-radius: 10px;
+}
+.share-qr {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid #f0f0f0;
+}
+/* canvas 本体即白底黑码，深色主题下也保持可扫；白底+圆角在暗色卡片上同样清晰 */
+.share-qr-canvas {
+    width: 150px;
+    height: 150px;
+    border-radius: 8px;
+    background: #fff;
+}
+.share-qr-text {
+    font-size: 12px;
+    color: #999;
+    margin-top: 8px;
+}
+
 /* ---- 音频播放列表（预览弹窗） ---- */
 .audio-pl {
     width: 100%;
@@ -2056,6 +2127,27 @@ h1 {
 }
 :root[data-theme="dark"] #qrHint {
     color: #8b949e;
+}
+:root[data-theme="dark"] .share-card {
+    background: #21262d;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+}
+:root[data-theme="dark"] .share-title {
+    color: #e6edf3;
+}
+:root[data-theme="dark"] .share-subtitle,
+:root[data-theme="dark"] .share-size,
+:root[data-theme="dark"] .share-qr-text {
+    color: #8b949e;
+}
+:root[data-theme="dark"] .share-row {
+    border-bottom-color: #30363d;
+}
+:root[data-theme="dark"] .share-name {
+    color: #e6edf3;
+}
+:root[data-theme="dark"] .share-qr {
+    border-top-color: #30363d;
 }
 :root[data-theme="dark"] .pref-wrap select {
     background: rgba(33, 38, 45, 0.9);
