@@ -1593,6 +1593,8 @@ function updateAuthBtn() {
             if (nameEl) nameEl.textContent = saved.u + (saved.role === 'admin' ? t('（管理员）') : '');
             var adminItem = document.getElementById('userMenuAdmin');
             if (adminItem) adminItem.style.display = saved.role === 'admin' ? '' : 'none';
+            var statsItem = document.getElementById('userMenuStats');
+            if (statsItem) statsItem.style.display = saved.role === 'admin' ? '' : 'none';
             renderUserAvatar();
         } else {
             closeUserMenu();
@@ -1687,6 +1689,19 @@ function openAccountModal() {
 
 function closeAccountModal() {
     document.getElementById('accountModal').classList.remove('show');
+}
+
+// 账户弹窗三级 Tab 切换（头像 / 密码 / 注销）
+function switchAccountTab(name) {
+    var tabs = document.querySelectorAll('#accountModal .modal-tab');
+    tabs.forEach(function(t) {
+        t.classList.toggle('active', t.getAttribute('data-tab') === name);
+    });
+    document.getElementById('tabPanelAvatar').style.display = name === 'avatar' ? '' : 'none';
+    document.getElementById('tabPanelPassword').style.display = name === 'password' ? '' : 'none';
+    document.getElementById('tabPanelDelete').style.display = name === 'delete' ? '' : 'none';
+    document.getElementById('accountMessage').className = 'message';
+    document.getElementById('accountMessage').textContent = '';
 }
 
 // 自助修改头像 URL（存到 user.json 与密码同一记录，下次登录随响应下发）
@@ -1863,6 +1878,82 @@ function closeAdminModal() {
     document.getElementById('adminModal').classList.remove('show');
 }
 
+// 访问统计弹窗
+function openStatsModal() {
+    document.getElementById('statsMessage').className = 'message';
+    document.getElementById('statsMessage').textContent = '';
+    document.getElementById('statsModal').classList.add('show');
+    loadStats();
+}
+
+function closeStatsModal() {
+    document.getElementById('statsModal').classList.remove('show');
+}
+
+function loadStats() {
+    var refreshBtn = document.getElementById('statsRefreshBtn');
+    if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.classList.add('spinning'); }
+    document.getElementById('statsContent').innerHTML = '<div class="loading">加载中...</div>';
+    withAdminCreds(function(creds) {
+        if (!creds) {
+            document.getElementById('statsContent').innerHTML = '<div class="message error">需要管理员权限</div>';
+            if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.classList.remove('spinning'); }
+            return;
+        }
+        apiGetJson(API_BASE + '/api/stats?admin_user=' + encodeURIComponent(creds.admin_user)
+            + '&admin_pass=' + encodeURIComponent(creds.admin_pass) + '&_=' + Date.now(),
+            function(err, data) {
+                if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.classList.remove('spinning'); }
+                if (err || !data || data.error) {
+                    document.getElementById('statsContent').innerHTML =
+                        '<div class="message error">加载失败: ' + (err || data && data.error || '未知错误') + '</div>';
+                    return;
+                }
+                renderStats(data);
+            });
+    });
+}
+
+function renderStats(data) {
+    var container = document.getElementById('statsContent');
+    var html = '';
+    html += '<div style="font-size:28px;font-weight:700;color:#2c82c9;margin-bottom:16px;">总访问量: ' + (data.total || 0) + '</div>';
+    if (data.days && data.days.length) {
+        html += '<div style="margin-bottom:12px;font-size:13px;color:#999;">最近7天</div>';
+        html += '<div style="display:flex;align-items:flex-end;gap:6px;height:120px;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #eee;">';
+        var max = 1;
+        data.days.forEach(function(d) { if (d.count > max) max = d.count; });
+        data.days.forEach(function(d) {
+            var h = Math.max(4, Math.round(d.count / max * 100));
+            html += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;">';
+            html += '<div style="font-size:11px;color:#666;">' + d.count + '</div>';
+            html += '<div style="width:100%;height:' + h + 'px;background:#2c82c9;border-radius:4px 4px 0 0;min-width:24px;"></div>';
+            html += '<div style="font-size:11px;color:#999;">' + d.date.slice(5) + '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+    if (data.recent && data.recent.length) {
+        html += '<div style="margin-bottom:8px;font-size:13px;color:#999;">最近访问</div>';
+        html += '<div style="max-height:240px;overflow-y:auto;border:1px solid #eee;border-radius:8px;">';
+        data.recent.forEach(function(v) {
+            var t = new Date(v.t);
+            var timeStr = t.toLocaleString('zh-CN');
+            var ua = (v.u || '').substring(0, 60);
+            var path = (v.p || '/');
+            html += '<div style="padding:8px 12px;border-bottom:1px solid #f0f0f0;font-size:13px;">';
+            html += '<div style="display:flex;justify-content:space-between;color:#666;">';
+            html += '<span>' + escapeHtml(path) + '</span>';
+            html += '<span style="color:#999;font-size:12px;">' + timeStr + '</span>';
+            html += '</div>';
+            if (ua) html += '<div style="color:#aaa;font-size:11px;margin-top:2px;word-break:break-all;">' + escapeHtml(ua) + '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+    container.innerHTML = html;
+}
+
 // 用户列表走 /api/users（管理员鉴权），服务端返回脱敏数据（密码字段为 ***），
 // 用户数据文件不再经过客户端读取；附加时间戳防止任何中间缓存。
 var adminUsersData = null;
@@ -1938,6 +2029,8 @@ function renderAdminUserList() {
         var role = adminUsersData[name].role || 'user';
         var row = document.createElement('div');
         row.className = 'admin-user-row';
+        row.setAttribute('data-username', name);
+        row.setAttribute('data-role', role);
 
         var info = document.createElement('span');
         info.className = 'admin-user-info';
@@ -1949,28 +2042,100 @@ function renderAdminUserList() {
         info.appendChild(roleTag);
         row.appendChild(info);
 
-        var ops = document.createElement('span');
-        ops.className = 'admin-user-ops';
+        // 右键打开修改菜单（改密 / 角色切换 / 删除）
+        row.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            openAdminUserMenu(e.clientX, e.clientY, name, role);
+        });
+        // 移动端长按也打开菜单
+        var touchTimer = null;
+        var touchX = 0, touchY = 0;
+        row.addEventListener('touchstart', function(e) {
+            if (e.touches.length !== 1) return;
+            touchX = e.touches[0].clientX;
+            touchY = e.touches[0].clientY;
+            touchTimer = setTimeout(function() {
+                touchTimer = null;
+                openAdminUserMenu(touchX, touchY, name, role);
+            }, 500);
+        });
+        row.addEventListener('touchmove', function() {
+            if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+        });
+        row.addEventListener('touchend', function() {
+            if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+        });
 
-        var mkBtn = function(text, bg, fn) {
-            var b = document.createElement('button');
-            b.className = 'btn';
-            b.style.background = bg;
-            b.textContent = text;
-            b.addEventListener('click', fn);
-            return b;
-        };
-
-        ops.appendChild(mkBtn('改密', '#2c82c9', function() { adminResetPassword(name); }));
-        ops.appendChild(mkBtn(role === 'admin' ? '降为user' : '升为admin', '#e67e22', function() {
-            adminChangeRole(name, role === 'admin' ? 'user' : 'admin');
-        }));
-        if (!me || me.u !== name) {
-            ops.appendChild(mkBtn('删除', '#dc3545', function() { adminDeleteUser(name); }));
-        }
-        row.appendChild(ops);
         container.appendChild(row);
     });
+}
+
+// 管理员用户右键菜单
+var adminMenuTarget = null;
+var adminMenuTargetRole = null;
+
+function openAdminUserMenu(x, y, username, role) {
+    adminMenuTarget = username;
+    adminMenuTargetRole = role;
+    var menu = document.getElementById('adminUserMenu');
+    menu.classList.add('show');
+    var menuWidth = menu.offsetWidth || 120;
+    var menuHeight = menu.offsetHeight || 100;
+    if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 5;
+    if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 5;
+    if (x < 0) x = 5;
+    if (y < 0) y = 5;
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    document.addEventListener('click', closeAdminUserMenuHandler);
+}
+
+function closeAdminUserMenu() {
+    var menu = document.getElementById('adminUserMenu');
+    menu.classList.remove('show');
+    document.removeEventListener('click', closeAdminUserMenuHandler);
+}
+
+function closeAdminUserMenuHandler(e) {
+    var menu = document.getElementById('adminUserMenu');
+    if (!menu.contains(e.target)) {
+        closeAdminUserMenu();
+    }
+}
+
+function handleAdminMenuAction(action) {
+    closeAdminUserMenu();
+    if (!adminMenuTarget) return;
+    var username = adminMenuTarget;
+    var role = adminMenuTargetRole;
+    var me = getSavedAuth();
+    if (action === 'password') {
+        adminResetPassword(username);
+    } else if (action === 'role') {
+        adminChangeRole(username, role === 'admin' ? 'user' : 'admin');
+    } else if (action === 'delete') {
+        if (me && me.u === username) {
+            setMsg('adminMessage', '不能删除当前登录的管理员账户', 'error');
+            return;
+        }
+        adminDeleteUser(username);
+    }
+}
+
+// 添加用户弹窗
+function openAdminAddUser() {
+    document.getElementById('adminAddMessage').className = 'message';
+    document.getElementById('adminAddMessage').textContent = '';
+    document.getElementById('adminNewUsername').value = '';
+    document.getElementById('adminNewPassword').value = '';
+    document.getElementById('adminNewRole').value = 'user';
+    if (document.getElementById('adminNewAvatar')) document.getElementById('adminNewAvatar').value = '';
+    document.getElementById('adminAddModal').classList.add('show');
+}
+
+function closeAdminAddModal() {
+    document.getElementById('adminAddModal').classList.remove('show');
 }
 
 function adminAddUser() {
@@ -1980,22 +2145,22 @@ function adminAddUser() {
     var avatar = (document.getElementById('adminNewAvatar') || {}).value || '';
     avatar = avatar.trim();
     if (!username || !password) {
-        setMsg('adminMessage', '请输入用户名和密码', 'error');
+        setMsg('adminAddMessage', '请输入用户名和密码', 'error');
         return;
     }
     var btn = document.getElementById('adminAddBtn');
     btn.disabled = true;
-    setMsg('adminMessage', '正在添加...', 'success');
+    setMsg('adminAddMessage', '正在添加...', 'success');
     withAdminCreds(function(creds) {
         if (!creds) {
-            setMsg('adminMessage', '需要管理员权限或身份验证失败', 'error');
+            setMsg('adminAddMessage', '需要管理员权限或身份验证失败', 'error');
             btn.disabled = false;
             return;
         }
         // hash the new user's password client-side before sending
         sha512Hex(password, function(err, pwHash) {
             if (err || !pwHash) {
-                setMsg('adminMessage', '添加失败: ' + (err || '密码加密失败'), 'error');
+                setMsg('adminAddMessage', '添加失败: ' + (err || '密码加密失败'), 'error');
                 btn.disabled = false;
                 return;
             }
@@ -2010,14 +2175,15 @@ function adminAddUser() {
             apiSendJson('POST', API_BASE + '/api/users', body, function(err2) {
                 btn.disabled = false;
                 if (err2) {
-                    setMsg('adminMessage', '添加失败: ' + err2, 'error');
+                    setMsg('adminAddMessage', '添加失败: ' + err2, 'error');
                     return;
                 }
-                setMsg('adminMessage', '添加成功: ' + username, 'success');
+                setMsg('adminAddMessage', '添加成功: ' + username, 'success');
                 document.getElementById('adminNewUsername').value = '';
                 document.getElementById('adminNewPassword').value = '';
                 if (document.getElementById('adminNewAvatar')) document.getElementById('adminNewAvatar').value = '';
                 loadAdminUsers();
+                setTimeout(closeAdminAddModal, 800);
             });
         });
     });
@@ -2445,10 +2611,89 @@ function closeUploadModal() {
     document.getElementById('stopUploadBtn').style.display = 'none';
     document.getElementById('restartUploadBtn').style.display = 'none';
     resetUploadSpeedHist();
+    uploadTargetPathOverride = null;   // 重置媒体上传路径覆盖
     pendingFiles = [];
     document.getElementById('selectedFiles').textContent = '';
     document.getElementById('fileInput').value = '';
     document.getElementById('folderInput').value = '';
+}
+
+// ---- 媒体上传（电影/剧集/漫画等，存储到 media/<type>/<name>/<episode>/） ----
+var mediaPendingFiles = [];
+var uploadTargetPathOverride = null;   // 非空时上传到此路径而非当前目录
+
+function openMediaUploadModal() {
+    if (!getSavedAuth()) {
+        openLoginModal();
+        setMsg('loginMessage', '请先登录后再上传文件', 'error');
+        return;
+    }
+    document.getElementById('mediaUploadModal').classList.add('show');
+    document.getElementById('mediaUploadMessage').className = 'message';
+    document.getElementById('mediaUploadMessage').textContent = '';
+}
+
+function closeMediaUploadModal() {
+    document.getElementById('mediaUploadModal').classList.remove('show');
+    mediaPendingFiles = [];
+    document.getElementById('mediaSelectedFiles').textContent = '';
+    document.getElementById('mediaFileInput').value = '';
+}
+
+function handleMediaFileInput(input) {
+    var list = [];
+    for (var i = 0; i < input.files.length; i++) {
+        list.push(input.files[i]);
+    }
+    mediaPendingFiles = list;
+    var el = document.getElementById('mediaSelectedFiles');
+    if (!list.length) { el.textContent = ''; return; }
+    var names = [];
+    for (var i = 0; i < list.length && i < 5; i++) names.push(list[i].name);
+    el.textContent = '已选择 ' + list.length + ' 个文件: ' + names.join(', ') + (list.length > 5 ? ' 等' : '');
+}
+
+function startMediaUpload() {
+    var type = document.getElementById('mediaType').value;
+    var name = document.getElementById('mediaName').value.trim();
+    var episode = document.getElementById('mediaEpisode').value.trim();
+    if (!name) {
+        setMsg('mediaUploadMessage', '请输入名称', 'error');
+        return;
+    }
+    if (!mediaPendingFiles.length) {
+        setMsg('mediaUploadMessage', '请选择要上传的文件', 'error');
+        return;
+    }
+    // 构建目标路径：media/<type>/<name>[/episode]
+    var targetPath = 'media/' + type + '/' + name;
+    if (episode) targetPath += '/' + episode;
+    uploadTargetPathOverride = targetPath;
+
+    // 将媒体文件转为 pendingFiles 格式（relativePath 只有文件名，无子目录）
+    pendingFiles = mediaPendingFiles.map(function(f) {
+        return { file: f, relativePath: f.name };
+    });
+
+    document.getElementById('mediaUploadBtn').disabled = true;
+    setMsg('mediaUploadMessage', '正在上传到 ' + targetPath + ' ...', 'success');
+
+    // 复用常规上传管线
+    probeCfUpload(function(cfOk) {
+        if (cfOk) {
+            showToast('上传双通道已启用（EO + CF）');
+        } else {
+            showToast('CF 上传通道不可用（' + (cfUploadHint || 'CF 侧未配置服务端 key 或不可达') + '），本次仅经 EO 上传');
+        }
+        setTimeout(hideToast, 4000);
+        chunkSizeLevel = 0;
+        // 关闭媒体弹窗，打开常规上传弹窗显示进度
+        closeMediaUploadModal();
+        document.getElementById('uploadModal').classList.add('show');
+        // 更新已选文件显示
+        setPendingFiles(pendingFiles);
+        startUpload();
+    });
 }
 
 var SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -3717,6 +3962,9 @@ function openContextMenu(x, y, fileInfo, fromSearch) {
     document.getElementById('menuPreview').style.display = fileInfo.type === 'dir' ? 'none' : '';
     document.getElementById('menuEdit').style.display = (loggedIn && fileInfo.type !== 'dir' && !fileInfo.chunked) ? '' : 'none';
     document.getElementById('menuDownload').style.display = '';
+    // 分享/二维码对文件和文件夹都可用
+    document.getElementById('menuShare').style.display = '';
+    document.getElementById('menuQr').style.display = '';
     // 未登录不显示需登录功能（修改/删除）
     document.getElementById('menuDelete').style.display = loggedIn ? '' : 'none';
     // 定位项只在搜索结果/跨目录场景显示（当前目录列表中无必要）
@@ -3775,7 +4023,225 @@ function handleMenuAction(action) {
         }
     } else if (action === 'delete') {
         openDeleteModal(filePath, fileSha, fileName, menuFileInfo.chunked ? 'chunked' : fileType);
+    } else if (action === 'share') {
+        openShareModal([{ path: filePath, name: fileName, type: fileType, size: menuFileInfo.size }], fileName);
+    } else if (action === 'qr') {
+        openShareModal([{ path: filePath, name: fileName, type: fileType, size: menuFileInfo.size }], fileName, true);
     }
+}
+
+// ==================== 分享下载外链（蓝奏云风格独立下载页） ====================
+// URL 格式：/s/<base64url> —— SPA 检测到此路径时展示专门的下载页面
+// data 结构：{ v:1, items:[{p:path, n:name, t:'file'|'dir', s:size}], ts:epoch }
+
+function b64urlEncode(str) {
+    var bytes = new TextEncoder().encode(str);
+    var bin = '';
+    bytes.forEach(function(b) { bin += String.fromCharCode(b); });
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlDecode(b64url) {
+    var b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+}
+
+function makeShareUrl(items) {
+    var data = {
+        v: 1,
+        items: items.map(function(it) {
+            return { p: it.path, n: it.name, t: it.type || 'file', s: it.size || 0 };
+        }),
+        ts: Math.floor(Date.now() / 1000)
+    };
+    return window.location.origin + '/s/' + b64urlEncode(JSON.stringify(data));
+}
+
+function openShareModal(items, title, showQr) {
+    var shareUrl = makeShareUrl(items);
+    document.getElementById('shareTitle').textContent = '分享: ' + title;
+    document.getElementById('shareUrl').value = shareUrl;
+    document.getElementById('shareMessage').className = 'message';
+    document.getElementById('shareMessage').textContent = '';
+    var qrImg = document.getElementById('shareQrImg');
+    qrImg.style.display = 'none';
+    if (showQr) {
+        qrImg.src = '/api/qr?text=' + encodeURIComponent(shareUrl) + '&size=200';
+        qrImg.onload = function() { qrImg.style.display = ''; };
+        qrImg.onerror = function() { qrImg.style.display = 'none'; };
+    }
+    document.getElementById('shareModal').classList.add('show');
+    // 自动复制到剪贴板
+    copyShareUrl();
+}
+
+function closeShareModal() {
+    document.getElementById('shareModal').classList.remove('show');
+}
+
+function copyShareUrl() {
+    var input = document.getElementById('shareUrl');
+    input.select();
+    input.setSelectionRange(0, 99999);
+    var ok = false;
+    try {
+        ok = document.execCommand('copy');
+    } catch (e) {}
+    if (!ok && navigator.clipboard) {
+        navigator.clipboard.writeText(input.value).then(function() {
+            setMsg('shareMessage', '链接已复制到剪贴板', 'success');
+        }).catch(function() {
+            setMsg('shareMessage', '复制失败，请手动复制', 'error');
+        });
+        return;
+    }
+    setMsg('shareMessage', ok ? '链接已复制到剪贴板' : '复制失败，请手动复制', ok ? 'success' : 'error');
+}
+
+function openSharePage() {
+    var url = document.getElementById('shareUrl').value;
+    if (url) window.open(url, '_blank');
+}
+
+// ---- 分享下载页（/s/<data> 路由） ----
+// 检测当前路径是否为分享链接，是则展示专门的下载页面而非文件列表
+function isSharePage() {
+    return window.location.pathname.startsWith('/s/');
+}
+
+function renderSharePage() {
+    var path = window.location.pathname;
+    var encoded = path.substring(3);   // 去掉 /s/
+    var data;
+    try {
+        data = JSON.parse(b64urlDecode(encoded));
+    } catch (e) {
+        document.getElementById('fileListContainer').innerHTML =
+            '<div class="message error">分享链接无效或已损坏</div>';
+        return;
+    }
+    if (!data || !data.items || !data.items.length) {
+        document.getElementById('fileListContainer').innerHTML =
+            '<div class="message error">分享链接无效</div>';
+        return;
+    }
+
+    // 隐藏正常网盘 UI，展示下载页
+    document.getElementById('breadcrumbs').style.display = 'none';
+    document.querySelector('.search-wrap').style.display = 'none';
+    document.getElementById('refreshCountdown').style.display = 'none';
+    document.getElementById('uploadFabBtn').style.display = 'none';
+    document.getElementById('mediaUploadFabBtn').style.display = 'none';
+    document.getElementById('pageTitle').textContent = '文件分享';
+
+    var container = document.getElementById('fileListContainer');
+    container.className = '';
+    container.innerHTML = '';
+
+    // 蓝奏云风格下载页
+    var card = document.createElement('div');
+    card.style.cssText = 'max-width:520px;margin:40px auto;background:#fff;border-radius:16px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,0.08);text-align:center;';
+
+    // 图标
+    var icon = document.createElement('div');
+    icon.style.cssText = 'font-size:48px;margin-bottom:16px;';
+    var firstItem = data.items[0];
+    if (firstItem.t === 'dir') icon.textContent = '📁';
+    else if (/\.(jpe?g|png|gif|webp|avif|svg|bmp)$/i.test(firstItem.n)) icon.textContent = '🖼️';
+    else if (/\.(mp4|mkv|avi|mov|wmv|flv|webm)$/i.test(firstItem.n)) icon.textContent = '🎬';
+    else if (/\.(mp3|wav|flac|aac|ogg|wma)$/i.test(firstItem.n)) icon.textContent = '🎵';
+    else if (/\.(zip|rar|7z|tar|gz)$/i.test(firstItem.n)) icon.textContent = '📦';
+    else icon.textContent = '📄';
+    card.appendChild(icon);
+
+    // 标题
+    var title = document.createElement('h2');
+    title.style.cssText = 'font-size:20px;color:#333;margin:0 0 8px;word-break:break-all;';
+    title.textContent = data.items.length === 1 ? data.items[0].n : '批量分享 (' + data.items.length + ' 个文件)';
+    card.appendChild(title);
+
+    // 副标题
+    var subtitle = document.createElement('div');
+    subtitle.style.cssText = 'font-size:13px;color:#999;margin-bottom:24px;';
+    var date = new Date(data.ts * 1000);
+    subtitle.textContent = '分享时间: ' + date.toLocaleString('zh-CN');
+    card.appendChild(subtitle);
+
+    // 文件列表
+    var list = document.createElement('div');
+    list.style.cssText = 'text-align:left;margin-bottom:24px;max-height:300px;overflow-y:auto;';
+    data.items.forEach(function(item) {
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:10px 12px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;';
+
+        var nameSpan = document.createElement('span');
+        nameSpan.style.cssText = 'color:#333;font-size:14px;word-break:break-all;flex:1;';
+        nameSpan.textContent = (item.t === 'dir' ? '📁 ' : '📄 ') + item.n;
+        row.appendChild(nameSpan);
+
+        if (item.s) {
+            var sizeSpan = document.createElement('span');
+            sizeSpan.style.cssText = 'color:#999;font-size:12px;margin-left:12px;flex-shrink:0;';
+            sizeSpan.textContent = formatSize(item.s);
+            row.appendChild(sizeSpan);
+        }
+
+        list.appendChild(row);
+    });
+    card.appendChild(list);
+
+    // 下载按钮
+    var dlBtn = document.createElement('button');
+    dlBtn.className = 'btn';
+    dlBtn.style.cssText = 'width:100%;padding:12px;font-size:16px;background:#2c82c9;border-radius:10px;';
+    dlBtn.textContent = data.items.length === 1 && data.items[0].t !== 'dir' ? '立即下载' : '打包下载 (ZIP)';
+    dlBtn.addEventListener('click', function() {
+        dlBtn.disabled = true;
+        dlBtn.textContent = '下载中...';
+        if (data.items.length === 1 && data.items[0].t !== 'dir') {
+            // 单文件直接下载
+            var item = data.items[0];
+            var rawUrl = '/raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(item.p);
+            var a = document.createElement('a');
+            a.href = rawUrl;
+            a.download = item.n;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            dlBtn.disabled = false;
+            dlBtn.textContent = '立即下载';
+        } else {
+            // 多文件/文件夹打包下载
+            var models = data.items.map(function(it) {
+                return { path: it.p, name: it.n, size: it.s || 0, type: it.t, displayName: it.n };
+            });
+            downloadFolderZip(models, data.items.length === 1 ? data.items[0].n : '批量下载');
+            dlBtn.disabled = false;
+            dlBtn.textContent = '打包下载 (ZIP)';
+        }
+    });
+    card.appendChild(dlBtn);
+
+    // QR 码
+    var qrDiv = document.createElement('div');
+    qrDiv.style.cssText = 'margin-top:24px;padding-top:20px;border-top:1px solid #f0f0f0;';
+    var qrImg = document.createElement('img');
+    qrImg.src = '/api/qr?text=' + encodeURIComponent(window.location.href) + '&size=150';
+    qrImg.style.cssText = 'width:150px;height:150px;border-radius:8px;';
+    qrImg.alt = '扫码下载';
+    qrImg.onerror = function() { qrDiv.style.display = 'none'; };
+    qrDiv.appendChild(qrImg);
+    var qrText = document.createElement('div');
+    qrText.style.cssText = 'font-size:12px;color:#999;margin-top:8px;';
+    qrText.textContent = '扫码在手机上下载';
+    qrDiv.appendChild(qrText);
+    card.appendChild(qrDiv);
+
+    container.appendChild(card);
 }
 
 function saveBlobAs(blob, fileName) {
@@ -7049,8 +7515,19 @@ function hideRefreshIndicator() {
     if (el) el.classList.remove('show');
 }
 
+// 检测是否有任何 modal 弹窗处于打开状态（打开时暂停列表刷新，避免弹窗被覆盖）
+function anyModalOpen() {
+    var modals = document.querySelectorAll('.modal-overlay.show');
+    return modals.length > 0;
+}
+
 function loadFileList() {
     if (listLoading) return;
+    // 弹窗打开时暂停列表刷新（避免弹窗内容被覆盖/页面切换感）
+    if (anyModalOpen()) {
+        listLoading = false;
+        return;
+    }
     listLoading = true;
 
     var path = getCurrentPath();
@@ -7354,6 +7831,17 @@ function batchDownload() {
     if (!keys.length) return;
     var models = keys.map(function(k) { return selectedKeys[k]; });
     runParallelDownload(models, '');
+}
+
+// 批量分享：生成包含所有选中文件的分享链接
+function batchShare() {
+    var keys = Object.keys(selectedKeys);
+    if (!keys.length) return;
+    var models = keys.map(function(k) { return selectedKeys[k]; });
+    var items = models.map(function(m) {
+        return { path: m.path, name: m.displayName || m.name, type: m.kind === 'dir' ? 'dir' : 'file', size: m.size || 0 };
+    });
+    openShareModal(items, '批量分享 (' + items.length + ' 个文件)', true);
 }
 
 // 文件级并行下载池：poolLimit 个文件并行，池内所有文件共享一个全局连接
@@ -8850,7 +9338,7 @@ function runUploadTask(task, done) {
                 }
                 return;
             }
-            var currentPath = getCurrentPath();
+            var currentPath = uploadTargetPathOverride !== null ? uploadTargetPathOverride : getCurrentPath();
             var filePath = currentPath ? currentPath + '/' + task.relativePath : task.relativePath;
 
             // 以 blob 对象上传内容：不移动 git 引用，任意并行零提交冲突；
@@ -8993,6 +9481,7 @@ function finishUpload() {
             updateUploadProgressText(100, '');
             setMsg('uploadMessage', '全部上传成功！（' + blobs.length + ' 个文件分片，' + groups.length + ' 个提交）', 'success');
             setTimeout(function() {
+                uploadTargetPathOverride = null;   // 重置媒体上传路径覆盖
                 closeUploadModal();
                 document.getElementById('uploadBtn').disabled = false;
                 loadFileList();
@@ -9458,6 +9947,9 @@ function commitBlobGroup(blobs, message, knownBase, onDone, onConflict) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    // 分享下载页标记：/s/<data> 路径展示专门的下载页面
+    var _isShare = isSharePage();
+
     // Set the title from the URL immediately so a subfolder page never
     // flashes a generic/404 title while the file list is loading.
     var initPath = getCurrentPath();
@@ -9529,7 +10021,11 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载与服务检测
-    loadFileList();
+    if (_isShare) {
+        renderSharePage();
+    } else {
+        loadFileList();
+    }
     checkSvcStatus();
     initSearchBox();
 
@@ -9558,6 +10054,47 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('folderInput').addEventListener('change', function() {
         handleFileInput(this);
     });
+    // ---- 媒体上传事件绑定 ----
+    var mediaDropZone = document.getElementById('mediaDropZone');
+    if (mediaDropZone) {
+        mediaDropZone.addEventListener('click', function() {
+            document.getElementById('mediaFileInput').click();
+        });
+        mediaDropZone.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            mediaDropZone.style.background = 'rgba(108, 92, 231, 0.1)';
+        });
+        mediaDropZone.addEventListener('dragleave', function(e) {
+            e.preventDefault();
+            mediaDropZone.style.background = '';
+        });
+        mediaDropZone.addEventListener('drop', function(e) {
+            e.preventDefault();
+            mediaDropZone.style.background = '';
+            var files = e.dataTransfer.files;
+            if (files && files.length) {
+                var list = [];
+                for (var i = 0; i < files.length; i++) list.push(files[i]);
+                mediaPendingFiles = list;
+                var el = document.getElementById('mediaSelectedFiles');
+                var names = [];
+                for (var i = 0; i < list.length && i < 5; i++) names.push(list[i].name);
+                el.textContent = '已选择 ' + list.length + ' 个文件: ' + names.join(', ') + (list.length > 5 ? ' 等' : '');
+            }
+        });
+    }
+    var mediaPickBtn = document.getElementById('mediaPickFileBtn');
+    if (mediaPickBtn) {
+        mediaPickBtn.addEventListener('click', function() {
+            document.getElementById('mediaFileInput').click();
+        });
+    }
+    var mediaFileInput = document.getElementById('mediaFileInput');
+    if (mediaFileInput) {
+        mediaFileInput.addEventListener('change', function() {
+            handleMediaFileInput(this);
+        });
+    }
     document.getElementById('chunkPanelToggle').addEventListener('click', function() {
         var list = document.getElementById('chunkList');
         var open = list.style.display !== 'none';
@@ -9653,6 +10190,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('batchSelectAllBtn').addEventListener('click', selectAllFiles);
     document.getElementById('batchInvertBtn').addEventListener('click', invertSelection);
     document.getElementById('batchDownloadBtn').addEventListener('click', batchDownload);
+    document.getElementById('batchShareBtn').addEventListener('click', batchShare);
     document.getElementById('batchStopBtn').addEventListener('click', stopBatchDownload);
     document.getElementById('concurrencySelect').addEventListener('change', function() {
         document.getElementById('concurrencyCustom').style.display = this.value === 'custom' ? '' : 'none';

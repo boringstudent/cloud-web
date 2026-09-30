@@ -38,6 +38,7 @@
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
         <button class="btn" id="uploadFabBtn" onclick="openUploadModal()">上传文件</button>
+        <button class="btn" id="mediaUploadFabBtn" onclick="openMediaUploadModal()" style="background: #6c5ce7; right: 30px; bottom: 90px;">媒体上传</button>
         <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 1200; display: flex; align-items: center; gap: 10px;">
             <div class="pref-wrap">
                 <select id="themeSelect" title="主题 / Theme">
@@ -59,6 +60,7 @@
                     <div class="user-menu-name" id="userMenuName"></div>
                     <div class="user-menu-item" onclick="closeUserMenu(); openAccountModal();">用户信息修改</div>
                     <div class="user-menu-item" id="userMenuAdmin" onclick="closeUserMenu(); openAdminModal();" style="display: none;">用户管理</div>
+                    <div class="user-menu-item" id="userMenuStats" onclick="closeUserMenu(); openStatsModal();" style="display: none;">访问统计</div>
                     <div class="user-menu-item danger" onclick="closeUserMenu(); logout();">退出登录</div>
                 </div>
             </div>
@@ -150,6 +152,39 @@
             </div>
         </div>
 
+        <div id="mediaUploadModal" class="modal-overlay">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeMediaUploadModal()">&times;</span>
+                <h2>媒体上传</h2>
+                <div class="form-group">
+                    <label>媒体类型</label>
+                    <select id="mediaType">
+                        <option value="电影">电影</option>
+                        <option value="剧集">剧集</option>
+                        <option value="漫画">漫画</option>
+                        <option value="动画">动画</option>
+                        <option value="音乐">音乐</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>名称（作为文件夹名）</label>
+                    <input type="text" id="mediaName" placeholder="例如：进击的巨人">
+                </div>
+                <div class="form-group" id="mediaEpGroup">
+                    <label>集数/期号（可选，作为子文件夹名）</label>
+                    <input type="text" id="mediaEpisode" placeholder="例如：01 或 第一季">
+                </div>
+                <div id="mediaDropZone" class="drop-zone">拖拽文件到此处<br>或点击选择文件</div>
+                <input type="file" id="mediaFileInput" multiple style="display: none;">
+                <div class="btn-row">
+                    <button class="btn" id="mediaPickFileBtn">选择文件</button>
+                </div>
+                <div id="mediaSelectedFiles"></div>
+                <button class="btn" onclick="startMediaUpload()" id="mediaUploadBtn" style="width: 100%; margin-top: 15px;">开始上传</button>
+                <div id="mediaUploadMessage" class="message"></div>
+            </div>
+        </div>
+
         <div id="deleteModal" class="modal-overlay">
             <div class="modal-content">
                 <span class="modal-close" onclick="closeDeleteModal()">&times;</span>
@@ -201,32 +236,40 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeAccountModal()">&times;</span>
                 <h2>我的账户</h2>
-                <h3 class="modal-section">头像</h3>
-                <div class="form-group">
-                    <label>头像 URL（留空使用默认图标）</label>
-                    <input type="text" id="avUrl" placeholder="https://...">
+                <div class="modal-tabs">
+                    <div class="modal-tab active" data-tab="avatar" onclick="switchAccountTab('avatar')">头像</div>
+                    <div class="modal-tab" data-tab="password" onclick="switchAccountTab('password')">密码</div>
+                    <div class="modal-tab danger" data-tab="delete" onclick="switchAccountTab('delete')">注销</div>
                 </div>
-                <button class="btn" onclick="changeOwnAvatar()" id="avBtn" style="width: 100%; background: #16a085;">保存头像</button>
-                <h3 class="modal-section">修改密码</h3>
-                <div class="form-group">
-                    <label>当前密码</label>
-                    <input type="password" id="cpCurrent" placeholder="请输入当前密码" autocomplete="current-password">
+                <div class="modal-tab-panel" id="tabPanelAvatar">
+                    <div class="form-group">
+                        <label>头像 URL（留空使用默认图标）</label>
+                        <input type="text" id="avUrl" placeholder="https://...">
+                    </div>
+                    <button class="btn" onclick="changeOwnAvatar()" id="avBtn" style="width: 100%; background: #16a085;">保存头像</button>
                 </div>
-                <div class="form-group">
-                    <label>新密码</label>
-                    <input type="password" id="cpNew" placeholder="大于8位，含大小写字母和数字" autocomplete="new-password">
+                <div class="modal-tab-panel" id="tabPanelPassword" style="display: none;">
+                    <div class="form-group">
+                        <label>当前密码</label>
+                        <input type="password" id="cpCurrent" placeholder="请输入当前密码" autocomplete="current-password">
+                    </div>
+                    <div class="form-group">
+                        <label>新密码</label>
+                        <input type="password" id="cpNew" placeholder="大于8位，含大小写字母和数字" autocomplete="new-password">
+                    </div>
+                    <div class="form-group">
+                        <label>确认新密码</label>
+                        <input type="password" id="cpConfirm" placeholder="再次输入新密码" autocomplete="new-password">
+                    </div>
+                    <button class="btn" onclick="changeOwnPassword()" id="cpBtn" style="width: 100%;">修改密码</button>
                 </div>
-                <div class="form-group">
-                    <label>确认新密码</label>
-                    <input type="password" id="cpConfirm" placeholder="再次输入新密码" autocomplete="new-password">
+                <div class="modal-tab-panel" id="tabPanelDelete" style="display: none;">
+                    <div class="form-group">
+                        <label>输入密码确认注销</label>
+                        <input type="password" id="daPassword" placeholder="注销后账户将被永久删除" autocomplete="current-password">
+                    </div>
+                    <button class="btn" onclick="deleteOwnAccount()" id="daBtn" style="width: 100%; background: #dc3545;">永久注销账户</button>
                 </div>
-                <button class="btn" onclick="changeOwnPassword()" id="cpBtn" style="width: 100%;">修改密码</button>
-                <h3 class="modal-section modal-section-danger">注销账户</h3>
-                <div class="form-group">
-                    <label>输入密码确认注销</label>
-                    <input type="password" id="daPassword" placeholder="注销后账户将被永久删除" autocomplete="current-password">
-                </div>
-                <button class="btn" onclick="deleteOwnAccount()" id="daBtn" style="width: 100%; background: #dc3545;">永久注销账户</button>
                 <div id="accountMessage" class="message"></div>
             </div>
         </div>
@@ -234,7 +277,10 @@
         <div id="adminModal" class="modal-overlay">
             <div class="modal-content preview-modal-content">
                 <span class="modal-close" onclick="closeAdminModal()">&times;</span>
-                <h2>用户管理 <button class="icon-btn" id="adminRefreshBtn" onclick="loadAdminUsers()" title="刷新">⟳</button></h2>
+                <h2>用户管理
+                    <button class="icon-btn" id="adminRefreshBtn" onclick="loadAdminUsers()" title="刷新">⟳</button>
+                    <button class="btn" onclick="openAdminAddUser()" style="margin-left: 8px; padding: 4px 12px; font-size: 12px;">添加用户</button>
+                </h2>
                 <div class="form-group">
                     <input type="text" id="adminSearchInput" placeholder="搜索用户名" autocomplete="nope" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="admin-search-no-autofill" oninput="renderAdminUserList()" readonly>
                 </div>
@@ -242,7 +288,14 @@
                 <div id="adminUserList" class="admin-user-list">
                     <div class="loading">加载中...</div>
                 </div>
-                <h3 class="modal-section">添加用户</h3>
+                <div id="adminMessage" class="message"></div>
+            </div>
+        </div>
+
+        <div id="adminAddModal" class="modal-overlay">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeAdminAddModal()">&times;</span>
+                <h2>添加用户</h2>
                 <div class="form-group">
                     <label>用户名</label>
                     <input type="text" id="adminNewUsername" placeholder="新用户名">
@@ -263,8 +316,14 @@
                     <input type="text" id="adminNewAvatar" placeholder="https://...">
                 </div>
                 <button class="btn" onclick="adminAddUser()" id="adminAddBtn" style="width: 100%;">添加用户</button>
-                <div id="adminMessage" class="message"></div>
+                <div id="adminAddMessage" class="message"></div>
             </div>
+        </div>
+
+        <div id="adminUserMenu" class="context-menu">
+            <div class="context-menu-item" onclick="handleAdminMenuAction('password')">修改密码</div>
+            <div class="context-menu-item" onclick="handleAdminMenuAction('role')">切换角色</div>
+            <div class="context-menu-item danger" onclick="handleAdminMenuAction('delete')">删除用户</div>
         </div>
 
         <button type="button" id="backToTopBtn" title="返回顶部"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
@@ -316,6 +375,7 @@
             <button class="btn" id="batchSelectAllBtn" style="background: #6c757d;">全选</button>
             <button class="btn" id="batchInvertBtn" style="background: #6c757d;">反选</button>
             <button class="btn" id="batchDownloadBtn">批量下载</button>
+            <button class="btn" id="batchShareBtn" style="background: #6c5ce7;">分享链接</button>
             <button class="btn" id="batchStopBtn" style="background: #e67e22; display: none;">停止下载</button>
             <button class="btn" id="batchDeleteBtn" style="background: #dc3545;">批量删除</button>
             <button class="btn" id="batchCancelBtn" style="background: #999;">取消</button>
@@ -327,9 +387,62 @@
             <div class="context-menu-item" id="menuPreview" onclick="handleMenuAction('preview')">预览</div>
             <div class="context-menu-item" id="menuEdit" onclick="handleMenuAction('edit')">修改</div>
             <div class="context-menu-item" id="menuDownload" onclick="handleMenuAction('download')">下载</div>
+            <div class="context-menu-item" id="menuShare" onclick="handleMenuAction('share')">复制外链</div>
+            <div class="context-menu-item" id="menuQr" onclick="handleMenuAction('qr')">二维码下载</div>
             <div class="context-menu-item danger" id="menuDelete" onclick="handleMenuAction('delete')">删除</div>
         </div>
 
+        <div id="shareModal" class="modal-overlay">
+            <div class="modal-content" style="max-width: 420px;">
+                <span class="modal-close" onclick="closeShareModal()">&times;</span>
+                <h2 id="shareTitle">分享</h2>
+                <div class="form-group">
+                    <label>分享链接</label>
+                    <input type="text" id="shareUrl" readonly onclick="this.select()">
+                </div>
+                <div class="btn-row" style="margin-bottom: 12px;">
+                    <button class="btn" onclick="copyShareUrl()" id="copyShareBtn" style="flex: 1;">复制链接</button>
+                    <button class="btn" onclick="openSharePage()" id="openSharePageBtn" style="flex: 1; background: #16a085;">打开下载页</button>
+                </div>
+                <div style="text-align: center; margin-top: 8px;">
+                    <img id="shareQrImg" alt="二维码" style="max-width: 200px; border: 1px solid #eee; border-radius: 8px; display: none;">
+                </div>
+                <div id="shareMessage" class="message"></div>
+            </div>
+        </div>
+
+        <div id="statsModal" class="modal-overlay">
+            <div class="modal-content" style="max-width: 560px;">
+                <span class="modal-close" onclick="closeStatsModal()">&times;</span>
+                <h2>访问统计</h2>
+                <div id="statsContent">
+                    <div class="loading">加载中...</div>
+                </div>
+                <div class="btn-row" style="margin-top: 15px;">
+                    <button class="btn" onclick="loadStats()" id="statsRefreshBtn" style="flex: 1;">刷新</button>
+                </div>
+                <div id="statsMessage" class="message"></div>
+            </div>
+        </div>
+
         <script src="/static/app.js?v={version}"></script>
+        <script>
+            // 访问统计上报（umami 风格，数据存储在 EO KV）
+            (function() {{
+                try {{
+                    var data = {{
+                        path: window.location.pathname,
+                        referrer: document.referrer || '',
+                        ua: navigator.userAgent || ''
+                    }};
+                    fetch('/api/track', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify(data),
+                        keepalive: true
+                    }}).catch(function() {{}});
+                }} catch (e) {{}}
+            }})();
+        </script>
     </body>
 </html>
