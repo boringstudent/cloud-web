@@ -193,7 +193,8 @@ function probeExtProxiesBrowser(bases, done) {
     }
     function probeOne(base, cb) {
         attempt(base, 6000, function(r) {
-            if (r.ok || r.err === 'timeout') { cb(r); return; }
+            // 429=站点限流：立即复测只会加重限流并刷屏 CORS 报错，不再复测
+            if (r.ok || r.err === 'timeout' || r.status === 429) { cb(r); return; }
             setTimeout(function() { attempt(base, 4000, function(r2) { cb(r2.ok ? r2 : r); }); }, 300);
         });
     }
@@ -214,6 +215,49 @@ function probeExtProxiesBrowser(bases, done) {
     if (!bases.length) { done([]); return ctrls; }
     launch();
     return ctrls;
+}
+
+// 外部代理探测结果共享：服务状态检测与多代理加载常在同一时段各自探测
+// 全量 28 个候选——并发两批会把代理站点打出 429 限流（并刷屏 CORS 报错）。
+// 合并在飞批次（后到调用方排队共享结果）并缓存 60 秒；
+// 返回的 ctrls 仅属于实际发起批次（后到调用方返回空数组，中止语义由发起方持有）
+var extProbeInflight = null;
+var extProbeCacheAt = 0;
+var extProbeCacheResults = null;
+var EXT_PROBE_CACHE_MS = 60000;
+
+function probeExtProxiesShared(bases, done) {
+    if (extProbeCacheResults && Date.now() - extProbeCacheAt < EXT_PROBE_CACHE_MS) {
+        done(extProbeCacheResults);
+        return [];
+    }
+    if (extProbeInflight) {
+        extProbeInflight.cbs.push(done);
+        return [];
+    }
+    var inflight = { cbs: [done], bases: bases };
+    extProbeInflight = inflight;
+    var ctrls = probeExtProxiesBrowser(bases, function(results) {
+        if (extProbeInflight !== inflight) return;
+        extProbeInflight = null;
+        extProbeCacheAt = Date.now();
+        extProbeCacheResults = results;
+        inflight.cbs.forEach(function(f) { f(results); });
+    });
+    return ctrls;
+}
+
+// 中止共享探测批次（服务状态强制重检时调用）：半成品结果不得写入 60 秒
+// 缓存；排队调用方以失败结果完结，避免 extProxyLoad 永久卡在 loading 态
+function probeExtProxiesSharedAbort() {
+    extProbeCacheResults = null;
+    if (!extProbeInflight) return;
+    var inflight = extProbeInflight;
+    extProbeInflight = null;
+    var results = inflight.bases.map(function(base) {
+        return { site: base, ok: false, status: 0, err: 'aborted', rtt: 0 };
+    });
+    inflight.cbs.forEach(function(f) { f(results); });
 }
 
 function extRawUrl(base, filePath) {
@@ -240,7 +284,7 @@ function extProxyLoad(cb) {
             var j = JSON.parse(xhr.responseText);
             if (j && j.proxies && j.proxies.length) all = j.proxies;
         } catch (e) {}
-        probeExtProxiesBrowser(all, function(results) {
+        probeExtProxiesShared(all, function(results) {
             var usable = [];
             results.forEach(function(r) { if (r && r.ok) usable.push(r.site); });
             // 浏览器侧全灭时退回全量候选（下载层有按代理熔断兜底），避免误杀整个外部通道
@@ -391,6 +435,22 @@ function ulChanToggle(chan, done) {
 var cfUploadState = null;   // null=未探测, true/false
 var cfUploadProbedAt = 0;
 var cfUploadHint = '';      // 探测失败时的诊断提示（区分未部署/key 无效）
+
+// CF 上传通道熔断：探测可写（400/422）不代表大 blob POST 也能过——CF 对超大
+// 请求体会 520/连接级失败（ERR_HTTP2_PROTOCOL_ERROR），大分片会在坏通道上
+// 反复消耗重试次数。连续失败 2 次即本次会话永久停用 CF 上传、全部回退 EO
+//（单次成功清零计数；一旦熔断会话内不恢复，下次访问重新探测）
+var cfUlFails = 0;
+var cfUlBroken = false;
+
+function cfUlNoteFail() {
+    cfUlFails++;
+    if (cfUlFails >= 2 && !cfUlBroken) {
+        cfUlBroken = true;
+        showToast('CF 上传通道连续失败，已自动停用（本次会话上传只走 EO）');
+        setTimeout(hideToast, 3000);
+    }
+}
 
 function probeCfUpload(cb) {
     // 失败结果 60 秒后重探（CF 侧可能后来才配置服务端 key）
@@ -2499,6 +2559,7 @@ function checkSvcStatus(force) {
         svcCheckGen++;
         svcCheckXhrs.forEach(function(x) { try { x.abort(); } catch (e) {} });
         svcCheckXhrs = [];
+        probeExtProxiesSharedAbort();   // 半成品探测结果不得污染共享缓存
         svcChecking = false;
     }
     svcChecking = true;
@@ -2558,7 +2619,7 @@ function checkGitExtServices(gen, finish) {
             finish();
             return;
         }
-        var ctrls = probeExtProxiesBrowser(all, function(results) {
+        var ctrls = probeExtProxiesShared(all, function(results) {
             if (gen !== svcCheckGen) return;
             var okCount = 0, bestRtt = null, badHosts = [];
             results.forEach(function(r) {
@@ -9526,7 +9587,7 @@ function applyConcurrencyChange() {
 function ulChannels(exclude) {
     var chans = [];
     if (ulChanSwitch.eo && exclude !== 'eo') chans.push('eo');
-    if (ulChanSwitch.cf && exclude !== 'cf' && cfUploadState === true) chans.push('cf');
+    if (ulChanSwitch.cf && exclude !== 'cf' && cfUploadState === true && !cfUlBroken) chans.push('cf');
     if (!chans.length) chans.push('eo');
     return chans;
 }
@@ -9743,6 +9804,7 @@ function runUploadTask(task, done) {
                         done(false);
                         return;
                     }
+                    if (task.chan === 'cf') cfUlFails = 0;   // CF 成功清零熔断计数
                     st.blobs.push({ path: filePath, sha: blobSha, base: task.base });
                     st.fractionSum -= (task.fraction || 0);
                     task.fraction = 0;
@@ -9784,6 +9846,8 @@ function runUploadTask(task, done) {
                     // 404 已在 putBlobToGitHub 按代理累计（API 不支持不代表
                     // raw 下载也不可用），不再计入下载熔断
                     if (task.chan === 'ext' && status !== 404) extNoteFail(task._extBase);
+                    // CF 连续失败 2 次熔断（本次会话只走 EO），大 blob 不再反复踩坏通道
+                    if (task.chan === 'cf') cfUlNoteFail();
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
                         task.chan = pickUploadChannel(task.blob.size, task.chan, true);
                         // adaptive: failures hint the network is saturated, back off
@@ -9816,7 +9880,8 @@ function runUploadTask(task, done) {
                     task._lastProgAt = Date.now();
                     updateUploadProgressUI();
                 },
-                undefined, task.chan, task);
+                // CF 已失败过时跳过硬通道内的原地重试，立即交上层换源 EO
+                (task.chan === 'cf' && cfUlFails > 0) ? 0 : undefined, task.chan, task);
         });
     };
     tryOnce();
@@ -10555,4 +10620,11 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     document.getElementById('batchDeleteBtn').addEventListener('click', openBatchDeleteModal);
     document.getElementById('batchCancelBtn').addEventListener('click', clearSelection);
+
+    // app.js 加载完成前点击过"上传文件"（模板头部兜底桩记录的待打开标记）：
+    // 现在真正的 openUploadModal 已就绪，补开上传弹窗
+    if (window.__pendingOpenUpload) {
+        window.__pendingOpenUpload = false;
+        openUploadModal();
+    }
 });

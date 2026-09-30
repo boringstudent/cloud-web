@@ -87,12 +87,13 @@ DATAFLOW = {
         '提交阶段：每 COMMIT_GROUP_SIZE=100 个 blob 合成 tree+commit 批量落盘；组间链式推进（上一组新引用直接作下一组基点）',
         '引用被抢先（422/409）：先读最新引用校验是否实际已成功（响应丢失），否则从最新引用重建 tree 重试，最多 12 次（300ms 快重试→1.6 倍退避封顶 5s+抖动）',
         '通道：EO/CF 双通道按在途均衡+实测速率加权分配（15% 概率地板）；开始前探测 CF 写能力（仅 400/422 视为可写）',
+        'CF 上传熔断（cfUlBroken）：探测可写不代表大 blob POST 能过（CF 对超大请求体 520/HTTP2 连接错误）——任务级连续失败 2 次本次会话永久停用 CF 上传全部回退 EO（toast 提示），单次成功清零计数；CF 已失败过时 putBlobToGitHub 跳过硬通道内原地重试（retries=0 立即交上层换源）',
         '自适应并行：初始 3 上限 8；分片 <15s 升档 >45s 降档；每 2 次提交冲突降档，连续 8 个无冲突升档',
         '停止/失败无副作用：未提交 blob 为悬空对象，GitHub 自动回收，无需回退',
     ],
     'download': [
         '大文件 >2MB 分段滚动调度（段数不少于并发限制、最小 1MB/段），EO/CF 间在途均衡+速率加权分配，失败换源从已收位置 Range 续传，CF 连续失败 2 次熔断回退 EO',
-        '外部多代理（可选，默认载体）：/api/proxies?all=1 拿 28 候选后浏览器侧逐个实测（探测本仓库 raw 文件 xxx.json，简单 GET 防 CORS 预检，要求 2xx 且内容匹配防劫持假 200）；承担约 80% 任务，EO/CF 各保 25% 份额地板；EO/CF 默认关闭且外部可用时各限 ×3 在途',
+        '外部多代理（可选，默认载体）：/api/proxies?all=1 拿 28 候选后浏览器侧逐个实测（探测本仓库 raw 文件 xxx.json，简单 GET 防 CORS 预检，要求 2xx 且内容匹配防劫持假 200）；探测经 probeExtProxiesShared 合并在飞批次+缓存 60s（服务检测与多代理加载不重复击打站点防 429 刷屏，429 站点探测不复测，强制重检经 probeExtProxiesSharedAbort 安全中止）；承担约 80% 任务，EO/CF 各保 25% 份额地板；EO/CF 默认关闭且外部可用时各限 ×3 在途',
         '代理熔断：连续失败 2 次轮换，成功即清零+2 分钟未失败自愈；站点级异常慢 3 次冷却 30 秒；单分段外部尝试封顶 2 次后回 EO/CF 保底；416 从 Content-Range 自我修正',
         '批量下载：文件级并行池+池内共享全局连接预算（工作窃取），完成经保存队列串行吐出（间隔 400ms 规避浏览器限流）',
         '文件夹打包：git tree 收集（分片归并）→ 并行池拉取 → 前端 zip（store 不压缩，UTF-8 文件名，8MB 切片算 CRC 并让出主线程）',
@@ -247,6 +248,7 @@ PITFALLS = [
     'ObjectURL 内存泄漏：预览音/视频/图片的 Blob URL 关闭/重开弹窗时必须经 setPreviewBlobUrl() 释放',
     '代码高亮性能：关键词字典必须按语言缓存（LANG_KW_CACHE），禁每次按键重建',
     'CRLF 一致性：工作区 git autocrlf 产生 CRLF，而 eo.js 按 LF 嵌入——build_eo.py 读源文件已统一 replace \\r\\n→\\n，冒烟测试比较前同样归一化',
+    '内联 onclick 竞态：app.js 体积大，加载完成前用户点击内联 handler 会报函数未定义——主入口"上传文件"由 template.html 头部兜底桩覆盖（window.openUploadModal 桩只记录 __pendingOpenUpload，app.js 初始化末尾补开）；新增关键入口的内联调用需同样处理',
 ]
 
 WORKFLOW = {

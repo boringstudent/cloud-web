@@ -16,6 +16,10 @@
         </script>
         <link rel="stylesheet" href="/static/style.css?v={version}">
         <script>
+            // app.js 体积较大、加载完成前点击"上传文件"会报 openUploadModal 未定义——
+            // 先注册兜底桩只记录待打开标记；app.js 加载后同名函数声明自动覆盖本桩，
+            // 初始化完成时补开上传弹窗
+            window.openUploadModal = function() {{ window.__pendingOpenUpload = true; }};
             window.__APP__ = {{
                 title: '{title}',
                 repoOwner: '{repo_owner}',
