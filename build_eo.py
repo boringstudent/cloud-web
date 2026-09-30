@@ -15,7 +15,9 @@
 #   3. 都没有时生成脱敏版（key 为占位符，仅可用于查看/测试路由，无法访问 GitHub）
 
 import base64
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -1010,6 +1012,161 @@ function corsHeaders() {
 '''
 
 
+def _file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def _check_source_freshness():
+    """检查关键源码是否比 AI-CONTEXT.md 更新，若更新则提示开发者手动核对"""
+    ai_ctx_path = 'AI-CONTEXT.md'
+    if not os.path.exists(ai_ctx_path):
+        return True
+    ai_mtime = os.path.getmtime(ai_ctx_path)
+    sources = ['build_eo.py', 'static/app.js', 'static/style.css', 'cf-worker.js', 'API.md', 'template.html']
+    fresh = []
+    for s in sources:
+        if os.path.exists(s) and os.path.getmtime(s) > ai_mtime:
+            fresh.append(s)
+    if fresh:
+        print(f'WARNING: 以下源码文件比 {ai_ctx_path} 更新: {", ".join(fresh)}')
+        print('         请确认 AI-CONTEXT.md 中的架构/接口/常量描述是否需要同步更新。')
+    return bool(fresh)
+
+
+def update_ai_context(version, eo_size_kb, app_js_size, style_css_size, cf_size):
+    """更新 AI-CONTEXT.md 的元数据、构建信息与变更记录"""
+    ai_path = 'AI-CONTEXT.md'
+    if not os.path.exists(ai_path):
+        print(f'WARNING: {ai_path} 不存在，跳过 AI 上下文更新')
+        return False
+
+    with open(ai_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    now = time.strftime('%Y-%m-%dT%H:%M:%S+08:00', time.localtime())
+    date_str = time.strftime('%Y-%m-%d', time.localtime())
+
+    # 更新元数据时间戳
+    content = re.sub(r'<!--AI_CTX_GENERATED=.*?-->', f'<!--AI_CTX_GENERATED={now}-->', content)
+
+    # 更新[BUILD]中的动态字段
+    build_block = re.search(r'\[BUILD\].*?(?=\n\[|$)', content, re.S)
+    if build_block:
+        old = build_block.group(0)
+        new = old
+        new = re.sub(r'last_version=.*?(\n|$)', f'last_version={version}\n', new)
+        new = re.sub(r'last_eo_size=.*?(\n|$)', f'last_eo_size={eo_size_kb:.0f}KB\n', new)
+        new = re.sub(r'last_app_size=.*?(\n|$)', f'last_app_size={app_js_size:.0f}KB\n', new)
+        new = re.sub(r'last_css_size=.*?(\n|$)', f'last_css_size={style_css_size:.0f}KB\n', new)
+        new = re.sub(r'last_cf_size=.*?(\n|$)', f'last_cf_size={cf_size:.0f}KB\n', new)
+        content = content.replace(old, new)
+    else:
+        # 若[BUILD]不存在则追加
+        build_section = (
+            f"\n[BUILD]\n"
+            f"command=python build_eo.py\n"
+            f"last_version={version}\n"
+            f"last_eo_size={eo_size_kb:.0f}KB\n"
+            f"last_app_size={app_js_size:.0f}KB\n"
+            f"last_css_size={style_css_size:.0f}KB\n"
+            f"last_cf_size={cf_size:.0f}KB\n"
+        )
+        content = content.rstrip() + '\n' + build_section
+
+    # 更新[CHANGELOG]：若当天无记录则追加
+    changelog_prefix = f'{date_str}='
+    if changelog_prefix not in content:
+        # 在CHANGELOG块末尾添加新行
+        content = content.rstrip() + f'\n{date_str}=构建更新(v{version})\n'
+
+    with open(ai_path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(content)
+
+    print(f'AI-CONTEXT.md updated (version={version})')
+    return True
+
+
+def run_smoke_test():
+    """运行冒烟测试套件"""
+    node = shutil.which('node')
+    if not node:
+        print('WARNING: 未找到 node，跳过冒烟测试')
+        return False
+    if not os.path.exists('test_eo_smoke.js'):
+        print('WARNING: test_eo_smoke.js 不存在，跳过冒烟测试')
+        return False
+    print('Running smoke tests...')
+    r = subprocess.run([node, 'test_eo_smoke.js'], capture_output=True, text=True)
+    print(r.stdout, end='')
+    if r.returncode != 0:
+        print('SMOKE TEST FAILED')
+        if r.stderr:
+            print(r.stderr)
+        raise SystemExit(1)
+    print('Smoke tests: PASSED')
+    return True
+
+
+def git_commit_and_push(version):
+    """将 AI-CONTEXT.md 及相关变更提交并推送到 Git"""
+    git = shutil.which('git')
+    if not git:
+        print('WARNING: 未找到 git，跳过版本控制提交')
+        return False
+
+    # 检查是否在 git 仓库中
+    r = subprocess.run([git, 'rev-parse', '--git-dir'], capture_output=True, text=True)
+    if r.returncode != 0:
+        print('WARNING: 不在 git 仓库中，跳过提交')
+        return False
+
+    # 检查是否有变更
+    r = subprocess.run([git, 'status', '--porcelain'], capture_output=True, text=True)
+    # 注意：不能 strip() 整个 stdout——porcelain 格式为 2 字符状态 + 空格 + 路径，
+    # 首行前导空格被剥掉会导致解析错位
+    changed_lines = [line for line in r.stdout.splitlines() if line.strip()]
+    if not changed_lines:
+        print('No changes to commit.')
+        return True
+
+    # 筛选需要提交的文件（AI-CONTEXT.md 和源代码，排除 eo.js 和 .eo-key 等机密文件）
+    allowed = {'AI-CONTEXT.md', 'build_eo.py', 'static/app.js', 'static/style.css',
+               'cf-worker.js', 'API.md', 'template.html', 'test_eo_smoke.js',
+               'test_eo_server.js', 'README.md', '404.html', 'xxx.json'}
+    to_stage = []
+    for line in changed_lines:
+        path = line[3:].strip() if len(line) > 3 else line.strip()
+        if path in allowed:
+            to_stage.append(path)
+
+    if not to_stage:
+        print('No allowed files to commit (skipping sensitive artifacts).')
+        return True
+
+    for p in to_stage:
+        subprocess.run([git, 'add', p], capture_output=True)
+
+    commit_msg = f"build: update AI-CONTEXT and sources (v{version})"
+    r = subprocess.run([git, 'commit', '-m', commit_msg], capture_output=True, text=True)
+    if r.returncode != 0:
+        print('Git commit failed:', r.stderr or r.stdout)
+        return False
+    print(f'Git commit: {commit_msg}')
+
+    # 尝试推送
+    r = subprocess.run([git, 'push'], capture_output=True, text=True)
+    if r.returncode == 0:
+        print('Git push: OK')
+    else:
+        print('Git push failed:', r.stderr or r.stdout)
+        return False
+    return True
+
+
 def build():
     version = str(int(time.time()))
 
@@ -1050,6 +1207,10 @@ def build():
     shutil.copyfile('template.html', '404.html')
 
     size_kb = len(out.encode('utf-8')) / 1024
+    app_js_size = len(app_js.encode('utf-8')) / 1024
+    style_css_size = len(style_css.encode('utf-8')) / 1024
+    cf_size = os.path.getsize('cf-worker.js') / 1024 if os.path.exists('cf-worker.js') else 0
+
     print(f'Build completed. eo.js: {size_kb:.0f} KB, storage repo: {STORAGE_REPO}, version: {version}')
 
     # ---- 语法自验（环境里有 node 时） ----
@@ -1062,6 +1223,16 @@ def build():
             print('node --check eo.js: FAILED')
             print(r.stderr)
             raise SystemExit(1)
+
+    # ---- AI 上下文文件更新 ----
+    _check_source_freshness()
+    update_ai_context(version, size_kb, app_js_size, style_css_size, cf_size)
+
+    # ---- 冒烟测试（环境里有 node 时） ----
+    run_smoke_test()
+
+    # ---- Git 提交并推送 ----
+    git_commit_and_push(version)
 
 
 if __name__ == '__main__':
