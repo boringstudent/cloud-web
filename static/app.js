@@ -25,11 +25,11 @@ var DUAL_DL_PARTS = 12;              // 分段数（多于并发数，调度器�
 var DUAL_SEG_MAX_ATTEMPTS = 5;       // 单段最大尝试次数（每次换源；坏代理快速失败，多两次几乎零成本）
 
 function cfRawUrl(filePath) {
-    return CF_PROXY_BASE + 'raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
+    return CF_PROXY_BASE + 'raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(filePath);
 }
 
 function cfApiUrl(filePath) {
-    return CF_PROXY_BASE + 'api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath);
+    return CF_PROXY_BASE + 'api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodePath(filePath);
 }
 
 // ---- 外部多代理下载通道（可选，公共 ghproxy 镜像，仅匿名下载加速） ----
@@ -217,7 +217,7 @@ function probeExtProxiesBrowser(bases, done) {
 }
 
 function extRawUrl(base, filePath) {
-    return base + 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath);
+    return base + 'https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(filePath);
 }
 
 function extProxyLoad(cb) {
@@ -964,6 +964,15 @@ var I18N = {
         '正在登录...': 'Signing in...',
         '登录成功！': 'Signed in!',
         '服务正常': 'All services OK',
+        'EO 边缘函数': 'EO Edge Function',
+        'CF 加速': 'CF Acceleration',
+        'Git 外部': 'Git External',
+        '检测时间': 'Checked at',
+        '重新检测': 'Recheck',
+        '正常': 'OK',
+        '连接失败': 'Connection failed',
+        '检测中…': 'Checking…',
+        '可用': 'Available',
         '服务异常': 'Service issue',
         '（管理员）': ' (admin)',
         '显示密码': 'Show password',
@@ -1139,6 +1148,15 @@ var I18N = {
         '正在登录...': '正在登入...',
         '登录成功！': '登入成功！',
         '服务正常': '服務正常',
+        'EO 边缘函数': 'EO 邊緣函式',
+        'CF 加速': 'CF 加速',
+        'Git 外部': 'Git 外部',
+        '检测时间': '檢測時間',
+        '重新检测': '重新檢測',
+        '正常': '正常',
+        '连接失败': '連線失敗',
+        '检测中…': '檢測中…',
+        '可用': '可用',
         '服务异常': '服務異常',
         '（管理员）': '（管理員）',
         '显示密码': '顯示密碼',
@@ -1313,6 +1331,15 @@ var I18N = {
         '正在登录...': 'ログイン中...',
         '登录成功！': 'ログインしました！',
         '服务正常': 'サービス正常',
+        'EO 边缘函数': 'EO エッジ関数',
+        'CF 加速': 'CF 加速',
+        'Git 外部': 'Git 外部',
+        '检测时间': '検出時刻',
+        '重新检测': '再検出',
+        '正常': '正常',
+        '连接失败': '接続失敗',
+        '检测中…': '検出中…',
+        '可用': '利用可能',
         '服务异常': 'サービス異常',
         '（管理员）': '（管理者）',
         '显示密码': 'パスワードを表示',
@@ -2373,13 +2400,13 @@ function renderSvcStatus() {
     el.className = 'svc-status ' + (badCount ? 'fail' : 'ok') + (svcExpanded ? ' expanded' : '');
     text.textContent = doneCount < 3 ? t('服务检测中…') : (badCount ? t('服务异常') + ' ×' + badCount : t('服务正常'));
     tip.textContent = '';
-    addSvcTipLine(tip, 'EO 边缘函数', '', a);
+    addSvcTipLine(tip, t('EO 边缘函数'), '', a);
     addGitSvcTip(tip, g);
-    addSvcTipLine(tip, 'CF 加速', 'cloud-ecr.pages.dev', c);
+    addSvcTipLine(tip, t('CF 加速'), 'cloud-ecr.pages.dev', c);
     var timeDiv = document.createElement('div');
     var timeLabel = document.createElement('span');
     timeLabel.className = 'svc-name';
-    timeLabel.textContent = '检测时间';
+    timeLabel.textContent = t('检测时间');
     timeDiv.appendChild(timeLabel);
     timeDiv.appendChild(document.createTextNode(new Date().toLocaleTimeString()));
     tip.appendChild(timeDiv);
@@ -2388,7 +2415,7 @@ function renderSvcStatus() {
     var reBtn = document.createElement('button');
     reBtn.type = 'button';
     reBtn.className = 'svc-recheck-btn';
-    reBtn.textContent = '重新检测';
+    reBtn.textContent = t('重新检测');
     reBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         checkSvcStatus(true);
@@ -2409,10 +2436,10 @@ function addSvcTipLine(tip, name, addr, st) {
         state.className = 'svc-ok';
         var detail = st.ip || '';
         var extra = [st.location, st.isp].filter(function(s) { return s; }).join(' · ');
-        state.textContent = (extra ? detail + '（' + extra + '）' : detail) + ' 正常';
+        state.textContent = (extra ? detail + '（' + extra + '）' : detail) + ' ' + t('正常');
     } else {
         state.className = 'svc-fail';
-        state.textContent = st ? '连接失败' : '检测中…';
+        state.textContent = st ? t('连接失败') : t('检测中…');
     }
     div.appendChild(state);
     if (st && typeof st.rtt === 'number') {
@@ -2430,15 +2457,15 @@ function addGitSvcTip(tip, g) {
     var div = document.createElement('div');
     var label = document.createElement('span');
     label.className = 'svc-name';
-    label.textContent = 'Git 外部';
+    label.textContent = t('Git 外部');
     div.appendChild(label);
     var state = document.createElement('span');
     if (g && g.ok) {
         state.className = 'svc-ok';
-        state.textContent = '可用 ' + g.okCount + '/' + g.total + ' 正常';
+        state.textContent = t('可用') + ' ' + g.okCount + '/' + g.total + ' ' + t('正常');
     } else {
         state.className = 'svc-fail';
-        state.textContent = g ? ('连接失败（可用 0/' + g.total + '）') : '检测中…';
+        state.textContent = g ? (t('连接失败') + '（' + t('可用') + ' 0/' + g.total + '）') : t('检测中…');
     }
     div.appendChild(state);
     if (g && typeof g.rtt === 'number') {
@@ -2457,7 +2484,7 @@ function addGitSvcTip(tip, g) {
             sub.appendChild(subName);
             var subState = document.createElement('span');
             subState.className = 'svc-fail';
-            subState.textContent = '连接失败';
+            subState.textContent = t('连接失败');
             sub.appendChild(subState);
             tip.appendChild(sub);
         });
@@ -2967,7 +2994,7 @@ function propRow(label, value, mono) {
 
 // ---- 音频标签（ID3v1 / ID3v2）读取：经 Range 请求只取文件头尾，不下载整文件 ----
 function rawUrlFor(path) {
-    return ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(path));
+    return ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(path));
 }
 
 function fetchRange(url, rangeHeader, cb) {
@@ -4389,6 +4416,20 @@ function renderSharePage() {
         return;
     }
 
+    // 分享页访客没有通道偏好（EO/CF 默认关闭、多代理默认关），下载会退化成
+    // 单 EO 兜底慢速——分享场景自动启用 EO/CF/外部多代理（仅本次会话内存态，
+    // 不写入 localStorage 偏好）
+    dlChanSwitch.eo = true;
+    dlChanSwitch.cf = true;
+    dlChanBtnRefresh();
+    if (!extProxyState.enabled) {
+        extProxyState.enabled = true;
+        extProxyLoad(function() {
+            updateDlLegendExtVisibility();
+            dlNotify();
+        });
+    }
+
     // 隐藏正常网盘 UI，展示下载页
     document.getElementById('breadcrumbs').style.display = 'none';
     document.querySelector('.search-wrap').style.display = 'none';
@@ -4447,28 +4488,41 @@ function renderSharePage() {
     dlBtn.textContent = data.items.length === 1 && data.items[0].t !== 'dir' ? t('立即下载') : t('打包下载 (ZIP)');
     dlBtn.addEventListener('click', function() {
         dlBtn.disabled = true;
-        dlBtn.textContent = '下载中...';
-        if (data.items.length === 1 && data.items[0].t !== 'dir') {
-            // 单文件直接下载
-            var item = data.items[0];
-            var rawUrl = '/raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(item.p);
-            var a = document.createElement('a');
-            a.href = rawUrl;
-            a.download = item.n;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+        dlBtn.textContent = t('下载中...');
+        var single = data.items.length === 1 && data.items[0].t !== 'dir';
+        var restore = function() {
             dlBtn.disabled = false;
-            dlBtn.textContent = t('立即下载');
-        } else {
-            // 多文件/文件夹打包下载
-            var models = data.items.map(function(it) {
-                return { path: it.p, name: it.n, size: it.s || 0, type: it.t, displayName: it.n };
-            });
+            dlBtn.textContent = single ? t('立即下载') : t('打包下载 (ZIP)');
+        };
+        // 先取全量文件树：分片文件（.partN）归并还原、文件夹展开递归收集，
+        // 避免直拼 raw URL 404 / 文件夹路径当文件下载
+        fetchFileTree(function() {
+            if (single) {
+                var item = data.items[0];
+                var parts = shareFindParts(item.p);
+                if (parts) {
+                    downloadMergedFile(parts, item.n);
+                } else {
+                    // 经多通道下载器 + blob 保存：手机浏览器不会变成在线预览
+                    downloadFile(item.p, item.n, null, null, item.s || 0);
+                }
+                restore();
+                return;
+            }
+            var models = shareCollectZipModels(data.items);
+            if (!models.length) {
+                restore();
+                showToast('文件夹为空');
+                setTimeout(hideToast, 2000);
+                return;
+            }
             downloadFolderZip(models, data.items.length === 1 ? data.items[0].n : t('批量下载'));
-            dlBtn.disabled = false;
-            dlBtn.textContent = t('打包下载 (ZIP)');
-        }
+            restore();
+        }, function() {
+            restore();
+            showToast('获取文件夹内容失败');
+            setTimeout(hideToast, 2500);
+        });
     });
     card.appendChild(dlBtn);
 
@@ -4487,6 +4541,75 @@ function renderSharePage() {
     }
 
     container.appendChild(card);
+}
+
+// 分享页：在文件树中查找 path 对应的分片（path.partN），存在返回按序号排序的
+// parts 数组（tree item 含 path/sha/size，可直接喂 fetchMergedBlob），否则 null
+function shareFindParts(path) {
+    var parts = [];
+    (fileTreeCache || []).forEach(function(item) {
+        if (item.type === 'blob' && item.path && item.path.indexOf(path + '.part') === 0
+            && PART_SUFFIX.test(item.path.substring(path.length))) {
+            parts.push(item);
+        }
+    });
+    if (!parts.length) return null;
+    parts.sort(function(a, b) { return getPartNumber(a.path) - getPartNumber(b.path); });
+    return parts;
+}
+
+// 分享页打包：文件夹按文件树递归展开（保留目录结构、以分享项名为顶层目录），
+// 分片文件归并为虚拟整文件，产出 downloadFolderZip 所需模型（含 zipName/parts）
+function shareCollectZipModels(items) {
+    var models = [];
+    var seen = {};
+    var pushModel = function(zipName, path, size, chunked, parts) {
+        var zn = zipName;
+        if (seen[zn]) zn = zn.replace(/\//g, '_');
+        seen[zn] = true;
+        models.push({
+            zipName: zn,
+            displayName: displayName(zn),
+            path: path,
+            size: size,
+            chunked: !!chunked,
+            parts: parts || null
+        });
+    };
+    items.forEach(function(it) {
+        if (it.t === 'dir') {
+            var prefix = it.p + '/';
+            var partGroups = {};
+            (fileTreeCache || []).forEach(function(item) {
+                if (item.type !== 'blob' || !item.path || item.path.indexOf(prefix) !== 0) return;
+                var rel = it.n + '/' + item.path.substring(prefix.length);
+                if (PART_SUFFIX.test(item.path)) {
+                    var base = item.path.replace(PART_SUFFIX, '');
+                    if (!partGroups[base]) partGroups[base] = { zipBase: rel.replace(PART_SUFFIX, ''), parts: [] };
+                    partGroups[base].parts.push(item);
+                } else {
+                    pushModel(rel, item.path, item.size, false, null);
+                }
+            });
+            for (var base in partGroups) {
+                var g = partGroups[base];
+                g.parts.sort(function(a, b) { return getPartNumber(a.path) - getPartNumber(b.path); });
+                var gTotal = 0;
+                g.parts.forEach(function(p) { gTotal += (p.size || 0); });
+                pushModel(g.zipBase, null, gTotal, true, g.parts);
+            }
+        } else {
+            var parts = shareFindParts(it.p);
+            if (parts) {
+                var pTotal = 0;
+                parts.forEach(function(p) { pTotal += (p.size || 0); });
+                pushModel(it.n, null, pTotal, true, parts);
+            } else {
+                pushModel(it.n, it.p, it.s || 0, false, null);
+            }
+        }
+    });
+    return models;
 }
 
 function saveBlobAs(blob, fileName) {
@@ -4892,7 +5015,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
             } else if (chan === 'ext') {
                 url = extRawUrl(parts[i]._extBase, parts[i].path);
             } else {
-                url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(parts[i].path));
+                url = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(parts[i].path));
             }
             var xhr = new XMLHttpRequest();
             actives.push(xhr);
@@ -6944,7 +7067,7 @@ function renderTextView(text, editable) {
 
 function previewFile(filePath, fileName) {
     var ext = getFileExtension(fileName);
-    var previewUrl = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
+    var previewUrl = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(filePath));
 
     previewFileInfo = {
         path: filePath,
@@ -7222,7 +7345,7 @@ function previewFile(filePath, fileName) {
 
 function editFile(filePath, fileName) {
     var ext = getFileExtension(fileName);
-    var previewUrl = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodeURI(filePath));
+    var previewUrl = ghUrl('https://raw.githubusercontent.com/' + REPO_OWNER + '/' + REPO_NAME + '/' + DEFAULT_BRANCH + '/' + encodePath(filePath));
 
     previewFileInfo = {
         path: filePath,
@@ -7312,7 +7435,7 @@ function savePreviewFile() {
 }
 
 function updateFileOnGitHub(filePath, newContent) {
-    var shaUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
+    var shaUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodePath(filePath));
     var shaXhr = new XMLHttpRequest();
     shaXhr.open('GET', shaUrl, true);
     shaXhr.onload = function() {
@@ -7329,7 +7452,7 @@ function updateFileOnGitHub(filePath, newContent) {
                 };
 
                 var updateXhr = new XMLHttpRequest();
-                var updateUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath));
+                var updateUrl = ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodePath(filePath));
                 updateXhr.open('PUT', updateUrl, true);
                 applyEoAuth(updateXhr);
                 updateXhr.setRequestHeader('Content-Type', 'application/json');
@@ -7433,7 +7556,7 @@ function confirmDelete() {
 // Shared contents-API DELETE helper. cb(status, responseText); status 0 = network error.
 function ghDeleteFile(filePath, sha, cb) {
     var xhr = new XMLHttpRequest();
-    xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodeURI(filePath)), true);
+    xhr.open('DELETE', ghUrl('https://api.github.com/repos/' + REPO_OWNER + '/' + REPO_NAME + '/contents/' + encodePath(filePath)), true);
     applyEoAuth(xhr);
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.onload = function() { cb(xhr.status, xhr.responseText); };

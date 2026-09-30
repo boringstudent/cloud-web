@@ -1429,7 +1429,7 @@ h1 {
     justify-content: space-between;
 }
 .user-menu-item.has-sub > span::after {
-    content: '›';
+    content: '‹';
     font-size: 14px;
     color: #999;
     margin-left: 8px;
@@ -1438,7 +1438,9 @@ h1 {
     display: none;
     position: absolute;
     top: -6px;
-    left: calc(100% - 4px);
+    /* 用户菜单贴在屏幕右边缘，子菜单必须向左展开，向右会超出视口 */
+    left: auto;
+    right: calc(100% - 4px);
     min-width: 120px;
     background: #fff;
     border-radius: 10px;
@@ -1839,6 +1841,9 @@ h1 {
 }
 :root[data-theme="dark"] .admin-user-info {
     color: #e6edf3;
+}
+:root[data-theme="dark"] .admin-user-row:hover {
+    background: #30363d;
 }
 :root[data-theme="dark"] .icon-btn {
     color: #8b949e;
