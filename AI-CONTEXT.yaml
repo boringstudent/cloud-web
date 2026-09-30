@@ -1,0 +1,1232 @@
+meta:
+  schema: 1
+  generated_at: '2026-09-30T21:29:47'
+  git_commit: 2e0027e658f24e1b27fa993dae413a19f87d3dd7
+  git_commit_short: 2e0027e
+  generator: build_ai_context.py（本文件由其自动重建，勿手改）
+project:
+  name: cloud-web
+  summary: 基于 GitHub 仓库作存储后端的网页版网盘；全站一体部署于腾讯云 EdgeOne（EO）边缘函数：eo.js 单文件同时提供前端页面、静态资源、认证用户 API、GitHub 代理与下载中转；浏览器一切请求与站点同源，GitHub
+    key 只存于 EO 服务端永不下发
+  tech_stack: 零依赖、零框架、零 npm：前端原生 JS+CSS+单 HTML 模板；后端 EO 边缘函数 JS；构建脚本 Python 3；可选 CF Worker 加速通道
+  repos:
+    code: boringstudent/cloud-web（本仓库）
+    storage: boringstudent/cloud-storage（网盘文件存储，构建时 CLOUD 环境变量可覆盖）
+    user_data: boringstudent/cloud-user（user.json 用户数据，代理白名单永久拒绝 403）
+files:
+- name: build_eo.py
+  role: EO 一体化构建脚本（后端模板+前端资源烘焙→eo.js）
+  bytes: 46232
+  sha1: d6436372
+  lines: 1072
+- name: build_ai_context.py
+  role: 本生成器：重建 AI-CONTEXT.yaml
+  bytes: 27722
+  sha1: b2916fa3
+  lines: 450
+- name: template.html
+  role: 唯一 HTML 模板
+  bytes: 22073
+  sha1: baee0ad3
+  lines: 336
+- name: 404.html
+  role: template.html 构建同步副本
+  bytes: 22073
+  sha1: baee0ad3
+  lines: 336
+- name: static/app.js
+  role: 全部前端逻辑
+  bytes: 417677
+  sha1: cce9ea9e
+  lines: 9668
+- name: static/style.css
+  role: 全部样式
+  bytes: 55922
+  sha1: '19058504'
+  lines: 2367
+- name: cf-worker.js
+  role: CF 加速通道源码
+  bytes: 21792
+  sha1: 84cde5f8
+  lines: 513
+- name: API.md
+  role: 人类用接口文档
+  bytes: 10382
+  sha1: 99f8ce88
+  lines: 215
+- name: README.md
+  role: 人类用功能/算法说明
+  bytes: 41595
+  sha1: a04f8fa7
+  lines: 174
+- name: test_eo_smoke.js
+  role: eo.js 冒烟测试（44 断言，不触网）
+  bytes: 8976
+  sha1: d5da6d30
+  lines: 139
+- name: test_eo_server.js
+  role: eo.js 本地模拟服务器
+  bytes: 2222
+  sha1: b5fca60e
+  lines: 51
+- name: favicon.ico
+  role: 站点图标（构建时 base64 嵌入）
+  bytes: 146298
+  sha1: 98baaa6c
+- name: xxx.json
+  role: 外部代理浏览器侧探测目标文件（raw 小文件）
+  bytes: 166
+  sha1: df52fdf6
+  lines: 6
+- name: eo.js
+  role: EO 部署产物（gitignore，含 key 属服务端机密）
+  bytes: 719389
+  sha1: 70475eb9
+  lines: 13326
+  gitignored: true
+- name: .eo-key
+  role: 本地 GitHub key（gitignore）
+  bytes: 42
+  sha1: 8b317a9e
+  gitignored: true
+- name: .gitignore
+  role: 忽略 eo.js/.eo-key/build 等
+  bytes: 247
+  sha1: 64771e18
+architecture:
+  modules:
+  - name: build_eo.py
+    role: EO 一体化构建脚本：后端模板(BACKEND 字符串)+前端资源烘焙为单文件 eo.js，生成后自动 node --check 并同步 404.html
+  - name: eo.js
+    role: 构建产物（gitignore）：EdgeOne 边缘函数，页面/资源/API/代理全同源提供
+  - name: template.html
+    role: 唯一 HTML 模板（Python str.format，内联启动参数需双大括号转义）
+  - name: 404.html
+    role: template.html 的构建时同步副本
+  - name: static/app.js
+    role: 全部前端逻辑（普通 JS，无模板转义）
+  - name: static/style.css
+    role: 全部样式（背景图浏览器直连图床，不经 EO）
+  - name: cf-worker.js
+    role: CF 加速通道源码（部署 cloud-ecr.pages.dev）：GitHub 全站反向代理 + 服务端 GITHUB_TOKEN 注入 + /ip 出口 IP
+  - name: test_eo_smoke.js
+    role: eo.js 本地冒烟测试（Node 模拟 fetch 事件，44 项断言，不触网）
+  - name: test_eo_server.js
+    role: eo.js 本地模拟服务器（端到端预览）
+  - name: API.md / README.md
+    role: 人类文档：接口全集 / 功能与算法说明
+  dataflow_ascii: |-
+    浏览器
+      |-- 同源 --> EO eo.js --+-- /api/login|users|change-*  --> GitHub boringstudent/cloud-user user.json
+      |                       +-- /api.github.com/ | /raw.githubusercontent.com/ | /github.com/（白名单代理，服务端注入 key）--> GitHub boringstudent/cloud-storage
+      |                       +-- /api/hash|proxies|my-ip|cf-ip|bg（公开接口）--> cip.cc / api.ip.sb / ipinfo.io / 图床
+      |-- CF 加速通道 --> cloud-ecr.pages.dev (cf-worker.js，注入 GITHUB_TOKEN) --> GitHub
+      |-- 外部多代理（仅下载）--> 28 个公共 ghproxy 镜像（浏览器侧实测可用性）
+      +-- 背景图直连 loliapi 图床（不经 EO）
+backend:
+  file: build_eo.py（BACKEND 模板字符串，构建时替换 __XXX__ 占位符后写入 eo.js）
+  key_security: GITHUB_KEY 仅存在于 EO 服务端；代理白名单永久拒绝用户数据仓库；用户列表密码字段脱敏 ***
+  auth_model: 读操作公开；写操作（PUT/DELETE/POST/PATCH 代理 + 用户 API）需 X-Auth-User/X-Auth-Pass（SHA-512 哈希）逐请求实时校验；鉴权读有 60s 实例级缓存，写后即时刷新；Contents
+    API 写操作仅变更目标字段，409 冲突自动重读重试（≤3 次）
+  user_json: '{ "<username>": { "password": "<sha512>", "role": "admin|user", "avatar": "<可选URL>" } }'
+  routes:
+  - line: 157
+    match: prefix
+    path: /api.github.com/
+  - line: 158
+    match: prefix
+    path: /raw.githubusercontent.com/
+  - line: 159
+    match: prefix
+    path: /github.com/
+  - line: 164
+    match: exact
+    path: /api/hash
+  - line: 173
+    match: exact
+    path: /api/proxies
+  - line: 192
+    match: exact
+    path: /api/my-ip
+  - line: 192
+    match: exact
+    path: /ip
+  - line: 203
+    match: exact
+    path: /api/cf-ip
+  - line: 213
+    match: exact
+    path: /api/login
+  - line: 237
+    match: exact
+    path: /api/change-password
+  - line: 260
+    match: exact
+    path: /api/change-avatar
+  - line: 287
+    match: exact
+    path: /api/delete-account
+  - line: 308
+    match: exact
+    path: /api/users
+  - line: 308
+    match: prefix
+    path: /api/users/
+  - line: 390
+    match: exact
+    path: /api/bg
+  - line: 394
+    match: prefix
+    path: /api/
+  - line: 417
+    match: exact
+    path: /static/app.js
+  - line: 420
+    match: exact
+    path: /static/style.css
+  - line: 423
+    match: exact
+    path: /favicon.ico
+  functions:
+  - line: 24
+    name: load_github_key
+    lang: python
+  - line: 46
+    name: js_tpl_escape
+    lang: python
+  - line: 147
+    name: handleRequest
+    lang: js-template
+  - line: 444
+    name: pageResponse
+    lang: js-template
+  - line: 455
+    name: assetResponse
+    lang: js-template
+  - line: 466
+    name: faviconResponse
+    lang: js-template
+  - line: 482
+    name: secHeaders
+    lang: js-template
+  - line: 493
+    name: handleBg
+    lang: js-template
+  - line: 533
+    name: handleGithubProxy
+    lang: js-template
+  - line: 634
+    name: requireLogin
+    lang: js-template
+  - line: 653
+    name: requireAdmin
+    lang: js-template
+  - line: 678
+    name: getServerIpInfo
+    lang: js-template
+  - line: 691
+    name: fetchText
+    lang: js-template
+  - line: 705
+    name: mapLimited
+    lang: js-template
+  - line: 724
+    name: probeExtProxyOnce
+    lang: js-template
+  - line: 751
+    name: probeExtProxy
+    lang: js-template
+  - line: 760
+    name: listUsableExtProxies
+    lang: js-template
+  - line: 774
+    name: probeExtProxyApi
+    lang: js-template
+  - line: 785
+    name: probeExtProxiesApi
+    lang: js-template
+  - line: 803
+    name: getCfIpInfo
+    lang: js-template
+  - line: 832
+    name: queryIpSb
+    lang: js-template
+  - line: 847
+    name: queryCipCc
+    lang: js-template
+  - line: 857
+    name: queryIpinfoIo
+    lang: js-template
+  - line: 873
+    name: parseCipCc
+    lang: js-template
+  - line: 896
+    name: isSha512Hex
+    lang: js-template
+  - line: 900
+    name: sha512
+    lang: js-template
+  - line: 905
+    name: parseBody
+    lang: js-template
+  - line: 928
+    name: readUsersFile
+    lang: js-template
+  - line: 946
+    name: mutateUsers
+    lang: js-template
+  - line: 973
+    name: ghHeaders
+    lang: js-template
+  - line: 981
+    name: b64encode
+    lang: js-template
+  - line: 988
+    name: b64decode
+    lang: js-template
+  - line: 995
+    name: json
+    lang: js-template
+  - line: 1002
+    name: corsHeaders
+    lang: js-template
+  - line: 1013
+    name: build
+    lang: python
+frontend:
+  file: static/app.js（全部前端逻辑，9668 行普通 JS，无框架）
+  template: template.html（Python str.format 模板，内联 JS 需双大括号转义）；404.html 为构建同步副本
+  boot: window.__APP__ 注入 {title, repoOwner, repoName, defaultBranch}；app.js 按 location.pathname 解析当前目录（SPA 兜底）
+  function_groups:
+    ext*: 外部多代理下载（候选池/浏览器侧探测/熔断与自愈/站点级慢速冷却）
+    dl*: 下载调度（通道加权分配/自适应并发/慢速换源/速度曲线/图例）
+    ul*/upload*/fill*/startTask*/prefetch*: 上传调度（通道选择/预读缓存/分拍发布/在途字节护栏）
+    commit*/putBlob*/gitApiUrl: Git 数据 API 上传管线（blob→tree→commit→ref，链式推进+冲突重试）
+    audio*: 音频播放列表（单曲/顺序/随机模式、预载下一首、WebAudio EQ 动画）
+    img*: 图片查看器（缩放/拖拽/缩略图条限流加载/鸟瞰图）
+    preview*/stream*/probe*Media/buildMediaControls: 预览（媒体流式/图片渐进/三通道测速/自定义控制条）
+    md*/markdown*/safe*/highlight*/detectLang/minimap*/buildText*/render*: Markdown 与代码渲染（XSS 防护/高亮/鸟瞰图）
+    search*/triggerSearch/locate*: 目录范围搜索（防抖/归并分片/定位/304 视图恢复）
+    delete*/batch*/toggleSelect/*Selection*: 删除与批量操作（并行删除冲突自适应/批量下载池）
+    task*/showBgTask/updateBgTask/*BgTask*: 全局任务管理器（同类互斥/后台浮泡/快照持久化）
+    admin*/withAdminCreds: 用户管理（仅 admin，凭据复用缓存哈希）
+    svc*/check*/measureRtt: 服务状态三路检测（EO/Git外部/CF，10min 自动刷新）
+    login/logout/saveAuth/getSavedAuth/*Remember: 认证会话（SHA-512/持久化/记住密码哈希迁移）
+    theme*/applyTheme: 主题切换（auto/light/dark）
+    lang*/initLang/applyI18n*/t: 多语言（4 语言词典翻译）
+    '*BgTask*/showTaskProgress/updateTaskProgress': 进度卡片与后台浮泡 UI
+  functions:
+  - line: 11
+    name: ghUrl
+  - line: 27
+    name: cfRawUrl
+  - line: 31
+    name: cfApiUrl
+  - line: 62
+    name: extFailCount
+  - line: 74
+    name: extNoteSuccess
+  - line: 80
+    name: extProxiesUsable
+  - line: 88
+    name: extDlAvailable
+  - line: 94
+    name: extPickBase
+  - line: 108
+    name: extNoteFail
+  - line: 120
+    name: extSiteNoteSuccess
+  - line: 131
+    name: extSiteAvgRate
+  - line: 145
+    name: extSiteIsSlow
+  - line: 155
+    name: extSiteNoteSlow
+  - line: 170
+    name: probeExtProxiesBrowser
+  - line: 219
+    name: extRawUrl
+  - line: 223
+    name: extProxyLoad
+  - line: 261
+    name: extProxySetEnabled
+  - line: 284
+    name: extProxyRestore
+  - line: 304
+    name: dlChanSwitchLoad
+  - line: 316
+    name: dlChanSwitchSave
+  - line: 323
+    name: dlChanToggle
+  - line: 333
+    name: dlChanBtnRefresh
+  - line: 345
+    name: isAdminUser
+  - line: 350
+    name: ulChanSwitchLoad
+  - line: 361
+    name: ulChanSwitchSave
+  - line: 367
+    name: ulChanBtnRefresh
+  - line: 376
+    name: ulChanToggle
+  - line: 395
+    name: probeCfUpload
+  - line: 430
+    name: applyEoAuth
+  - line: 444
+    name: bypassHttpCache
+  - line: 449
+    name: cachedGet
+  - line: 485
+    name: setPreviewBlobUrl
+  - line: 499
+    name: bindAudioVolume
+  - line: 517
+    name: abortPreviewProbes
+  - line: 525
+    name: stopPreviewMedia
+  - line: 554
+    name: currentChunkLabel
+  - line: 559
+    name: getPartNumber
+  - line: 568
+    name: saveAuth
+  - line: 576
+    name: getSavedAuth
+  - line: 591
+    name: clearAuth
+  - line: 602
+    name: saveRemember
+  - line: 610
+    name: getRemember
+  - line: 628
+    name: clearRemember
+  - line: 655
+    name: translateApiError
+  - line: 661
+    name: sha512Hex
+  - line: 677
+    name: apiGetJson
+  - line: 700
+    name: apiSendJson
+  - line: 728
+    name: loginUser
+  - line: 737
+    name: loginWithHash
+  - line: 758
+    name: fillAuthInputs
+  - line: 784
+    name: pwdEyeRefresh
+  - line: 793
+    name: togglePwdEye
+  - line: 802
+    name: initPwdEyes
+  - line: 827
+    name: themeResolve
+  - line: 832
+    name: applyTheme
+  - line: 836
+    name: themeSet
+  - line: 844
+    name: initTheme
+  - line: 1329
+    name: t
+  - line: 1448
+    name: applyOwnText
+  - line: 1462
+    name: applyI18nStatic
+  - line: 1483
+    name: langDetect
+  - line: 1496
+    name: langSet
+  - line: 1513
+    name: initLang
+  - line: 1531
+    name: userAvatarUrl
+  - line: 1540
+    name: renderUserAvatar
+  - line: 1561
+    name: toggleUserMenu
+  - line: 1567
+    name: closeUserMenu
+  - line: 1574
+    name: applyAuthVisibility
+  - line: 1581
+    name: updateAuthBtn
+  - line: 1603
+    name: handleAuthBtnClick
+  - line: 1611
+    name: openLoginModal
+  - line: 1618
+    name: closeLoginModal
+  - line: 1622
+    name: doLogin
+  - line: 1663
+    name: logout
+  - line: 1675
+    name: openAccountModal
+  - line: 1688
+    name: closeAccountModal
+  - line: 1693
+    name: changeOwnAvatar
+  - line: 1728
+    name: validateNewPassword
+  - line: 1736
+    name: changeOwnPassword
+  - line: 1803
+    name: deleteOwnAccount
+  - line: 1848
+    name: withAdminCreds
+  - line: 1854
+    name: openAdminModal
+  - line: 1862
+    name: closeAdminModal
+  - line: 1870
+    name: loadAdminUsers
+  - line: 1905
+    name: toggleAdminUserList
+  - line: 1913
+    name: renderAdminUserList
+  - line: 1976
+    name: adminAddUser
+  - line: 2026
+    name: adminResetPassword
+  - line: 2057
+    name: adminChangeRole
+  - line: 2080
+    name: adminDeleteUser
+  - line: 2138
+    name: measureRtt
+  - line: 2156
+    name: checkOneService
+  - line: 2196
+    name: renderSvcStatus
+  - line: 2242
+    name: addSvcTipLine
+  - line: 2271
+    name: addGitSvcTip
+  - line: 2311
+    name: checkSvcStatus
+  - line: 2358
+    name: checkGitExtServices
+  - line: 2411
+    name: openUploadModal
+  - line: 2420
+    name: closeUploadModal
+  - line: 2456
+    name: formatSize
+  - line: 2468
+    name: formatEtaText
+  - line: 2482
+    name: etaTextFromSpeed
+  - line: 2487
+    name: fetchFileTree
+  - line: 2520
+    name: fetchFolderSizes
+  - line: 2529
+    name: currentSearchQuery
+  - line: 2538
+    name: renderSearchResults
+  - line: 2644
+    name: searchModelToMenuInfo
+  - line: 2658
+    name: locateFileInList
+  - line: 2696
+    name: triggerSearch
+  - line: 2719
+    name: antiAutofillInput
+  - line: 2731
+    name: initSearchBox
+  - line: 2766
+    name: updateFolderSizes
+  - line: 2800
+    name: escapeHtml
+  - line: 2806
+    name: propRow
+  - line: 2811
+    name: rawUrlFor
+  - line: 2815
+    name: fetchRange
+  - line: 2831
+    name: decodeId3Text
+  - line: 2849
+    name: syncsafe
+  - line: 2854
+    name: parseId3v2
+  - line: 2879
+    name: parseId3v1
+  - line: 2903
+    name: fetchAudioTags
+  - line: 2943
+    name: fetchFileBlobDual
+  - line: 3255
+    name: crc32Chunk
+  - line: 3266
+    name: buildZipBlobAsync
+  - line: 3348
+    name: showProperties
+  - line: 3414
+    name: downloadFolder
+  - line: 3478
+    name: downloadFolderZip
+  - line: 3616
+    name: openDeleteModal
+  - line: 3644
+    name: closeDeleteModal
+  - line: 3655
+    name: setDeleteProgress
+  - line: 3668
+    name: bindEntryEvents
+  - line: 3712
+    name: openContextMenu
+  - line: 3739
+    name: closeContextMenu
+  - line: 3745
+    name: closeContextMenuHandler
+  - line: 3753
+    name: handleMenuAction
+  - line: 3781
+    name: saveBlobAs
+  - line: 3797
+    name: downloadFile
+  - line: 3848
+    name: setMsg
+  - line: 3854
+    name: showToast
+  - line: 3860
+    name: hideToast
+  - line: 3879
+    name: taskRegister
+  - line: 3892
+    name: taskUnregister
+  - line: 3897
+    name: updateBgTaskStopBtn
+  - line: 3906
+    name: showBgTask
+  - line: 3917
+    name: updateBgTask
+  - line: 3924
+    name: clearBgTask
+  - line: 3933
+    name: persistBgTask
+  - line: 3939
+    name: clearBgTaskPersist
+  - line: 3946
+    name: restoreBgTaskHint
+  - line: 3965
+    name: showTaskProgress
+  - line: 3981
+    name: updateTaskProgress
+  - line: 3997
+    name: hideTaskProgress
+  - line: 4011
+    name: fetchMergedBlob
+  - line: 4344
+    name: streamImagePreview
+  - line: 4604
+    name: probeMediaSpeed
+  - line: 4704
+    name: fmtMediaTime
+  - line: 4718
+    name: buildMediaControls
+  - line: 4866
+    name: downloadMergedFile
+  - line: 4892
+    name: getFileExtension
+  - line: 4905
+    name: collectImageModels
+  - line: 4927
+    name: collectAudioModels
+  - line: 4938
+    name: audioPlModeLoad
+  - line: 4949
+    name: teardownAudioPlaylist
+  - line: 4963
+    name: audioPlRefreshHighlight
+  - line: 4984
+    name: audioPlStopLoadingUx
+  - line: 4995
+    name: audioPlStartLoadingUx
+  - line: 5037
+    name: audioEqStop
+  - line: 5045
+    name: audioEqStart
+  - line: 5084
+    name: makeVirtualParts
+  - line: 5097
+    name: audioPlMaybePreload
+  - line: 5139
+    name: audioPlPlay
+  - line: 5238
+    name: setupAudioPlaylist
+  - line: 5378
+    name: buildImageViewer
+  - line: 5447
+    name: imgViewerUpdateMinimap
+  - line: 5489
+    name: bindImageViewerEvents
+  - line: 5556
+    name: imgViewerApply
+  - line: 5574
+    name: imgViewerSetZoom
+  - line: 5581
+    name: imgViewerActualSize
+  - line: 5591
+    name: imgViewerSetList
+  - line: 5634
+    name: imgViewerLoadThumbs
+  - line: 5647
+    name: imgViewerPumpThumbs
+  - line: 5668
+    name: imgViewerSyncNav
+  - line: 5687
+    name: imgViewerGo
+  - line: 5712
+    name: destroyImageViewer
+  - line: 5737
+    name: detectLang
+  - line: 5749
+    name: highlightCode
+  - line: 5778
+    name: safeUrl
+  - line: 5787
+    name: safeAttr
+  - line: 5791
+    name: mdInline
+  - line: 5807
+    name: splitMdRow
+  - line: 5815
+    name: isMdTableDelim
+  - line: 5819
+    name: markdownToHtml
+  - line: 5963
+    name: minimapLineColors
+  - line: 5985
+    name: buildTextMinimap
+  - line: 6091
+    name: withTextMinimap
+  - line: 6103
+    name: renderMarkdownView
+  - line: 6112
+    name: renderTextView
+  - line: 6234
+    name: previewFile
+  - line: 6512
+    name: editFile
+  - line: 6561
+    name: closePreviewModal
+  - line: 6568
+    name: savePreviewFile
+  - line: 6603
+    name: updateFileOnGitHub
+  - line: 6669
+    name: restoreDeleteModalPrompt
+  - line: 6677
+    name: confirmDelete
+  - line: 6723
+    name: ghDeleteFile
+  - line: 6736
+    name: deleteFile
+  - line: 6765
+    name: deleteFolderError
+  - line: 6770
+    name: deleteFolder
+  - line: 6796
+    name: stopDelete
+  - line: 6804
+    name: deleteFolderFiles
+  - line: 6933
+    name: deleteAllDone
+  - line: 6944
+    name: safeDecode
+  - line: 6955
+    name: displayName
+  - line: 6969
+    name: getCurrentPath
+  - line: 6987
+    name: encodePath
+  - line: 6992
+    name: updateBreadcrumbs
+  - line: 7042
+    name: showRefreshIndicator
+  - line: 7047
+    name: hideRefreshIndicator
+  - line: 7052
+    name: loadFileList
+  - line: 7118
+    name: showListError
+  - line: 7133
+    name: buildEntryModels
+  - line: 7214
+    name: createEntryElement
+  - line: 7279
+    name: toggleSelect
+  - line: 7291
+    name: applySelectionVisual
+  - line: 7302
+    name: updateBatchBar
+  - line: 7314
+    name: clearSelection
+  - line: 7325
+    name: selectAllFiles
+  - line: 7336
+    name: invertSelection
+  - line: 7352
+    name: batchDownload
+  - line: 7365
+    name: runFileDownloadPool
+  - line: 7430
+    name: runParallelDownload
+  - line: 7507
+    name: stopBatchDownload
+  - line: 7517
+    name: finishBatchDownload
+  - line: 7526
+    name: toggleBatchDownloadUI
+  - line: 7531
+    name: openBatchDeleteModal
+  - line: 7567
+    name: renderFileList
+  - line: 7734
+    name: finishRenderFileList
+  - line: 7760
+    name: buildUploadTasks
+  - line: 7787
+    name: setPendingFiles
+  - line: 7803
+    name: handleFileInput
+  - line: 7812
+    name: traverseEntry
+  - line: 7849
+    name: handleDrop
+  - line: 7886
+    name: findUploadConflicts
+  - line: 7907
+    name: uploadFile
+  - line: 7951
+    name: readTaskContent
+  - line: 7973
+    name: startTaskRead
+  - line: 7994
+    name: prefetchUploadReads
+  - line: 8007
+    name: resetUploadSpeedHist
+  - line: 8030
+    name: extUsableProxyCount
+  - line: 8038
+    name: dlGetLimitCap
+  - line: 8043
+    name: dlGetLimit
+  - line: 8053
+    name: dlRegisterScheduler
+  - line: 8057
+    name: dlUnregisterScheduler
+  - line: 8062
+    name: dlNotify
+  - line: 8069
+    name: dlUpdateCurUi
+  - line: 8074
+    name: dlSetMode
+  - line: 8088
+    name: dlAdaptiveSuccess
+  - line: 8109
+    name: dlAdaptiveFail
+  - line: 8132
+    name: dlChanNotePeak
+  - line: 8141
+    name: dlChanIsSlow
+  - line: 8149
+    name: dlChanInc
+  - line: 8153
+    name: dlChanDec
+  - line: 8157
+    name: dlRecentRates
+  - line: 8175
+    name: dlChannels
+  - line: 8192
+    name: pickDlFallback
+  - line: 8203
+    name: pickDlChannel
+  - line: 8276
+    name: dlTrackStart
+  - line: 8307
+    name: dlTrackStop
+  - line: 8318
+    name: dlTrackAdd
+  - line: 8326
+    name: drawDlGraph
+  - line: 8370
+    name: updateDlLegend
+  - line: 8382
+    name: updateDlLegendExtVisibility
+  - line: 8396
+    name: graphWindowPeak
+  - line: 8405
+    name: traceSmoothPath
+  - line: 8420
+    name: prepareGraphCanvas
+  - line: 8435
+    name: drawGraphGrid
+  - line: 8467
+    name: drawSpeedGraph
+  - line: 8510
+    name: updateUlLegend
+  - line: 8518
+    name: startUpload
+  - line: 8620
+    name: applyConcurrencyChange
+  - line: 8644
+    name: ulChannels
+  - line: 8655
+    name: stAddChanBytes
+  - line: 8661
+    name: pickUploadChannel
+  - line: 8729
+    name: fillUploads
+  - line: 8797
+    name: checkUploadSettled
+  - line: 8819
+    name: runUploadTask
+  - line: 8943
+    name: stopUploadTimer
+  - line: 8952
+    name: restartUploadTasks
+  - line: 8971
+    name: finishUpload
+  - line: 9036
+    name: stopUploadRollback
+  - line: 9057
+    name: failUpload
+  - line: 9070
+    name: sampleUploadSpeed
+  - line: 9153
+    name: renderChunkPanel
+  - line: 9175
+    name: renderChunkPanelNow
+  - line: 9213
+    name: estimateEtaText
+  - line: 9242
+    name: updateUploadProgressUI
+  - line: 9250
+    name: updateUploadProgressText
+  - line: 9270
+    name: gitApiUrl
+  - line: 9276
+    name: putBlobToGitHub
+  - line: 9355
+    name: commitBlobGroup
+  constants:
+  - line: 2
+    name: REPO_OWNER
+  - line: 3
+    name: REPO_NAME
+  - line: 4
+    name: DEFAULT_BRANCH
+  - line: 7
+    name: API_BASE
+  - line: 22
+    name: CF_PROXY_BASE
+  - line: 23
+    name: DUAL_DL_MIN
+  - line: 24
+    name: DUAL_DL_PARTS
+  - line: 25
+    name: DUAL_SEG_MAX_ATTEMPTS
+  - line: 42
+    name: EXT_PROXY_API
+  - line: 44
+    name: EXT_PROBE_TARGET
+  - line: 45
+    name: EXT_PROXY_STORAGE_KEY
+  - line: 59
+    name: EXT_FAIL_RECOVER_MS
+  - line: 301
+    name: DL_CHAN_STORAGE_KEY
+  - line: 342
+    name: UL_CHAN_STORAGE_KEY
+  - line: 496
+    name: DEFAULT_AUDIO_VOLUME
+  - line: 548
+    name: CHUNK_SIZE_LEVELS
+  - line: 557
+    name: PART_SUFFIX
+  - line: 564
+    name: AUTH_STORAGE_KEY
+  - line: 565
+    name: REMEMBER_STORAGE_KEY
+  - line: 600
+    name: REMEMBER_PWD_PLACEHOLDER
+  - line: 637
+    name: API_ERROR_MAP
+  - line: 778
+    name: PWD_EYE_SVG
+  - line: 779
+    name: PWD_EYE_OFF_SVG
+  - line: 824
+    name: THEME_STORAGE_KEY
+  - line: 866
+    name: LANG_STORAGE_KEY
+  - line: 867
+    name: I18N_LANGS
+  - line: 868
+    name: LANG
+  - line: 870
+    name: I18N
+  - line: 1336
+    name: I18N_BINDINGS
+  - line: 1525
+    name: USER_AVATAR_MAP
+  - line: 1529
+    name: USER_AVATAR_DEFAULT_SVG
+  - line: 2103
+    name: REFRESH_INTERVAL
+  - line: 2130
+    name: SVC_CHECK_INTERVAL
+  - line: 2454
+    name: SIZE_UNITS
+  - line: 3244
+    name: CRC32_TABLE
+  - line: 3868
+    name: BG_TASK_KEY
+  - line: 4341
+    name: PREVIEW_STREAMS
+  - line: 4342
+    name: PREVIEW_PARALLEL_MIN
+  - line: 4714
+    name: MEDIA_SVG_PLAY
+  - line: 4715
+    name: MEDIA_SVG_PAUSE
+  - line: 4716
+    name: MEDIA_SVG_FULLSCREEN
+  - line: 4897
+    name: AUDIO_EXTS
+  - line: 4898
+    name: VIDEO_EXTS
+  - line: 4899
+    name: IMAGE_EXTS
+  - line: 4920
+    name: AUDIO_PL_MODE_KEY
+  - line: 4921
+    name: AUDIO_PL_MODES
+  - line: 4922
+    name: AUDIO_PL_MODE_LABELS
+  - line: 4923
+    name: AUDIO_PRELOAD_MAX
+  - line: 4924
+    name: AUDIO_PRELOAD_SIZE_MAX
+  - line: 5633
+    name: IMG_THUMB_CONCURRENCY
+  - line: 5730
+    name: LANG_KEYWORDS
+  - line: 5747
+    name: LANG_KW_CACHE
+  - line: 5954
+    name: MINIMAP_COLORS
+  - line: 7039
+    name: LIST_RENDER_BATCH
+  - line: 7758
+    name: COMMIT_GROUP_SIZE
+  - line: 7943
+    name: UPLOAD_MAX_ATTEMPTS
+  - line: 7944
+    name: UPLOAD_LIMIT_MIN
+  - line: 7945
+    name: UPLOAD_LIMIT_MAX
+  - line: 7948
+    name: UPLOAD_READAHEAD
+  - line: 8005
+    name: SPEED_HISTORY_MAX
+  - line: 8016
+    name: DL_LIMIT_MIN
+  - line: 8017
+    name: DL_LIMIT_MAX
+  - line: 8018
+    name: DL_LIMIT_ADAPTIVE_START
+  - line: 8024
+    name: DL_LIMIT_EXT_PER_PROXY
+  - line: 8027
+    name: DL_LIMIT_EXT_HARD_MAX
+  - line: 8127
+    name: DL_SLOW_RATIO
+  - line: 8128
+    name: DL_SLOW_MIN_BYTES
+  - line: 8129
+    name: DL_SLOW_MIN_ELAPSED
+  - line: 8130
+    name: DL_SLOW_MAX_SWITCH
+  - line: 8170
+    name: DL_EOCF_CAP_WHEN_EXT
+  - line: 8200
+    name: DL_EXT_SHARE
+  - line: 8273
+    name: DL_HISTORY_MAX
+  - line: 8395
+    name: GRAPH_PEAK_WINDOW
+  - line: 8722
+    name: UL_DISPATCH_BURST
+  - line: 8725
+    name: UL_MAX_INFLIGHT_BYTES
+cf_worker:
+  file: cf-worker.js
+  deploy: Cloudflare Workers/Pages → https://cloud-ecr.pages.dev
+  role: CF 加速通道：GitHub 全站反向代理（下载/上传加速）
+  features:
+  - PROXY_RES 12 条正则覆盖 github.com/gist/codeload/githubusercontent 全子域/githubassets/S3 等
+  - '环境变量 GITHUB_TOKEN（或 TOKEN）配置后，转发 api.github.com 时服务端注入 Authorization: Bearer（客户端永不接触）；成功时响应带 x-cf-auth-injected: 1 标记头（据此区分未配置与
+    key 无效）'
+  - GET /ip 只回纯文本出口 IP（优先 cloudflare.com/cdn-cgi/trace，回退 api.ip.sb/ip）；归属地由 EO /api/cf-ip 另行查询
+  - CORS：OPTIONS 预检回显浏览器请求头；转发时删 referer/host；accept-language zh-CN→zh-SG
+  - whiteList 为空即全放行；Config.jsdelivr=0 默认关闭 jsDelivr 重写
+dataflow:
+  auth:
+  - 浏览器 crypto.subtle 计算密码 SHA-512（128hex），明文不出浏览器
+  - POST /api/login（强制实时读 user.json 比对，无缓存）→ 返回 {success, username, role, avatar}
+  - localStorage cloud_web_auth 存 {用户名,哈希,角色,头像}，会话始终持久化
+  - 写操作请求头携带 X-Auth-User / X-Auth-Pass（缓存哈希），EO 逐请求实时校验（鉴权读 60s 实例级缓存，写后即时刷新）
+  - admin 接口用 admin_user/admin_pass（同哈希），服务端校验 role=admin
+  upload:
+  - 文件按 CHUNK_SIZE_LEVELS（45MB/30MB，按 base64 后不超 GitHub 单文件限制反算）分片，too large 自动降档续传
+  - 传输阶段：POST /git/blobs 纯对象创建（不动引用，任意并行零冲突）；分片预读缓存领先调度 2 个任务
+  - 提交阶段：每 COMMIT_GROUP_SIZE=100 个 blob 合成 tree+commit 批量落盘；组间链式推进（上一组新引用直接作下一组基点）
+  - 引用被抢先（422/409）：先读最新引用校验是否实际已成功（响应丢失），否则从最新引用重建 tree 重试，最多 12 次（300ms 快重试→1.6 倍退避封顶 5s+抖动）
+  - 通道：EO/CF 双通道按在途均衡+实测速率加权分配（15% 概率地板）；开始前探测 CF 写能力（仅 400/422 视为可写）
+  - 自适应并行：初始 3 上限 8；分片 <15s 升档 >45s 降档；每 2 次提交冲突降档，连续 8 个无冲突升档
+  - 停止/失败无副作用：未提交 blob 为悬空对象，GitHub 自动回收，无需回退
+  download:
+  - 大文件 >2MB 分段滚动调度（段数不少于并发限制、最小 1MB/段），EO/CF 间在途均衡+速率加权分配，失败换源从已收位置 Range 续传，CF 连续失败 2 次熔断回退 EO
+  - 外部多代理（可选，默认载体）：/api/proxies?all=1 拿 28 候选后浏览器侧逐个实测（探测本仓库 raw 文件 xxx.json，简单 GET 防 CORS 预检，要求 2xx 且内容匹配防劫持假 200）；承担约 80%
+    任务，EO/CF 各保 25% 份额地板；EO/CF 默认关闭且外部可用时各限 ×3 在途
+  - 代理熔断：连续失败 2 次轮换，成功即清零+2 分钟未失败自愈；站点级异常慢 3 次冷却 30 秒；单分段外部尝试封顶 2 次后回 EO/CF 保底；416 从 Content-Range 自我修正
+  - 批量下载：文件级并行池+池内共享全局连接预算（工作窃取），完成经保存队列串行吐出（间隔 400ms 规避浏览器限流）
+  - 文件夹打包：git tree 收集（分片归并）→ 并行池拉取 → 前端 zip（store 不压缩，UTF-8 文件名，8MB 切片算 CRC 并让出主线程）
+  - 护栏：下载在途字节 >256MB / 上传 >300MB 暂停派发；15 秒停滞看门狗中止换源
+  preview:
+  - 视频/音频：URL 直接交媒体元素 Range 边下边播；打开时三通道按 1MB 分段连续探测测速（每通道上限 8MB），播放或出错即停止
+  - 分片音视频：合并管线逐片就绪即以前缀 blob 起播（moov 在尾无法解码则等完整合并），完成自动切完整文件恢复进度/音量/倍速；>16MB 分片按 8MB 子段拆分；>2MB 未分片走 4MB 虚拟分片同管线
+  - 图片：fetch 流式渐进渲染；>512KB 且支持 206 切 4 段并行（EO/CF/外部加权，失败续传≤3 次），只渲染已连续前缀
+  - 文本：透明 textarea 叠加高亮层在线编辑；右侧鸟瞰图（行密度缩略+视口框）
+  - Markdown：默认渲染预览（标题/列表/引用/代码块/GFM 表格/链接/图片），可切纯文本
+  search:
+  - 搜索范围=当前目录（含子目录，根目录即全盘），切换目录保留词并重搜
+  - 复用 git 全量文件树缓存按路径子串匹配（不区分大小写，≤200 条），分片按基名归并
+  - 350ms 防抖或搜索按钮立即搜；有词时 45s 轮询改为刷新搜索结果
+  - 清空恢复目录列表：检测视图为搜索结果即强制用缓存体全量重渲染（修 304 跳过渲染卡搜索页）
+  auto_refresh:
+  - 每 REFRESH_INTERVAL=45s 自动刷新文件列表，标题右侧倒计时；标签页隐藏暂停、恢复立即刷新
+  - 增量渲染：按 key diff 仅更新变化项（大小文本高亮闪烁、增删带过渡动画）；首屏分批渲染 LIST_RENDER_BATCH=40 条/批（逐条 appendChild，见 constraints）
+  - ETag 条件请求（304 不占速率限制）；变更操作后 15s 缓存穿透窗口附加时间戳
+config:
+  build:
+    GITHUB_KEY: 环境变量，GitHub 写 key（优先级 1）
+    .eo-key: 项目根目录文件（gitignore，优先级 2）；都没有则生成脱敏版（占位符 key）
+    USER_REPO: 用户数据仓库，默认 boringstudent/cloud-user
+    CLOUD: 网盘存储仓库，默认 boringstudent/cloud-storage
+    BRANCH: 分支，默认 main
+  localstorage_keys:
+    cloud_web_auth: 登录会话 {username,hash,role,avatar}（始终持久化）
+    cloud_web_remember: 记住密码（默认勾选，只存 SHA-512 哈希，旧版明文自动迁移）
+    cloud_web_theme: 主题 auto/light/dark
+    cloud_web_lang: 语言 zh-CN/zh-TW/en/ja
+    cloud_web_ext_proxy: 外部多代理下载开关
+    cloud_web_dl_chans_v2: 下载通道开关 eo/cf（默认均 false）
+    cloud_web_ul_chans: 上传通道开关 eo/cf
+    cloud_web_bgtask: 后台任务快照（刷新后提示已中断）
+    cloud_web_audio_pl_mode: 音频播放列表模式 single/sequence/shuffle
+  security_headers:
+    CSP: 'default-src ''self''; script-src ''self'' ''unsafe-inline''; style-src ''self'' ''unsafe-inline''; img-src ''self''
+      data: blob: https:; media-src ''self'' blob: https:; connect-src ''self'' https://cloud-ecr.pages.dev https:; font-src
+      ''self'' data:; object-src ''none''; base-uri ''none''; form-action ''self''; frame-ancestors ''self'''
+    cache: 页面不缓存；JS/CSS 按构建时间戳 ?v= 长缓存 immutable
+  user_json_format: '{ "<username>": { "password": "<sha512>", "role": "admin|user", "avatar": "<可选URL>" } }'
+api:
+  full_doc: API.md（完整接口文档）
+  base: 与站点同源（EO 边缘函数绑定域名），统一 JSON 返回，支持 CORS
+  password_rule: 只接受前端算好的 SHA-512（128hex），明文一律 400；存储仅哈希不可逆
+  page_routes:
+  - GET / 及任意未命中子路径 → SPA 主页面（路径即目录），带 CSP，不缓存
+  - GET /static/app.js | /static/style.css → 构建时嵌入资源（?v= 版本戳，immutable 长缓存）
+  - GET /favicon.ico → 站点图标
+  public_apis:
+  - GET/POST /api/hash → SHA-512 哈希（type=password|key & value=）
+  - GET/HEAD /api/my-ip（别名 /ip）→ 服务器出口 IP/归属地（cip.cc，8s 超时）
+  - GET/HEAD /api/cf-ip → CF 通道出口 IP/归属地（EO 经 CF /ip 取 IP 再查 api.ip.sb→ipinfo.io，缓存 5min）
+  - GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 28 个不触网；?probe=api EO 视角全量诊断
+  - GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key）
+  - POST /api/change-password → 自助改密（旧/新哈希）
+  - POST /api/change-avatar → 自助改头像 URL（http/https ≤300 字符，空串清除）
+  - POST /api/delete-account → 自助注销（验哈希后永久删除）
+  - GET /api/bg → 背景图中转（仅 image/*，10s 超时，短缓存 300s；前端实际直连图床）
+  admin_apis:
+  - GET /api/users → 全部用户（密码脱敏 ***）
+  - POST /api/users → 添加用户（哈希直存，avatar 可选）
+  - PUT/PATCH /api/users/:username → 改密码/角色/头像（至少一项）
+  - DELETE /api/users/:username → 删除用户（参数放 body）
+  proxy_paths:
+  - '* /api.github.com/repos/<owner>/<repo>/<path> → GitHub REST API 代理（读公开，写需 X-Auth-*）'
+  - GET /raw.githubusercontent.com/<owner>/<repo>/<branch>/<path> → raw 下载中转（206 断点续传）
+  - GET /github.com/<owner>/<repo>/archive/<ref>.zip → 整仓打包中转（跟随 codeload）
+  proxy_rules:
+  - 仅放行白名单 STORAGE_REPOS，其余 403；用户数据仓库永久 403
+  - 'Authorization: Bearer <key> 服务端注入；仅转发必要头；状态码/ETag/Content-Range 原样透传；流式不落地'
+  - '错误统一 {"error": "英文描述"}，前端 API_ERROR_MAP 映射中文；400 参数 · 401 凭据 · 403 权限 · 404 不存在 · 405 方法 · 409 已存在 · 502 上游'
+dependencies:
+  build_tools:
+  - Python 3（build_eo.py / build_ai_context.py）
+  - pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验）
+  - Node.js（node --check 构建校验 + 冒烟测试）
+  runtime_external:
+  - GitHub REST API（api.github.com / raw.githubusercontent.com / codeload）——存储后端
+  - Cloudflare Workers/Pages（cloud-ecr.pages.dev）——可选下载/上传加速通道
+  - 公共 ghproxy 镜像池 28 个——可选外部多代理下载（仅匿名下载，写操作永不经过）
+  - loliapi 图床——页面背景图（浏览器直连）
+  - cip.cc / api.ip.sb / ipinfo.io / cloudflare cdn-cgi/trace——IP 与归属地查询
+  browser_requirements:
+  - crypto.subtle（SHA-512，需 HTTPS/localhost）
+  - fetch / XHR / localStorage / matchMedia / Pointer Events
+  - WebAudio AnalyserNode（音频 EQ 动画，可选，缺时回退 CSS 动画）
+  version_notes: 无 package.json / requirements.txt：运行时零第三方依赖，兼容所有现代浏览器（ES2017+）
+i18n_theme:
+  i18n:
+    langs:
+    - zh-CN
+    - zh-TW
+    - en
+    - ja
+    mechanism: 以简体中文源码字符串为 key 的词典（I18N）；静态文案经 I18N_BINDINGS 绑定表批量应用；动态消息在 setMsg/toast/后台浮泡三个出口统一翻译；未收录的拼接文案回退中文
+    detect: langDetect 按浏览器语言自动识别（zh-HK/TW/Hant→繁体、ja→日语、en→英语、其余→简体）
+    persist: localStorage cloud_web_lang；切换即时刷新面包屑/服务状态/按钮标题等动态渲染区
+  theme:
+    modes:
+    - auto(跟随系统，默认)
+    - light
+    - dark
+    mechanism: data-theme 属性 + CSS 变量整套暗色覆盖；<head> 内联脚本在样式表加载前确定明暗防首屏闪烁；auto 模式监听 prefers-color-scheme 实时切换
+    persist: localStorage cloud_web_theme
+constraints:
+- 首屏列表必须逐条 appendChild 挂载，禁止 DocumentFragment 一次挂载
+- 前端数据请求禁止使用缓存（变更后 15s 穿透窗口附加时间戳）
+- 密码明文不出浏览器：一律前端 SHA-512 后传输；记住密码只存哈希不存明文
+- 会话始终持久化（无 UI 开关）；记住密码默认勾选
+- 密码输入框必须有眼睛显隐切换：隐藏时闭眼划线图标(title=显示密码)，可见时睁眼图标(title=隐藏密码)；记住密码占位符状态下眼睛自动隐藏
+- 弹窗文本统一属性面板字体体系：Segoe UI/雅黑、13px 灰标签+14px 正文、标题加底部分隔线、章节标题大写字距
+- 用户管理需刷新按钮且每次操作后自动刷新列表
+- UI 风格与原有界面统一，不使用 emoji 图标（媒体控制用内联 SVG）
+- 功能仅支持文件上传方式（无文本创建入口）
+pitfalls:
+- Markdown XSS：mdInline 的 [文字](url) 与 ![alt](url) 必须经 safeUrl()（协议白名单：拒绝 javascript:/data:/vbscript:）+ safeAttr()（引号过滤），禁直接插
+  href/src
+- innerHTML 注入：服务端返回的错误文本一律 textContent 渲染，禁拼接进 innerHTML
+- ObjectURL 内存泄漏：预览音/视频/图片的 Blob URL 关闭/重开弹窗时必须经 setPreviewBlobUrl() 释放
+- 代码高亮性能：关键词字典必须按语言缓存（LANG_KW_CACHE），禁每次按键重建
+- CRLF 一致性：工作区 git autocrlf 产生 CRLF，而 eo.js 按 LF 嵌入——build_eo.py 读源文件已统一 replace \r\n→\n，冒烟测试比较前同样归一化
+workflow:
+  trigger: 任何代码更新/文件结构调整/功能变更后
+  steps:
+  - 同步更新本文件：运行 python build_ai_context.py 自动重建（业务规则变化时先改本生成器内的静态章节）
+  - 语法校验：生成器写出后自动 yaml 回读+必备键自校验；亦可用下方 validate_cmd 独立校验
+  - node test_eo_smoke.js（须全部通过；eo.js 相关变更先 python build_eo.py 重建）
+  - git add -A && git commit && git push origin HEAD
+  validate_cmd: python -c "import yaml; d=yaml.safe_load(open('AI-CONTEXT.yaml',encoding='utf-8')); req=['meta','project','files','architecture','backend','frontend','cf_worker','dataflow','config','api','dependencies','i18n_theme','constraints','pitfalls','workflow'];
+    missing=[k for k in req if k not in d]; assert not missing, missing; print('OK', len(d), 'sections')"
+  requires: Python 3 + pyyaml（pip install pyyaml）、Node.js（冒烟测试）

@@ -1182,10 +1182,13 @@ def build():
         version=version
     )
 
+    # 统一为 LF 再嵌入：git autocrlf 会把工作区文件转成 CRLF，而 eo.js
+    # 以 LF 写出时 \r\n 会变成 \n（写出不做转换但源串中的 \r 会原样保留，
+    # 需先归一化），否则嵌入内容与 git 对象不一致
     with open('static/app.js', 'r', encoding='utf-8', newline='') as f:
-        app_js = f.read()
+        app_js = f.read().replace('\r\n', '\n')
     with open('static/style.css', 'r', encoding='utf-8', newline='') as f:
-        style_css = f.read()
+        style_css = f.read().replace('\r\n', '\n')
     with open('favicon.ico', 'rb') as f:
         favicon_b64 = base64.b64encode(f.read()).decode('ascii')
 

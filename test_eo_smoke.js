@@ -32,7 +32,9 @@ async function call(path, opts) {
   // 2. 静态资源逐字还原
   r = await call('/static/app.js?v=1');
   body = await r.text();
-  const appJs = fs.readFileSync(__dirname + '/static/app.js', 'utf8');
+  // 工作区可能是 CRLF（git autocrlf），但 JS 模板字面量按规范把 CRLF 归一为 LF，
+  // 故服务端实际返回的是 LF 版本，比较前需归一化
+  const appJs = fs.readFileSync(__dirname + '/static/app.js', 'utf8').replace(/\r\n/g, '\n');
   check('GET /static/app.js 与原文件逐字一致', body === appJs, `len ${body.length} vs ${appJs.length}`);
   check('app.js 不含任何 key/令牌', !/ghp_|GITHUB_KEY|bearer/i.test(body));
   check('app.js 不含旧后端域名', !body.includes('boring-student') && !body.includes('redeem-key'));
@@ -41,7 +43,7 @@ async function call(path, opts) {
 
   r = await call('/static/style.css?v=1');
   body = await r.text();
-  const css = fs.readFileSync(__dirname + '/static/style.css', 'utf8');
+  const css = fs.readFileSync(__dirname + '/static/style.css', 'utf8').replace(/\r\n/g, '\n');
   check('GET /static/style.css 与原文件逐字一致', body === css);
   check('CSS 背景图直连图床（不经 EO）', body.includes('loliapi.com') && !body.includes("url('/api/bg')"));
 
