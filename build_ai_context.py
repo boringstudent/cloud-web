@@ -116,6 +116,11 @@ DATAFLOW = {
         '增量渲染：按 key diff 仅更新变化项（大小文本高亮闪烁、增删带过渡动画）；首屏分批渲染 LIST_RENDER_BATCH=40 条/批（逐条 appendChild，见 constraints）',
         'ETag 条件请求（304 不占速率限制）；变更操作后 15s 缓存穿透窗口附加时间戳',
     ],
+    'share': [
+        'makeShareUrl：{v:1, items:[{p:路径,n:名称,t:类型,s:大小}], ts} JSON → b64url 编码 → {origin}/s/<b64url>，纯前端无服务端存储',
+        'openShareModal 显示链接与二维码（shareQrImg），copyShareUrl 复制；右键菜单/批量栏均可发起',
+        'isSharePage（路径 /s/ 前缀）→ renderSharePage：b64url 解码还原清单，隐藏网盘 UI 展示下载页；损坏链接显示错误提示',
+    ],
 }
 
 CONFIG = {
@@ -244,16 +249,18 @@ PITFALLS = [
 
 WORKFLOW = {
     'trigger': '任何代码更新/文件结构调整/功能变更后',
-    'steps': [
-        '同步更新本文件：运行 python build_ai_context.py 自动重建（业务规则变化时先改本生成器内的静态章节）',
-        '语法校验：生成器写出后自动 yaml 回读+必备键自校验；亦可用下方 validate_cmd 独立校验',
-        'node test_eo_smoke.js（须全部通过；eo.js 相关变更先 python build_eo.py 重建）',
-        'git add -A && git commit && git push origin HEAD',
+    'auto_pipeline': 'python build_eo.py 构建时自动执行完整链：重建 eo.js → node --check 语法校验 → '
+                     '重建本文件（update_ai_context 调用 build_ai_context.py）→ node test_eo_smoke.js 冒烟测试 → '
+                     'git commit + push（仅白名单文件，排除 eo.js/.eo-key 等机密）',
+    'manual_steps': [
+        '业务规则/章节内容变化时：先改 build_ai_context.py 内对应静态章节，再运行构建',
+        '仅同步本文件：python build_ai_context.py（重建 + 自校验）',
+        '手动验证：node test_eo_smoke.js；git add -A && git commit && git push origin HEAD',
     ],
     'validate_cmd': 'python -c "import yaml; d=yaml.safe_load(open(\'AI-CONTEXT.yaml\',encoding=\'utf-8\')); '
                     'req=[\'meta\',\'project\',\'files\',\'architecture\',\'backend\',\'frontend\',\'cf_worker\',\'dataflow\',\'config\',\'api\',\'dependencies\',\'i18n_theme\',\'constraints\',\'pitfalls\',\'workflow\']; '
                     'missing=[k for k in req if k not in d]; assert not missing, missing; print(\'OK\', len(d), \'sections\')"',
-    'requires': 'Python 3 + pyyaml（pip install pyyaml）、Node.js（冒烟测试）',
+    'requires': 'Python 3 + pyyaml（pip install pyyaml）、Node.js（语法校验与冒烟测试）、git',
 }
 
 CF_WORKER = {
@@ -293,7 +300,9 @@ FRONTEND_STATIC = {
         'search*/triggerSearch/locate*': '目录范围搜索（防抖/归并分片/定位/304 视图恢复）',
         'delete*/batch*/toggleSelect/*Selection*': '删除与批量操作（并行删除冲突自适应/批量下载池）',
         'task*/showBgTask/updateBgTask/*BgTask*': '全局任务管理器（同类互斥/后台浮泡/快照持久化）',
-        'admin*/withAdminCreds': '用户管理（仅 admin，凭据复用缓存哈希）',
+        'admin*/withAdminCreds/openAdminUserMenu': '用户管理（仅 admin；用户右键菜单 adminUserMenu、独立添加弹窗 adminAddModal，凭据复用缓存哈希）',
+        'switchAccountTab/changeOwn*/deleteOwnAccount': '我的账户（标签页：头像/改密/注销）',
+        'share*/makeShareUrl/b64url*/isSharePage/renderSharePage/copyShareUrl': '分享链接（b64url 编码 /s/ URL、二维码、分享页渲染，纯前端无服务端存储）',
         'svc*/check*/measureRtt': '服务状态三路检测（EO/Git外部/CF，10min 自动刷新）',
         'login/logout/saveAuth/getSavedAuth/*Remember': '认证会话（SHA-512/持久化/记住密码哈希迁移）',
         'theme*/applyTheme': '主题切换（auto/light/dark）',
@@ -313,7 +322,7 @@ FILE_ROLES = {
     'cf-worker.js': 'CF 加速通道源码',
     'API.md': '人类用接口文档',
     'README.md': '人类用功能/算法说明',
-    'test_eo_smoke.js': 'eo.js 冒烟测试（44 断言，不触网）',
+    'test_eo_smoke.js': 'eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）',
     'test_eo_server.js': 'eo.js 本地模拟服务器',
     'favicon.ico': '站点图标（构建时 base64 嵌入）',
     'xxx.json': '外部代理浏览器侧探测目标文件（raw 小文件）',
@@ -414,7 +423,8 @@ def build():
             'generated_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'git_commit': full,
             'git_commit_short': short,
-            'generator': 'build_ai_context.py（本文件由其自动重建，勿手改）',
+            'build_version': os.environ.get('AI_CTX_BUILD_VERSION', ''),
+            'generator': 'build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）',
         },
         'project': PROJECT,
         'files': scan_files(),

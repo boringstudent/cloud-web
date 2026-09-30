@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 
 # ==================== 配置 ====================
@@ -1021,72 +1022,40 @@ def _file_sha256(path):
 
 
 def _check_source_freshness():
-    """检查关键源码是否比 AI-CONTEXT.md 更新，若更新则提示开发者手动核对"""
-    ai_ctx_path = 'AI-CONTEXT.md'
+    """检查关键源码是否比 AI-CONTEXT.yaml 更新，若更新则提示开发者手动核对"""
+    ai_ctx_path = 'AI-CONTEXT.yaml'
     if not os.path.exists(ai_ctx_path):
         return True
     ai_mtime = os.path.getmtime(ai_ctx_path)
-    sources = ['build_eo.py', 'static/app.js', 'static/style.css', 'cf-worker.js', 'API.md', 'template.html']
+    sources = ['build_eo.py', 'build_ai_context.py', 'static/app.js', 'static/style.css',
+               'cf-worker.js', 'API.md', 'template.html']
     fresh = []
     for s in sources:
         if os.path.exists(s) and os.path.getmtime(s) > ai_mtime:
             fresh.append(s)
     if fresh:
         print(f'WARNING: 以下源码文件比 {ai_ctx_path} 更新: {", ".join(fresh)}')
-        print('         请确认 AI-CONTEXT.md 中的架构/接口/常量描述是否需要同步更新。')
+        print('         请确认 build_ai_context.py 中的静态章节（架构/接口/规则）是否需要同步更新。')
     return bool(fresh)
 
 
 def update_ai_context(version, eo_size_kb, app_js_size, style_css_size, cf_size):
-    """更新 AI-CONTEXT.md 的元数据、构建信息与变更记录"""
-    ai_path = 'AI-CONTEXT.md'
-    if not os.path.exists(ai_path):
-        print(f'WARNING: {ai_path} 不存在，跳过 AI 上下文更新')
+    """重建 AI-CONTEXT.yaml（调用 build_ai_context.py 生成器；失败不阻断构建）"""
+    gen = 'build_ai_context.py'
+    if not os.path.exists(gen):
+        print(f'WARNING: {gen} 不存在，跳过 AI 上下文更新')
         return False
 
-    with open(ai_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    env = dict(os.environ, AI_CTX_BUILD_VERSION=str(version))
+    r = subprocess.run([sys.executable, gen], capture_output=True, text=True, env=env)
+    print(r.stdout, end='')
+    if r.returncode != 0:
+        print('WARNING: AI-CONTEXT.yaml 生成失败')
+        if r.stderr:
+            print(r.stderr)
+        return False
 
-    now = time.strftime('%Y-%m-%dT%H:%M:%S+08:00', time.localtime())
-    date_str = time.strftime('%Y-%m-%d', time.localtime())
-
-    # 更新元数据时间戳
-    content = re.sub(r'<!--AI_CTX_GENERATED=.*?-->', f'<!--AI_CTX_GENERATED={now}-->', content)
-
-    # 更新[BUILD]中的动态字段
-    build_block = re.search(r'\[BUILD\].*?(?=\n\[|$)', content, re.S)
-    if build_block:
-        old = build_block.group(0)
-        new = old
-        new = re.sub(r'last_version=.*?(\n|$)', f'last_version={version}\n', new)
-        new = re.sub(r'last_eo_size=.*?(\n|$)', f'last_eo_size={eo_size_kb:.0f}KB\n', new)
-        new = re.sub(r'last_app_size=.*?(\n|$)', f'last_app_size={app_js_size:.0f}KB\n', new)
-        new = re.sub(r'last_css_size=.*?(\n|$)', f'last_css_size={style_css_size:.0f}KB\n', new)
-        new = re.sub(r'last_cf_size=.*?(\n|$)', f'last_cf_size={cf_size:.0f}KB\n', new)
-        content = content.replace(old, new)
-    else:
-        # 若[BUILD]不存在则追加
-        build_section = (
-            f"\n[BUILD]\n"
-            f"command=python build_eo.py\n"
-            f"last_version={version}\n"
-            f"last_eo_size={eo_size_kb:.0f}KB\n"
-            f"last_app_size={app_js_size:.0f}KB\n"
-            f"last_css_size={style_css_size:.0f}KB\n"
-            f"last_cf_size={cf_size:.0f}KB\n"
-        )
-        content = content.rstrip() + '\n' + build_section
-
-    # 更新[CHANGELOG]：若当天无记录则追加
-    changelog_prefix = f'{date_str}='
-    if changelog_prefix not in content:
-        # 在CHANGELOG块末尾添加新行
-        content = content.rstrip() + f'\n{date_str}=构建更新(v{version})\n'
-
-    with open(ai_path, 'w', encoding='utf-8', newline='\n') as f:
-        f.write(content)
-
-    print(f'AI-CONTEXT.md updated (version={version})')
+    print(f'AI-CONTEXT.yaml updated (version={version})')
     return True
 
 
@@ -1112,7 +1081,7 @@ def run_smoke_test():
 
 
 def git_commit_and_push(version):
-    """将 AI-CONTEXT.md 及相关变更提交并推送到 Git"""
+    """将 AI-CONTEXT.yaml 及相关变更提交并推送到 Git"""
     git = shutil.which('git')
     if not git:
         print('WARNING: 未找到 git，跳过版本控制提交')
@@ -1133,8 +1102,8 @@ def git_commit_and_push(version):
         print('No changes to commit.')
         return True
 
-    # 筛选需要提交的文件（AI-CONTEXT.md 和源代码，排除 eo.js 和 .eo-key 等机密文件）
-    allowed = {'AI-CONTEXT.md', 'build_eo.py', 'static/app.js', 'static/style.css',
+    # 筛选需要提交的文件（AI-CONTEXT.yaml 和源代码，排除 eo.js 和 .eo-key 等机密文件）
+    allowed = {'AI-CONTEXT.yaml', 'build_ai_context.py', 'build_eo.py', 'static/app.js', 'static/style.css',
                'cf-worker.js', 'API.md', 'template.html', 'test_eo_smoke.js',
                'test_eo_server.js', 'README.md', '404.html', 'xxx.json'}
     to_stage = []
