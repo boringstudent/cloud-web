@@ -1,9 +1,9 @@
 meta:
   schema: 1
-  generated_at: '2026-10-01T00:35:21'
-  git_commit: 7d8a96560e432e7e464c23f1f140c2232178ae0c
-  git_commit_short: 7d8a965
-  build_version: '1790786120'
+  generated_at: '2026-10-01T00:41:20'
+  git_commit: 9e5fc657cb398c2107c4738337b8875248085278
+  git_commit_short: 9e5fc65
+  build_version: '1790786479'
   generator: build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）
 project:
   name: cloud-web
@@ -17,18 +17,18 @@ project:
 files:
 - name: build_eo.py
   role: EO 一体化构建脚本（后端模板+前端资源烘焙→eo.js）
-  bytes: 51612
-  sha1: d43ec63a
-  lines: 1212
+  bytes: 52897
+  sha1: '14916419'
+  lines: 1245
 - name: build_ai_context.py
   role: 本生成器：重建 AI-CONTEXT.yaml
-  bytes: 30439
-  sha1: 26a64c12
-  lines: 462
+  bytes: 31046
+  sha1: 111ad0ff
+  lines: 467
 - name: AI-CONTEXT.yaml
   role: AI 专用项目理解文件（本生成器产物，勿手改）
-  bytes: 42930
-  sha1: eb9b5481
+  bytes: 43177
+  sha1: 5836e3eb
 - name: template.html
   role: 唯一 HTML 模板
   bytes: 25060
@@ -61,9 +61,9 @@ files:
   lines: 215
 - name: README.md
   role: 人类用功能/算法说明
-  bytes: 43079
-  sha1: c68556aa
-  lines: 176
+  bytes: 43682
+  sha1: 35fd003e
+  lines: 178
 - name: test_eo_smoke.js
   role: eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）
   bytes: 8976
@@ -86,7 +86,7 @@ files:
 - name: eo.js
   role: EO 部署产物（gitignore，含 key 属服务端机密）
   bytes: 763607
-  sha1: ff3b68bf
+  sha1: d30f31ce
   lines: 14463
   gitignored: true
 - name: .eo-key
@@ -307,10 +307,13 @@ backend:
   - line: 1062
     name: run_smoke_test
     lang: python
-  - line: 1083
+  - line: 1103
+    name: make_commit_message
+    lang: python
+  - line: 1114
     name: git_commit_and_push
     lang: python
-  - line: 1139
+  - line: 1172
     name: build
     lang: python
 frontend:
@@ -1317,6 +1320,8 @@ workflow:
   trigger: 任何代码更新/文件结构调整/功能变更后
   auto_pipeline: python build_eo.py 构建时自动执行完整链：重建 eo.js → node --check 语法校验 → 重建本文件（update_ai_context 调用 build_ai_context.py）→
     node test_eo_smoke.js 冒烟测试 → git commit + push（仅白名单文件，排除 eo.js/.eo-key 等机密）
+  commit_convention: '提交信息必须人工可阅读、统一中文并符合 Conventional Commits 规范：格式 `<type>: <中文摘要>`（type 保留英文关键字 feat/fix/docs/build/chore
+    等，描述一律中文）；自动构建提交由 build_eo.py 的 make_commit_message 按实际变更文件生成 `build: 更新<变更领域中文名>（v<版本>）`，正文逐行列出文件清单；手工提交同样遵守该规范，禁止无意义或纯英文流水账式信息'
   manual_steps:
   - 业务规则/章节内容变化时：先改 build_ai_context.py 内对应静态章节，再运行构建
   - 仅同步本文件：python build_ai_context.py（重建 + 自校验）

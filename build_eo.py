@@ -1080,6 +1080,37 @@ def run_smoke_test():
     return True
 
 
+# 提交信息规范（Conventional Commits，中文描述，保证人工可阅读）：
+#   <type>: <中文摘要>（v<构建版本>）
+# type 保留英文关键字；摘要按本次实际变更文件生成，正文逐行列出文件清单
+COMMIT_FILE_LABELS = {
+    'static/app.js': '前端逻辑',
+    'static/style.css': '前端样式',
+    'template.html': '页面模板',
+    '404.html': '404 页面',
+    'build_eo.py': 'EO 构建脚本',
+    'build_ai_context.py': 'AI 上下文生成器',
+    'AI-CONTEXT.yaml': 'AI 项目上下文',
+    'cf-worker.js': 'CF 加速通道',
+    'API.md': 'API 文档',
+    'README.md': 'README 文档',
+    'test_eo_smoke.js': '冒烟测试',
+    'test_eo_server.js': '本地预览服务器',
+    'xxx.json': '外部代理探测目标',
+}
+
+
+def make_commit_message(paths, version):
+    """按变更文件生成中文可读的 Conventional Commits 提交信息"""
+    labels = []
+    for p in paths:
+        label = COMMIT_FILE_LABELS.get(p, p)
+        if label not in labels:
+            labels.append(label)
+    summary = '、'.join(labels) if labels else '项目文件'
+    return f'build: 更新{summary}（v{version}）'
+
+
 def git_commit_and_push(version):
     """将 AI-CONTEXT.yaml 及相关变更提交并推送到 Git"""
     git = shutil.which('git')
@@ -1119,8 +1150,10 @@ def git_commit_and_push(version):
     for p in to_stage:
         subprocess.run([git, 'add', p], capture_output=True)
 
-    commit_msg = f"build: update AI-CONTEXT and sources (v{version})"
-    r = subprocess.run([git, 'commit', '-m', commit_msg], capture_output=True, text=True)
+    commit_msg = make_commit_message(to_stage, version)
+    commit_body = '\n'.join(f'- {p}' for p in to_stage)
+    r = subprocess.run([git, 'commit', '-m', commit_msg, '-m', commit_body],
+                       capture_output=True, text=True)
     if r.returncode != 0:
         print('Git commit failed:', r.stderr or r.stdout)
         return False

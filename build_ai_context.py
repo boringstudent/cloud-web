@@ -254,6 +254,11 @@ WORKFLOW = {
     'auto_pipeline': 'python build_eo.py 构建时自动执行完整链：重建 eo.js → node --check 语法校验 → '
                      '重建本文件（update_ai_context 调用 build_ai_context.py）→ node test_eo_smoke.js 冒烟测试 → '
                      'git commit + push（仅白名单文件，排除 eo.js/.eo-key 等机密）',
+    'commit_convention': '提交信息必须人工可阅读、统一中文并符合 Conventional Commits 规范：'
+                         '格式 `<type>: <中文摘要>`（type 保留英文关键字 feat/fix/docs/build/chore 等，描述一律中文）；'
+                         '自动构建提交由 build_eo.py 的 make_commit_message 按实际变更文件生成 '
+                         '`build: 更新<变更领域中文名>（v<版本>）`，正文逐行列出文件清单；'
+                         '手工提交同样遵守该规范，禁止无意义或纯英文流水账式信息',
     'manual_steps': [
         '业务规则/章节内容变化时：先改 build_ai_context.py 内对应静态章节，再运行构建',
         '仅同步本文件：python build_ai_context.py（重建 + 自校验）',

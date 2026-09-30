@@ -166,9 +166,11 @@ GitHub key 通过以下任一方式提供（**本仓库不保存任何真实 key
 python build_eo.py                 # 生成 eo.js（含 key 的部署版，仅存在本地）并自动语法校验
 # 覆盖默认配置（存储仓库 / 分支 / 用户数据仓库）
 CLOUD=owner/repo BRANCH=main USER_REPO=owner/user-repo python build_eo.py
-node test_eo_smoke.js              # 可选：本地冒烟测试（28 项断言，不触网）
+node test_eo_smoke.js              # 可选：本地冒烟测试（44 项断言，不触网）
 node test_eo_server.js 3210        # 可选：本地 EO 模拟服务器，完整端到端预览
 ```
+
+构建完成会自动执行完整链：`node --check` 语法校验 → 重建 `AI-CONTEXT.yaml` → `node test_eo_smoke.js` 冒烟测试 → git 提交并推送（仅白名单文件，排除 `eo.js`/`.eo-key` 等机密）。**提交信息规范**：遵循 Conventional Commits 且保证人工可阅读、统一中文——格式 `<type>: <中文摘要>`（type 保留英文关键字 `feat`/`fix`/`docs`/`build`/`chore` 等）；自动构建提交按实际变更文件生成 `build: 更新<变更领域中文名>（v<版本>）`，正文逐行列出文件清单；手工提交同样遵守该规范。
 
 将本地生成的 `eo.js` 全部内容粘贴到腾讯云 EdgeOne 边缘函数（或按其函数部署方式上传），绑定域名后即完成部署——页面、API、GitHub 代理与下载中转全部同源可用。接口详见 [API.md](API.md)。
 
