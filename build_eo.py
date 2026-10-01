@@ -126,7 +126,7 @@ const EXT_PROXY_CANDIDATES = [
   'gh.padao.fun',
   'git.yylx.win',
   'gh.halonice.com',
-  'cdn.gh-proxy.com',
+  'cdn.gh-proxy.org',
   'ghproxy.mirror.skybyte.me',
   'github.chenc.dev',
   'github.1ms.xx.kg',
