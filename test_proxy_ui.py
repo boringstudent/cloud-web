@@ -40,7 +40,8 @@ STATE = {
     'total': 0,
     'done': 0,
     'ok': 0, 'timeout': 0, 'error': 0,
-    'results': [],          # 每元素同 test_site 返回 + sources
+    'results': [],          # 每元素同 test_site 返回 + sources（按完成顺序追加）
+    'inflight': [],         # 正在测速中的站点
     'excel': '',            # 生成的 xlsx 文件名
     'started_at': 0.0,
     'size_mb': 20,
@@ -53,7 +54,7 @@ def _reset_state(size_mb, test_file):
     with _state_lock:
         STATE.update({
             'running': True, 'phase': 'fetching', 'total': 0, 'done': 0,
-            'ok': 0, 'timeout': 0, 'error': 0, 'results': [], 'excel': '',
+            'ok': 0, 'timeout': 0, 'error': 0, 'results': [], 'inflight': [], 'excel': '',
             'started_at': time.time(), 'size_mb': size_mb,
             'test_file': test_file, 'message': '',
         })
@@ -62,13 +63,16 @@ def _reset_state(size_mb, test_file):
 def _snapshot():
     with _state_lock:
         snap = dict(STATE)
-        snap['results'] = sorted(
-            STATE['results'],
-            key=lambda r: ({'ok': 0, 'timeout': 1, 'error': 2}[r['status']],
-                           -r['speed_mbps']),
-        )
+        snap['results'] = list(STATE['results'])   # 保持完成顺序，前端增量渲染不抖动
+        snap['inflight'] = list(STATE['inflight'])
         snap['elapsed'] = round(time.time() - STATE['started_at'], 1) if STATE['started_at'] else 0
         return snap
+
+
+def _speed_sorted(results):
+    """Excel 导出用：可用按速度降序，超时/失败在后。"""
+    order = {'ok': 0, 'timeout': 1, 'error': 2}
+    return sorted(results, key=lambda r: (order[r['status']], -r['speed_mbps']))
 
 
 def run_test(size_mb, workers, limit, test_file):
@@ -87,8 +91,19 @@ def run_test(size_mb, workers, limit, test_file):
             raise RuntimeError('三个来源均未抓取到站点')
 
         max_bytes = size_mb * 1024 * 1024
+
+        def _task(host):
+            with _state_lock:
+                STATE['inflight'].append(host)
+            try:
+                return test_site(host, test_file, max_bytes)
+            finally:
+                with _state_lock:
+                    if host in STATE['inflight']:
+                        STATE['inflight'].remove(host)
+
         pool = ThreadPoolExecutor(max_workers=workers)
-        futs = {pool.submit(test_site, h, test_file, max_bytes): h for h in site_sources}
+        futs = {pool.submit(_task, h): h for h in site_sources}
         stopped = False
         try:
             for fut in as_completed(futs):
@@ -113,13 +128,13 @@ def run_test(size_mb, workers, limit, test_file):
             else:
                 pool.shutdown(wait=True)
 
-        # 生成 Excel（有部分结果就生成）
+        # 生成 Excel（有部分结果就生成；Excel 按速度排序，与界面完成顺序无关）
         snap = _snapshot()
         excel_name = ''
         if snap['results']:
             excel_name = f'github_proxy_test_{datetime.now():%Y%m%d_%H%M%S}.xlsx'
             out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), excel_name)
-            write_excel(snap['results'], test_file, size_mb, out_path)
+            write_excel(_speed_sorted(snap['results']), test_file, size_mb, out_path)
         with _state_lock:
             STATE['excel'] = excel_name
             STATE['phase'] = 'stopped' if stopped else 'done'
@@ -203,7 +218,7 @@ th,td{padding:9px 10px;text-align:left;border-bottom:1px solid rgba(255,255,255,
 th{color:var(--dim);font-size:12px;font-weight:600;position:sticky;top:0;
   background:#12172a;cursor:pointer;user-select:none;z-index:1}
 th:hover{color:var(--txt)}
-tbody tr{animation:fadein .3s ease}
+tbody tr.fresh{animation:fadein .5s ease}
 tbody tr:hover{background:rgba(255,255,255,.04)}
 @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .host{font-family:Consolas,Menlo,monospace;font-size:12.5px}
@@ -221,6 +236,11 @@ tbody tr:hover{background:rgba(255,255,255,.04)}
 .toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .msg{color:var(--warn);font-size:13px}
 a.dl{color:var(--accent2);text-decoration:none}
+.inflight{margin-top:10px;font-size:12px;color:var(--dim);display:none;line-height:2}
+.chip{display:inline-block;padding:1px 10px;border-radius:99px;margin:2px 4px 2px 0;
+  background:rgba(99,102,241,.16);color:#a5b4fc;font-family:Consolas,monospace;font-size:11.5px;
+  animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
 </style>
 </head>
 <body>
@@ -244,6 +264,7 @@ a.dl{color:var(--accent2);text-decoration:none}
     </div>
     <div class="progress" id="pbar"><i></i></div>
     <div class="meta"><span id="phase">就绪</span><span id="elapsed"></span></div>
+    <div class="inflight" id="inflightWrap"><span>正在测速：</span><span id="inflight"></span></div>
   </div>
 
   <div class="stats">
@@ -275,7 +296,10 @@ a.dl{color:var(--accent2);text-decoration:none}
 <script>
 const $ = id => document.getElementById(id);
 $('file').value = '';
-let sortKey = null, sortAsc = false, lastData = null;
+let lastData = null;
+let rowMap = {};            // host -> {tr, data}，行只增不改，避免整表重渲抖动
+let runningMax = 1;         // 速度条只随更快站点增长，不回缩
+let curStartedAt = 0, lastInflightKey = '';
 
 const PHASE = {idle:'就绪', fetching:'正在抓取三个来源的站点列表…',
   testing:'测速中…', done:'测试完成', stopped:'已停止（部分结果）'};
@@ -304,51 +328,88 @@ $('excelBtn').onclick = () => {
 function esc(s){return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 const STXT = {ok:'可用', timeout:'超时', error:'失败'};
 
+function rowHtml(r){
+  const src = (r.sources || []).join('、');
+  const mb = r.bytes ? +(r.bytes/1048576).toFixed(2) : 0;
+  return `<td class="rk"></td>
+    <td class="host">${esc(r.host)}</td>
+    <td class="src">${esc(src)}</td>
+    <td><span class="pill ${r.status}">${STXT[r.status]||r.status}</span></td>
+    <td>${esc(r.http)}</td>
+    <td>${r.ttfb_ms === '' ? '' : r.ttfb_ms}</td>
+    <td>${mb || ''}</td>
+    <td><div class="speedcell"><span style="min-width:52px">${r.status==='ok' ? r.speed_mbps.toFixed(2) : ''}</span>
+      <span class="sbar"><i style="width:${Math.round((r.speed_mbps||0)/runningMax*100)}%"></i></span></div></td>
+    <td class="note" title="${esc(r.note)}">${esc(r.note)}</td>`;
+}
+
+function renumber(){
+  [...$('tb').children].forEach((tr, i) => tr.firstElementChild.textContent = i + 1);
+}
+
 function render(d){
   lastData = d;
   $('sTotal').textContent = d.total; $('sDone').textContent = d.done;
   $('sOk').textContent = d.ok; $('sTmo').textContent = d.timeout; $('sErr').textContent = d.error;
-  $('phase').textContent = PHASE[d.phase] || d.phase;
+  const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
+  let phaseTxt = PHASE[d.phase] || d.phase;
+  if (d.phase === 'testing') phaseTxt += ` 已完成 ${d.done}/${d.total}（${pct}%）`;
+  $('phase').textContent = phaseTxt;
   $('elapsed').textContent = d.started_at ? `用时 ${d.elapsed}s` : '';
   $('msg').textContent = d.message || '';
-  const pct = d.total ? Math.round(d.done / d.total * 100) : 0;
   $('pbar').className = 'progress' + (d.running ? ' run' : '');
   $('pbar').firstElementChild.style.width = pct + '%';
   $('startBtn').disabled = d.running;
   $('stopBtn').disabled = !d.running;
   $('excelBtn').disabled = !d.excel;
 
-  let rows = d.results.map((r, i) => ({...r, _rank: i + 1,
-    _src: (r.sources || []).join('、'), _st: r.status,
-    _mb: r.bytes ? +(r.bytes/1048576).toFixed(2) : 0}));
-  if (sortKey){
-    rows.sort((a, b) => {
-      let x = a[sortKey], y = b[sortKey];
-      if (typeof x === 'string') x = x || '\uffff';
-      if (typeof y === 'string') y = y || '\uffff';
-      return (x > y ? 1 : x < y ? -1 : 0) * (sortAsc ? 1 : -1);
-    });
+  // 新一轮测试：清空旧行
+  if (d.started_at !== curStartedAt){
+    curStartedAt = d.started_at;
+    rowMap = {}; runningMax = 1;
+    $('tb').innerHTML = '';
   }
-  const maxSp = Math.max(1, ...rows.map(r => r.speed_mbps || 0));
-  $('tb').innerHTML = rows.map(r => `<tr>
-    <td>${r._rank}</td>
-    <td class="host">${esc(r.host)}</td>
-    <td class="src">${esc(r._src)}</td>
-    <td><span class="pill ${r.status}">${STXT[r.status]||r.status}</span></td>
-    <td>${esc(r.http)}</td>
-    <td>${r.ttfb_ms === '' ? '' : r.ttfb_ms}</td>
-    <td>${r._mb || ''}</td>
-    <td><div class="speedcell"><span style="min-width:52px">${r.status==='ok' ? r.speed_mbps.toFixed(2) : ''}</span>
-      <span class="sbar"><i style="width:${Math.round((r.speed_mbps||0)/maxSp*100)}%"></i></span></div></td>
-    <td class="note" title="${esc(r.note)}">${esc(r.note)}</td>
-  </tr>`).join('');
-  $('empty').style.display = rows.length ? 'none' : '';
+
+  // 正在测速列表（内容变化时才更新 DOM，呼吸动画不重启）
+  const ik = (d.inflight || []).join('|');
+  if (ik !== lastInflightKey){
+    lastInflightKey = ik;
+    $('inflightWrap').style.display = d.inflight && d.inflight.length ? 'block' : 'none';
+    $('inflight').innerHTML = (d.inflight || []).map(h => `<span class="chip">${esc(h)}</span>`).join('');
+  }
+
+  // 增量追加新完成的行（只增不改 → 列表不抖动）
+  for (const r of d.results){
+    if (rowMap[r.host]) continue;
+    if (r.speed_mbps > runningMax) runningMax = r.speed_mbps;
+    const tr = document.createElement('tr');
+    tr.className = 'fresh';
+    tr.innerHTML = rowHtml(r);
+    tr.dataset.host = r.host;
+    rowMap[r.host] = {tr, data: r};
+    $('tb').appendChild(tr);
+    tr.addEventListener('animationend', () => tr.classList.remove('fresh'), {once: true});
+  }
+  renumber();
+  $('empty').style.display = d.results.length ? 'none' : '';
 }
 
 document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
-  const k = th.dataset.k;
-  if (sortKey === k) sortAsc = !sortAsc; else { sortKey = k; sortAsc = false; }
-  if (lastData) render(lastData);
+  const k = th.dataset.k, asc = th.dataset.asc !== '1';
+  th.dataset.asc = asc ? '1' : '0';
+  const val = r => k === '_rank' ? 0
+    : k === '_src' ? (r.sources || []).join('、')
+    : k === '_st' ? ({ok: 0, timeout: 1, error: 2}[r.status] ?? 9)
+    : k === '_mb' ? (r.bytes || 0)
+    : (typeof r[k] === 'number' ? r[k] : (r[k] === '' || r[k] == null ? (asc ? '\uffff' : '') : r[k]));
+  const items = Object.values(rowMap);
+  items.sort((a, b) => {
+    const x = val(a.data), y = val(b.data);
+    return (x > y ? 1 : x < y ? -1 : 0) * (asc ? 1 : -1);
+  });
+  const tb = $('tb');
+  items.forEach(it => tb.appendChild(it.tr));   // 只移动节点，不重建行
+  renumber();
 });
 
 (async function poll(){
