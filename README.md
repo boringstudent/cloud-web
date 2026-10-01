@@ -94,6 +94,8 @@ static/style.css    全部样式（背景图由浏览器直连 loliapi 图床，
 test_eo_smoke.js    eo.js 本地冒烟测试（Node 模拟 fetch 事件，验证路由/资源/安全）
 test_eo_server.js   eo.js 本地模拟服务器（Node HTTP 包装 fetch 处理器，端到端预览）
 test_proxy_sites.py GitHub 下载代理站点测速工具（用户手动运行，不接入自动化构建链）
+test_proxy_ui.py    测速工具的本地 Web UI（复用上者逻辑，暗色界面 + 实时进度 +
+                    可排序结果表 + Excel 导出，仅需标准库 + 上者依赖）
 ```
 
 ### 代理站点测速工具（test_proxy_sites.py）
@@ -110,6 +112,15 @@ python test_proxy_sites.py --size 10 --workers 4 # 自定义下载量与并发
 python test_proxy_sites.py --file "<GitHub文件URL>" -o result.xlsx
 python test_proxy_sites.py --limit 12            # 调试：只测前 N 个站点
 ```
+
+**Web UI 版本**（复用同一套抓取/测速逻辑，仅依赖标准库）：
+
+```bash
+python test_proxy_ui.py          # 启动后自动打开 http://127.0.0.1:8765
+python test_proxy_ui.py 9000     # 指定端口
+```
+
+暗色界面内可配置测速文件 / 下载量上限（默认 20MB）/ 并发线程 / 站点上限，实时显示进度条与统计卡片，结果表格逐站点刷新（状态彩色标记、速度条形图、点表头排序），可随时停止，完成后一键导出 Excel。
 
 > 本机经 TLS 拦截代理访问 GitHub 相关域名时，脚本会自动回退跳过证书校验（仅该工具脚本）。
 

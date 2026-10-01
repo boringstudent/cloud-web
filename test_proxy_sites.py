@@ -39,8 +39,8 @@ import requests
 
 # 默认测速文件（GitHub Release 大文件，只截取前 --size MB）
 DEFAULT_TEST_FILE = (
-    'https://github.com/microsoft/terminal/releases/download/v1.22.10731.0/'
-    'Microsoft.WindowsTerminal_1.22.10731.0_x64.zip'
+    'https://github.com/PowerShell/PowerShell/releases/download/'
+    'v7.4.6/PowerShell-7.4.6-win-x64.zip'  # 约 106MB，保证 20MB 截取能跑满
 )
 
 CONNECT_TIMEOUT = 10      # 连接超时（秒）
