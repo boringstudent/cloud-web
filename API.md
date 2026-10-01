@@ -62,7 +62,7 @@ GET /api/cf-ip
 
 外部多代理下载的公共 ghproxy 镜像候选。**前端实际使用方式**：`?all=1` 拿全量候选（不触网、即时返回）后在**浏览器侧逐个实测**（真实下载发生在浏览器，EO 服务端探测对浏览器没有代表性——代理回源失败/CDN 缓存按节点分片会让 EO 视角出现大量 502 误报；浏览器侧为简单 GET 不带自定义头避免 CORS 预检，8 路并发、6 秒超时、快速失败复测一次，要求 2xx 且响应体为探测文件 `https://raw.githubusercontent.com/boringstudent/cloud-web/main/xxx.json` 的真实内容）。
 
-服务端 EO 视角探测（保留作诊断）：默认请求分批限并发探测连通性（5 秒超时，返回 <500 即视为可用），**只返回当前可用的**，实例级缓存 5 分钟；`?probe=api` 逐个 ping 候选存活（9 秒超时，快速失败复测一次），**返回含失败站点的全量结果**（每条含 `status`/`err` 失败原因），同样缓存 5 分钟。`HEAD` 立即返回 200。
+服务端 EO 视角探测（保留作诊断）：默认请求分批限并发探测连通性（5 秒超时，返回 <500 即视为可用），**只返回当前可用的**，实例级缓存 5 分钟；`?probe=api` 逐个 ping 候选存活（9 秒超时，快速失败复测一次），**返回含失败站点的全量结果**（每条含 `status`/`err` 失败原因），同样缓存 5 分钟；**`?probe=api` 按客户端 IP 限流**（每个 IP 每 5 分钟最多触发 2 次全量探测，命中缓存不耗配额，超限返回 429——全量探测会扇出数十个出网请求，防滥用刷量）。`HEAD` 立即返回 200。
 
 ```
 GET /api/proxies
@@ -89,13 +89,15 @@ GET /api/gitkey        （带 X-Auth-User / X-Auth-Pass 头，admin）
 
 用户登录。密码必须传 SHA-512 哈希，与存储哈希实时比对（登录强制实时读取，无缓存）；成功响应**只含角色信息**，不再返回任何 key 或 key 哈希。
 
+**前端一律走 POST 请求体**（凭据放 URL query 会留在浏览器历史与访问日志里），GET query 形式仅为兼容保留。**登录失败限流**：同一 客户端IP+用户名 10 分钟内最多 10 次失败，超出返回 429（实例级滑动窗口，边缘实例重建即重置）。
+
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `username` | 是 | 用户名 |
 | `password` | 是 | 密码的 SHA-512 哈希（128 位 hex，前端计算） |
 
 ```
-GET /api/login?username=fx&password=<sha512哈希>
+POST /api/login   { "username": "fx", "password": "<sha512哈希>" }
 → { "success": true, "username": "fx", "role": "user", "avatar": "https://..." }
 ```
 
@@ -134,14 +136,14 @@ GET /api/login?username=fx&password=<sha512哈希>
 
 ## Admin 接口（需 `admin_user` + `admin_pass` 哈希）
 
-GET 从 query 读取，其余方法从 body 读取；`admin_pass` 为管理员密码的 SHA-512 哈希，逐请求实时校验。
+GET 从 query 读取，其余方法从 body 读取；`admin_pass` 为管理员密码的 SHA-512 哈希，逐请求实时校验。**也接受 `X-Admin-User` / `X-Admin-Pass` 请求头（优先于 query/body）**——前端用户列表已改用请求头形式，避免凭据进入浏览器历史与访问日志。
 
 ### `GET /api/users`
 
 查看全部用户（密码字段脱敏为 `***`）。
 
 ```
-GET /api/users?admin_user=boss&admin_pass=<sha512哈希>
+GET /api/users   （X-Admin-User: boss，X-Admin-Pass: <sha512哈希>）
 → { "users": { "boss": { "password": "***", "role": "admin", "avatar": "https://..." } } }
 ```
 

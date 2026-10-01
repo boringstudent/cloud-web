@@ -1778,6 +1778,11 @@ h1 {
     cursor: pointer;
 }
 
+/* ---- 面包屑「当前位置:」标签（颜色随主题，暗色下保持可读） ---- */
+.crumb-label {
+    color: #666;
+}
+
 /* ---- 主题 / 语言选择器（右上角） ---- */
 .pref-wrap {
     display: flex;
@@ -2185,6 +2190,9 @@ h1 {
 :root[data-theme="dark"] .pref-wrap select:hover {
     background: rgba(48, 54, 61, 0.95);
 }
+:root[data-theme="dark"] .crumb-label {
+    color: #9aa4b0;
+}
 :root[data-theme="dark"] .audio-pl,
 :root[data-theme="dark"] .media-ctl {
     background: rgba(33, 38, 45, 0.94);
@@ -2462,9 +2470,10 @@ body.auth-visitor #savePreviewBtn {
         gap: 6px !important;
     }
     .pref-wrap select {
-        max-width: 72px;
+        /* 88px 才能完整放下 4 个汉字 + 下拉箭头（72px 会截断成"跟随系…"） */
+        max-width: 88px;
         font-size: 11px;
-        padding: 5px 6px;
+        padding: 5px 4px;
     }
     #authBtn,
     #uploadFabBtn {
@@ -2552,9 +2561,12 @@ body.auth-visitor #savePreviewBtn {
         max-width: 54vw;
         font-size: 12px;
     }
+    /* 后台任务浮泡移到顶部（auth-bar 下方）：底部已有上传按钮/批量栏/
+       下载进度卡片，浮泡 bottom 与进度卡片几乎同高会互相重叠 */
     .bg-task-bubble {
         right: 16px;
-        bottom: 132px;
+        top: 64px;
+        bottom: auto;
         max-width: 72vw;
     }
     /* 图片查看器工具栏换行 */

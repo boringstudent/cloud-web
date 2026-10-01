@@ -76,10 +76,10 @@ ARCHITECTURE = {
 DATAFLOW = {
     'auth': [
         '浏览器 crypto.subtle 计算密码 SHA-512（128hex），明文不出浏览器',
-        'POST /api/login（强制实时读 user.json 比对，无缓存）→ 返回 {success, username, role, avatar}',
+        'POST /api/login（强制实时读 user.json 比对，无缓存）→ 返回 {success, username, role, avatar}；登录失败限流：IP+用户名 10 分钟 10 次超限 429',
         'localStorage cloud_web_auth 存 {用户名,哈希,角色,头像}，会话始终持久化',
         '写操作请求头携带 X-Auth-User / X-Auth-Pass（缓存哈希），EO 逐请求实时校验（鉴权读 60s 实例级缓存，写后即时刷新）',
-        'admin 接口用 admin_user/admin_pass（同哈希），服务端校验 role=admin',
+        'admin 接口用 admin_user/admin_pass（同哈希），服务端校验 role=admin；用户列表凭据走 X-Admin-User/X-Admin-Pass 请求头（优先于 query/body，凭据不进 URL）',
     ],
     'upload': [
         '文件按 CHUNK_SIZE_LEVELS 分片：GitHub API 创建 blob 上限 25MB——base64 上限 24/16/8MB 三档反算原始大小（约 18.8/12.5/6.2MB，最高档留 1MB 余量），too large 自动降档续传；大分片连续状态码 0（第 2 次任务级尝试仍网络失败，≥8MB 分片）同样自动降档——链路对超大请求体的硬限制只表现为连接中断；降到的档位会话内粘滞（不在每批上传重置）',
@@ -170,8 +170,8 @@ API = {
         'GET/POST /api/hash → SHA-512 哈希（type=password|key & value=）',
         'GET/HEAD /api/my-ip（别名 /ip）→ 服务器出口 IP/归属地（cip.cc，8s 超时）',
         'GET/HEAD /api/cf-ip → CF 通道出口 IP/归属地（EO 经 CF /ip 取 IP 再查 api.ip.sb→ipinfo.io，缓存 5min）',
-        'GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 69 个不触网；?probe=api EO 视角全量诊断',
-        'GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key）',
+        'GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 69 个不触网；?probe=api EO 视角全量诊断（按 IP 限流：5 分钟 2 次，命中缓存不耗配额，超限 429）',
+        'GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key；前端走 POST 请求体，失败限流 429）',
         'POST /api/change-password → 自助改密（旧/新哈希）',
         'POST /api/change-avatar → 自助改头像 URL（http/https ≤300 字符，空串清除）',
         'POST /api/delete-account → 自助注销（验哈希后永久删除）',

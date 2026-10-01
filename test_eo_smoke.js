@@ -133,6 +133,21 @@ async function call(path, opts) {
   r = await call('/api/login?username=a&password=plain');
   check('登录明文密码 -> 400', r.status === 400);
 
+  // 11. 登录支持 POST JSON 请求体（凭据不再走 URL query）
+  r = await call('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+  check('POST 登录缺参数 -> 400', r.status === 400);
+  r = await call('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'a', password: 'plain' }) });
+  check('POST 登录明文密码 -> 400', r.status === 400);
+
+  // 12. 安全加固：登录限流 / 探测限流 / 管理员请求头凭据 / CORS 放行
+  check('eo.js 登录失败限流', eoSrc.includes('function loginLimited') && eoSrc.includes('Too many login attempts') && eoSrc.includes('noteLoginFail'));
+  check('eo.js 探测接口按 IP 限流', eoSrc.includes('function probeApiLimited') && eoSrc.includes('Too many probe requests'));
+  check('eo.js 管理员凭据支持请求头', eoSrc.includes("headers.get('X-Admin-User')") && eoSrc.includes("headers.get('X-Admin-Pass')"));
+  r = await call('/api/login', { method: 'OPTIONS' });
+  check('CORS 放行 X-Admin-* 头', (r.headers.get('Access-Control-Allow-Headers') || '').includes('X-Admin-User') && (r.headers.get('Access-Control-Allow-Headers') || '').includes('X-Admin-Pass'));
+  check('app.js 登录改 POST 请求体', appJs.includes("apiSendJson('POST', API_BASE + '/api/login'") && !appJs.includes("/api/login?username="));
+  check('app.js 管理员列表凭据走请求头', appJs.includes("'X-Admin-User': creds.admin_user") && !appJs.includes('/api/users?admin_user='));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('CRASH', e); process.exit(1); });

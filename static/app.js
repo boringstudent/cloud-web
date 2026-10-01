@@ -593,6 +593,7 @@ function setPreviewBlobUrl(url) {
 }
 
 var previewAbort = null; // 图片流式预览的 AbortController
+var previewTextXhr = null; // 文本预览/编辑的在途 XHR（纳入中止管理：防 A→B 快速切换时 A 的迟到响应覆盖 B、并把 A 的内容保存进 B）
 var previewProbe = null; // 音/视频预览的测速探测请求
 var previewMerge = null; // 分片合并预览的取消句柄
 var previewAudioVolume = null; // 跨预览记忆用户调节的音量/静音状态
@@ -630,6 +631,10 @@ function stopPreviewMedia() {
     if (previewAbort) {
         try { previewAbort.abort(); } catch (e) {}
         previewAbort = null;
+    }
+    if (previewTextXhr) {
+        try { previewTextXhr.abort(); } catch (e) {}
+        previewTextXhr = null;
     }
     abortPreviewProbes();
     if (previewMerge) {
@@ -785,9 +790,14 @@ function sha512Hex(text, cb) {
     });
 }
 
-function apiGetJson(url, cb) {
+function apiGetJson(url, cb, headers) {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url, true);
+    if (headers) {
+        for (var hk in headers) {
+            if (Object.prototype.hasOwnProperty.call(headers, hk)) xhr.setRequestHeader(hk, headers[hk]);
+        }
+    }
     xhr.onload = function() {
         if (xhr.status === 200) {
             try {
@@ -846,7 +856,8 @@ function loginUser(username, password, persist, cb) {
 // 已持有密码哈希时直接登录（“记住密码”自动填充的场景）；
 // 成功回调为 cb(null, pwHash)，便于调用方缓存哈希
 function loginWithHash(username, pwHash, persist, cb) {
-    apiGetJson(API_BASE + '/api/login?username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(pwHash), function(err2, data) {
+    // 凭据走 POST 请求体而非 URL query——query 会留在浏览器历史与访问日志里
+    apiSendJson('POST', API_BASE + '/api/login', { username: username, password: pwHash }, function(err2, data) {
         if (err2 || !data || !data.success) {
             cb(err2 || '用户名或密码错误');
             return;
@@ -1161,7 +1172,37 @@ var I18N = {
         '二维码': 'QR code',
         '内容过长，无法生成二维码': 'Content too long to generate QR code',
         '下载中...': 'Downloading...',
-        '未知错误': 'Unknown error'
+        '未知错误': 'Unknown error',
+        '显示方式': 'View as',
+        '纯文本': 'Plain text',
+        '代码着色(自动)': 'Code highlight (auto)',
+        'Markdown 预览': 'Markdown preview',
+        '预览 Markdown': 'Preview Markdown',
+        '返回编辑': 'Back to edit',
+        '确定要永久注销账户 ': 'Permanently delete account ',
+        ' 吗？此操作不可撤销！': '? This cannot be undone!',
+        '确定要删除用户 ': 'Delete user ',
+        ' 吗？此操作不可撤销。': '? This cannot be undone.',
+        '以下同名内容已存在于当前目录：': 'The following items already exist in the current folder:',
+        '是否继续上传？': 'Continue uploading?',
+        '属性: ': 'Properties: ',
+        '预览: ': 'Preview: ',
+        '编辑: ': 'Edit: ',
+        '列表': 'List',
+        '定位': 'Locate',
+        '快速定位到当前播放的音频': 'Jump to the currently playing audio',
+        ' 首': ' tracks',
+        '已选 ': 'Selected ',
+        ' 项': ' item(s)',
+        '加载失败: ': 'Load failed: ',
+        '响应异常': 'Abnormal response',
+        '加载失败，无法播放该文件': 'Failed to load, cannot play this file',
+        '无法加载文件内容': 'Failed to load file content',
+        '网络错误，无法加载文件': 'Network error, failed to load file',
+        '404 - 页面未找到': '404 - Page not found',
+        '总 ': 'Total ',
+        '外部 ': 'Ext ',
+        '当前位置:': 'Location:'
     },
     'zh-TW': {
         '登录': '登入',
@@ -1344,7 +1385,37 @@ var I18N = {
         '二维码': '二維碼',
         '内容过长，无法生成二维码': '內容過長，無法生成二維碼',
         '下载中...': '下載中...',
-        '未知错误': '未知錯誤'
+        '未知错误': '未知錯誤',
+        '显示方式': '顯示方式',
+        '纯文本': '純文字',
+        '代码着色(自动)': '程式碼標色(自動)',
+        'Markdown 预览': 'Markdown 預覽',
+        '预览 Markdown': '預覽 Markdown',
+        '返回编辑': '返回編輯',
+        '确定要永久注销账户 ': '確定要永久註銷帳戶 ',
+        ' 吗？此操作不可撤销！': ' 嗎？此操作不可撤銷！',
+        '确定要删除用户 ': '確定要刪除使用者 ',
+        ' 吗？此操作不可撤销。': ' 嗎？此操作不可撤銷。',
+        '以下同名内容已存在于当前目录：': '以下同名內容已存在於目前目錄：',
+        '是否继续上传？': '是否繼續上傳？',
+        '属性: ': '屬性: ',
+        '预览: ': '預覽: ',
+        '编辑: ': '編輯: ',
+        '列表': '清單',
+        '定位': '定位',
+        '快速定位到当前播放的音频': '快速定位到目前播放的音訊',
+        ' 首': ' 首',
+        '已选 ': '已選 ',
+        ' 项': ' 項',
+        '加载失败: ': '載入失敗: ',
+        '响应异常': '回應異常',
+        '加载失败，无法播放该文件': '載入失敗，無法播放該檔案',
+        '无法加载文件内容': '無法載入檔案內容',
+        '网络错误，无法加载文件': '網路錯誤，無法載入檔案',
+        '404 - 页面未找到': '404 - 頁面未找到',
+        '总 ': '總 ',
+        '外部 ': '外部 ',
+        '当前位置:': '目前位置:'
     },
     'ja': {
         '登录': 'ログイン',
@@ -1527,7 +1598,37 @@ var I18N = {
         '二维码': 'QRコード',
         '内容过长，无法生成二维码': '内容が長すぎてQRコードを生成できません',
         '下载中...': 'ダウンロード中...',
-        '未知错误': '不明なエラー'
+        '未知错误': '不明なエラー',
+        '显示方式': '表示形式',
+        '纯文本': 'プレーンテキスト',
+        '代码着色(自动)': 'コードハイライト(自動)',
+        'Markdown 预览': 'Markdown プレビュー',
+        '预览 Markdown': 'Markdown をプレビュー',
+        '返回编辑': '編集に戻る',
+        '确定要永久注销账户 ': 'アカウント ',
+        ' 吗？此操作不可撤销！': ' を完全に削除しますか？この操作は取り消せません！',
+        '确定要删除用户 ': 'ユーザー ',
+        ' 吗？此操作不可撤销。': ' を削除しますか？この操作は取り消せません。',
+        '以下同名内容已存在于当前目录：': '同名の項目が現在のフォルダに既に存在します：',
+        '是否继续上传？': 'アップロードを続行しますか？',
+        '属性: ': 'プロパティ: ',
+        '预览: ': 'プレビュー: ',
+        '编辑: ': '編集: ',
+        '列表': 'リスト',
+        '定位': 'ジャンプ',
+        '快速定位到当前播放的音频': '再生中の音声へジャンプ',
+        ' 首': ' 曲',
+        '已选 ': '選択中 ',
+        ' 项': ' 件',
+        '加载失败: ': '読み込み失敗: ',
+        '响应异常': '応答エラー',
+        '加载失败，无法播放该文件': '読み込みに失敗したため再生できません',
+        '无法加载文件内容': 'ファイル内容を読み込めません',
+        '网络错误，无法加载文件': 'ネットワークエラーで読み込めません',
+        '404 - 页面未找到': '404 - ページが見つかりません',
+        '总 ': '合計 ',
+        '外部 ': '外部 ',
+        '当前位置:': '現在の場所:'
     }
 };
 
@@ -1701,6 +1802,8 @@ function applyI18nStatic() {
     dlChanBtnRefresh();
     dlExtBtnRefresh();
     ulChanBtnRefresh();
+    // 面包屑是动态渲染区、不在静态绑定内：语言切换后按当前语言重渲
+    if (typeof updateBreadcrumbs === 'function') updateBreadcrumbs();
 }
 
 function langDetect() {
@@ -1905,6 +2008,11 @@ function openAccountModal(tab) {
     var auth = getSavedAuth();
     var avatarInput = document.getElementById('avUrl');
     if (avatarInput) avatarInput.value = (auth && auth.avatar) || '';
+    // 隐藏用户名字段填入当前账号：密码管理器据此关联保存的凭据
+    var cpu = document.getElementById('cpUsername');
+    if (cpu) cpu.value = (auth && auth.u) || '';
+    var dau = document.getElementById('daUsername');
+    if (dau) dau.value = (auth && auth.u) || '';
     switchAccountTab(tab || 'avatar');
     document.getElementById('accountModal').classList.add('show');
 }
@@ -2048,7 +2156,7 @@ function deleteOwnAccount() {
         setMsg('accountMessage', '请输入密码以确认注销', 'error');
         return;
     }
-    if (!confirm('确定要永久注销账户 ' + auth.u + ' 吗？此操作不可撤销！')) {
+    if (!confirm(t('确定要永久注销账户 ') + auth.u + t(' 吗？此操作不可撤销！'))) {
         return;
     }
     var btn = document.getElementById('daBtn');
@@ -2119,7 +2227,7 @@ function loadAdminUsers() {
             adminUsersData = null;
             var errDiv = document.createElement('div');
             errDiv.className = 'message error';
-            errDiv.textContent = '加载失败: ' + (err || '响应异常');
+            errDiv.textContent = t('加载失败: ') + (err || t('响应异常'));
             var listEl = document.getElementById('adminUserList');
             listEl.innerHTML = '';
             listEl.appendChild(errDiv);
@@ -2130,12 +2238,14 @@ function loadAdminUsers() {
     };
     withAdminCreds(function(creds) {
         if (!creds) { done('需要管理员权限', null); return; }
-        apiGetJson(API_BASE + '/api/users?admin_user=' + encodeURIComponent(creds.admin_user)
-            + '&admin_pass=' + encodeURIComponent(creds.admin_pass) + '&_=' + Date.now(),
+        // 管理员凭据走自定义请求头而非 URL query（query 会留在浏览器历史与访问日志里）；
+        // 服务端 requireAdmin 优先读 X-Admin-User / X-Admin-Pass，兼容旧 query 形式
+        apiGetJson(API_BASE + '/api/users?_=' + Date.now(),
             function(err, data) {
                 if (err || !data || !data.users) { done(err || '响应异常', null); return; }
                 done(null, data.users);
-            });
+            },
+            { 'X-Admin-User': creds.admin_user, 'X-Admin-Pass': creds.admin_pass });
     });
 }
 
@@ -2382,7 +2492,7 @@ function adminChangeRole(username, newRole) {
 }
 
 function adminDeleteUser(username) {
-    if (!confirm('确定要删除用户 ' + username + ' 吗？此操作不可撤销。')) return;
+    if (!confirm(t('确定要删除用户 ') + username + t(' 吗？此操作不可撤销。'))) return;
     withAdminCreds(function(creds) {
         if (!creds) {
             setMsg('adminMessage', '需要管理员权限或身份验证失败', 'error');
@@ -3316,11 +3426,20 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
         if (onProgress && !state.failed && !state.cancelled) onProgress(loaded, total);
     }
 
+    // 只归还本任务在途段占用的通道计数——中止/失败的段不会回调 dlChanDec，
+    // 但不能把全局 dlActive 整体清零（会连坐其他在途下载，负载均衡失真）
+    function segChanRelease(s) {
+        if (s && s._chanCounted) {
+            s._chanCounted = false;
+            dlChanDec(s._lastChan);
+        }
+    }
+
     function failAll() {
         if (state.failed || state.cancelled) return;
         state.failed = true;
-        // 在途段回调将因 failed 提前返回、不再自行释放，统一归还预算槽位
-        if (segments) segments.forEach(function(s) { releaseBudget(s); });
+        // 在途段回调将因 failed 提前返回、不再自行释放，统一归还预算槽位与通道计数
+        if (segments) segments.forEach(function(s) { releaseBudget(s); segChanRelease(s); });
         dlUnregisterScheduler(pumpSegs);
         dlTrackStop();
         onFail();
@@ -3329,11 +3448,9 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
     function cancel() {
         if (state.cancelled) return;
         state.cancelled = true;
-        if (segments) segments.forEach(function(s) { releaseBudget(s); });
+        if (segments) segments.forEach(function(s) { releaseBudget(s); segChanRelease(s); });
         dlUnregisterScheduler(pumpSegs);
         state.controllers.forEach(function(c) { try { c.abort(); } catch (e) {} });
-        // 中止的在途段不会回调 dlChanDec，直接清零在途计数避免负载均衡失真
-        dlActive.eo = dlActive.cf = dlActive.ext = 0;
         dlTrackStop();
     }
 
@@ -3404,6 +3521,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
             if (!seg._extBase) chan = 'eo';
         }
         seg._lastChan = chan;
+        seg._chanCounted = true;
         dlChanInc(chan);
         var ctrl = new AbortController();
         state.controllers.push(ctrl);
@@ -3445,7 +3563,7 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
             }
         }, 3000);
         fetch(url, { signal: ctrl.signal, cache: 'no-store', headers: headers }).then(function(resp) {
-            if (state.failed || state.cancelled) return;
+            if (state.failed || state.cancelled) { clearInterval(watchdog); return; }
             // 416 Range Not Satisfiable：段的请求区间超出真实文件——从
             // Content-Range: bytes */N 取真实大小自我修正：段已收齐则直接完成，
             // 否则收敛段尾后不计失败立即重试（sizeHint 偏大/续传越界不再整单失败）
@@ -3460,14 +3578,14 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
                 if (total && seg.start + seg.received >= total) {
                     seg.done = true;
                     activeSegs--;
-                    dlChanDec(chan);
+                    segChanRelease(seg);
                     releaseBudget(seg);
                     if (budget) dlNotify();
                     checkAll();
                     pumpSegs();
                     return;
                 }
-                dlChanDec(chan);
+                segChanRelease(seg);
                 if (total) seg.end = Math.min(seg.end === null ? total - 1 : seg.end, total - 1);
                 if (attempt + 1 >= DUAL_SEG_MAX_ATTEMPTS) {
                     failAll();
@@ -3493,12 +3611,12 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
             var reader = resp.body.getReader();
             var pump = function() {
                 reader.read().then(function(r) {
-                    if (state.failed || state.cancelled) return;
+                    if (state.failed || state.cancelled) { clearInterval(watchdog); return; }
                     if (r.done) {
                         clearInterval(watchdog);
                         seg.done = true;
                         activeSegs--;
-                        dlChanDec(chan);
+                        segChanRelease(seg);
                         releaseBudget(seg);
                         if (budget) dlNotify();   // 唤醒池内其他文件抢占空出的全局槽位
                         if (chan === 'ext') {
@@ -3520,22 +3638,22 @@ function fetchFileBlobDual(filePath, sizeHint, onProgress, onDone, onFail, limit
                     pump();
                 }, function(err) {
                     // 看门狗中止（非用户取消）同样换源重试，否则在途槽位泄漏
-                    if (isAbort(err) && (state.failed || state.cancelled)) return;
                     clearInterval(watchdog);
+                    if (isAbort(err) && (state.failed || state.cancelled)) return;
                     retrySeg(seg, attempt, chan);
                 });
             };
             pump();
         }, function(err) {
-            if (isAbort(err) && (state.failed || state.cancelled)) return;
             clearInterval(watchdog);
+            if (isAbort(err) && (state.failed || state.cancelled)) return;
             retrySeg(seg, attempt, chan);
         });
     }
 
     function retrySeg(seg, attempt, chan) {
         if (state.failed || state.cancelled) return;
-        dlChanDec(chan);
+        segChanRelease(seg);
         if (chan === 'cf') {
             state.cfFails++;
             if (state.cfFails >= 2) state.cfDown = true;
@@ -3700,7 +3818,7 @@ function buildZipBlobAsync(entries, onProgress, isCancelled, onDone) {
 
 
 function showProperties(filePath, fileName, fileType) {
-    document.getElementById('propertiesTitle').textContent = '属性: ' + fileName;
+    document.getElementById('propertiesTitle').textContent = t('属性: ') + fileName;
     var content = document.getElementById('propertiesContent');
     var propsHtml = '<div class="props-list">';
     propsHtml += propRow('名称', escapeHtml(displayName(fileName)));
@@ -5197,11 +5315,20 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
         }
     };
 
+    // 只归还本任务在途片占用的通道计数（同 fetchFileBlobDual 的 segChanRelease）：
+    // 中止/失败的片不会回调 dlChanDec，但全局清零会连坐其他在途下载
+    var partChanRelease = function(p) {
+        if (p && p._chanCounted) {
+            p._chanCounted = false;
+            dlChanDec(p._lastChan);
+        }
+    };
+
     var fail = function() {
         if (failed || cancelled) return;
         failed = true;
-        // 在途片回调将因 failed 提前返回、不再自行释放，统一归还预算槽位
-        parts.forEach(function(p) { releaseBudget(p); });
+        // 在途片回调将因 failed 提前返回、不再自行释放，统一归还预算槽位与通道计数
+        parts.forEach(function(p) { releaseBudget(p); partChanRelease(p); });
         untrack();
         hideToast();
         if (onFail) onFail();
@@ -5251,6 +5378,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 if (!parts[i]._extBase) chan = 'eo';
             }
             parts[i]._lastChan = chan;
+            parts[i]._chanCounted = true;
             dlChanInc(chan);
             var url;
             if (chan === 'cf') {
@@ -5308,7 +5436,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
                 var statusOk = parts[i].range ? xhr.status === 206 : xhr.status === 200;
                 if (statusOk) {
                     buffers[i] = xhr.response;
-                    dlChanDec(chan);
+                    partChanRelease(parts[i]);
                     if (chan === 'ext') {
                         extNoteSuccess(parts[i]._extBase);   // 成功清零熔断计数
                         extSiteNoteSuccess(parts[i]._extBase, parts[i].size || 0, Date.now() - (parts[i]._t0 || Date.now()));
@@ -5352,7 +5480,7 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
         };
         var retryPart = function(chan) {
             if (failed || cancelled) return;
-            dlChanDec(chan);
+            partChanRelease(parts[i]);
             if (chan === 'cf') {
                 mergeCfFails++;
                 if (mergeCfFails >= 2) mergeCfDown = true;
@@ -5394,11 +5522,9 @@ function fetchMergedBlob(parts, onDone, onFail, onProgress, onPart, quiet, limit
     return {
         cancel: function() {
             cancelled = true;
-            parts.forEach(function(p) { releaseBudget(p); });
+            parts.forEach(function(p) { releaseBudget(p); partChanRelease(p); });
             untrack();
             actives.slice().forEach(function(x) { try { x.abort(); } catch (e) {} });
-            // 中止的在途片不会回调 dlChanDec，直接清零在途计数避免负载均衡失真
-            dlActive.eo = dlActive.cf = dlActive.ext = 0;
             hideToast();
         },
         // 重启全部在途片：不置取消标志直接中止，既有重试路径自动换源重下
@@ -6053,7 +6179,7 @@ function audioPlRefreshHighlight() {
         try { active.scrollIntoView({ block: 'nearest' }); } catch (e) {}
     }
     if (audioPl.countEl) {
-        audioPl.countEl.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + ' 首';
+        audioPl.countEl.textContent = (audioPl.index + 1) + '/' + audioPl.list.length + t(' 首');
     }
 }
 
@@ -6220,7 +6346,7 @@ function audioPlPlay(idx, autoplay) {
     audioPl.randNext = null;   // 切歌后随机模式的预定曲目作废
     audioPlRefreshHighlight();
     previewFileInfo = { path: m.path, name: m.name, ext: getFileExtension(m.name) };
-    document.getElementById('previewTitle').textContent = '预览: ' + m.name;
+    document.getElementById('previewTitle').textContent = t('预览: ') + m.name;
     var audioEl = audioPl.audio;
     audioEl._plInteracted = false;   // 新曲目：允许渐进前缀换源
     // 中止上一首的加载反馈、分片合并与旧源，并清掉残留的加载信息
@@ -6368,15 +6494,15 @@ function setupAudioPlaylist(audioEl, currentPath, rateTag) {
     var toggleBtn = document.createElement('button');
     toggleBtn.type = 'button';
     toggleBtn.className = 'audio-pl-btn';
-    toggleBtn.textContent = '列表';
+    toggleBtn.textContent = t('列表');
     var locateBtn = document.createElement('button');
     locateBtn.type = 'button';
     locateBtn.className = 'audio-pl-btn';
-    locateBtn.textContent = '定位';
-    locateBtn.title = '快速定位到当前播放的音频';
+    locateBtn.textContent = t('定位');
+    locateBtn.title = t('快速定位到当前播放的音频');
     var countSpan = document.createElement('span');
     countSpan.className = 'audio-pl-count';
-    countSpan.textContent = (index + 1) + '/' + list.length + ' 首';
+    countSpan.textContent = (index + 1) + '/' + list.length + t(' 首');
     audioPl.countEl = countSpan;
     var listEl = document.createElement('div');
     listEl.className = 'audio-pl-list';
@@ -6782,7 +6908,7 @@ function imgViewerGo(i) {
     v.zoom = 1;
     imgViewerApply();
     v.img.src = v.list[i].url;
-    document.getElementById('previewTitle').textContent = '预览: ' + v.list[i].name;
+    document.getElementById('previewTitle').textContent = t('预览: ') + v.list[i].name;
     imgViewerSyncNav();
 }
 
@@ -7195,12 +7321,12 @@ function renderTextView(text, editable) {
     var toolbar = document.createElement('div');
     toolbar.className = 'text-view-toolbar';
     var label = document.createElement('span');
-    label.textContent = '显示方式';
+    label.textContent = t('显示方式');
     var select = document.createElement('select');
     select.className = 'text-view-select';
-    var options = [['plain', '纯文本'], ['auto', '代码着色(自动)'], ['js', 'JavaScript'], ['json', 'JSON'], ['py', 'Python'], ['c', 'C/C++']];
+    var options = [['plain', t('纯文本')], ['auto', t('代码着色(自动)')], ['js', 'JavaScript'], ['json', 'JSON'], ['py', 'Python'], ['c', 'C/C++']];
     if (isMd) {
-        options.unshift(['md', 'Markdown 预览']);
+        options.unshift(['md', t('Markdown 预览')]);
     }
     options.forEach(function(opt) {
         var o = document.createElement('option');
@@ -7243,7 +7369,7 @@ function renderTextView(text, editable) {
                 var toggleBtn = document.createElement('button');
                 toggleBtn.className = 'btn';
                 toggleBtn.style.cssText = 'padding: 5px 12px; font-size: 13px; margin-bottom: 8px;';
-                toggleBtn.textContent = '预览 Markdown';
+                toggleBtn.textContent = t('预览 Markdown');
                 var ta = makePlainTextarea(false);
                 var mdView = null;
                 toggleBtn.addEventListener('click', function() {
@@ -7251,12 +7377,12 @@ function renderTextView(text, editable) {
                         editWrap.removeChild(mdView);
                         mdView = null;
                         ta.style.display = '';
-                        toggleBtn.textContent = '预览 Markdown';
+                        toggleBtn.textContent = t('预览 Markdown');
                     } else {
                         mdView = renderMarkdownView(ta.value);
                         ta.style.display = 'none';
                         editWrap.appendChild(mdView);
-                        toggleBtn.textContent = '返回编辑';
+                        toggleBtn.textContent = t('返回编辑');
                     }
                 });
                 editWrap.appendChild(toggleBtn);
@@ -7318,7 +7444,7 @@ function previewFile(filePath, fileName) {
         ext: ext
     };
 
-    document.getElementById('previewTitle').textContent = '预览: ' + fileName;
+    document.getElementById('previewTitle').textContent = t('预览: ') + fileName;
     var content = document.getElementById('previewContent');
     stopPreviewMedia();
     destroyImageViewer();
@@ -7391,7 +7517,8 @@ function previewFile(filePath, fileName) {
                     // 换源后恢复进度、音量与倍速，避免用户已调节的状态被重置
                     try { audioEl.currentTime = pos; } catch (e) {}
                     try { audioEl.volume = vol; audioEl.muted = muted; audioEl.playbackRate = rate; } catch (e) {}
-                    if (resume) audioEl.play();
+                    // play() 返回 Promise：自动播放被拦/换源竞态时静默吞掉，避免 unhandled rejection
+                    if (resume) { try { var p = audioEl.play(); if (p && p.catch) p.catch(function() {}); } catch (e) {} }
                 }, { once: true });
                 audioEl.src = finalUrl;
                 if (tmpAudioUrl) {
@@ -7475,7 +7602,7 @@ function previewFile(filePath, fileName) {
         var showMediaError = function() {
             abortProbe(); // 出错后不再测速，避免与错误重试/后续操作争抢带宽
             loadingDiv.className = 'message error';
-            loadingDiv.textContent = '加载失败，无法播放该文件';
+            loadingDiv.textContent = t('加载失败，无法播放该文件');
             rateTag.textContent = '';
         };
         if (isImagePreview) {
@@ -7563,23 +7690,28 @@ function previewFile(filePath, fileName) {
         }
     } else {
         var xhr = new XMLHttpRequest();
+        previewTextXhr = xhr;
         xhr.open('GET', previewUrl, true);
         xhr.onload = function() {
+            if (previewTextXhr !== xhr) return;   // 已被更新的预览顶替，丢弃迟到响应
+            previewTextXhr = null;
             if (xhr.status === 200) {
                 renderTextView(xhr.responseText, false);
             } else {
                 content.innerHTML = '';
                 var msgDiv = document.createElement('div');
                 msgDiv.className = 'message error';
-                msgDiv.textContent = '无法加载文件内容';
+                msgDiv.textContent = t('无法加载文件内容');
                 content.appendChild(msgDiv);
             }
         };
         xhr.onerror = function() {
+            if (previewTextXhr !== xhr) return;
+            previewTextXhr = null;
             content.innerHTML = '';
             var msgDiv = document.createElement('div');
             msgDiv.className = 'message error';
-            msgDiv.textContent = '网络错误，无法加载文件';
+            msgDiv.textContent = t('网络错误，无法加载文件');
             content.appendChild(msgDiv);
         };
         xhr.send();
@@ -7596,7 +7728,7 @@ function editFile(filePath, fileName) {
         ext: ext
     };
 
-    document.getElementById('previewTitle').textContent = '编辑: ' + fileName;
+    document.getElementById('previewTitle').textContent = t('编辑: ') + fileName;
     var content = document.getElementById('previewContent');
     stopPreviewMedia();
     destroyImageViewer();
@@ -7612,8 +7744,11 @@ function editFile(filePath, fileName) {
     setPreviewBlobUrl(null);
 
     var xhr = new XMLHttpRequest();
+    previewTextXhr = xhr;
     xhr.open('GET', previewUrl, true);
     xhr.onload = function() {
+        if (previewTextXhr !== xhr) return;   // 已被更新的预览顶替，丢弃迟到响应
+        previewTextXhr = null;
         if (xhr.status === 200) {
             renderTextView(xhr.responseText, true);
             document.getElementById('previewActions').style.display = 'block';
@@ -7621,15 +7756,17 @@ function editFile(filePath, fileName) {
             content.innerHTML = '';
             var msgDiv = document.createElement('div');
             msgDiv.className = 'message error';
-            msgDiv.textContent = '无法加载文件内容';
+            msgDiv.textContent = t('无法加载文件内容');
             content.appendChild(msgDiv);
         }
     };
     xhr.onerror = function() {
+        if (previewTextXhr !== xhr) return;
+        previewTextXhr = null;
         content.innerHTML = '';
         var msgDiv = document.createElement('div');
         msgDiv.className = 'message error';
-        msgDiv.textContent = '网络错误，无法加载文件';
+        msgDiv.textContent = t('网络错误，无法加载文件');
         content.appendChild(msgDiv);
     };
     xhr.send();
@@ -8073,7 +8210,7 @@ function updateBreadcrumbs() {
 
     if (path === '') {
         var homeSpan = document.createElement('span');
-        homeSpan.style.color = '#666';
+        homeSpan.className = 'crumb-label';
         homeSpan.textContent = t('当前位置:');
         var homeStrong = document.createElement('strong');
         homeStrong.textContent = ' Home';
@@ -8084,7 +8221,7 @@ function updateBreadcrumbs() {
 
     var parts = path.split('/');
     var labelSpan = document.createElement('span');
-    labelSpan.style.color = '#666';
+    labelSpan.className = 'crumb-label';
     labelSpan.textContent = t('当前位置:') + ' ';
     crumbs.appendChild(labelSpan);
 
@@ -8209,8 +8346,8 @@ function showListError(text, is404) {
     var container = document.getElementById('fileListContainer');
     if (!hasRenderedList) {
         if (is404) {
-            document.getElementById('pageTitle').textContent = '404 - 页面未找到';
-            document.title = '404 - 页面未找到 - boring_student';
+            document.getElementById('pageTitle').textContent = t('404 - 页面未找到');
+            document.title = t('404 - 页面未找到') + ' - boring_student';
         }
         container.innerHTML = '<div class="message error">' + text + '</div>';
     } else {
@@ -8395,7 +8532,7 @@ function updateBatchBar() {
     var count = Object.keys(selectedKeys).length;
     if (count) {
         bar.style.display = 'flex';
-        document.getElementById('batchCount').textContent = '已选 ' + count + ' 项';
+        document.getElementById('batchCount').textContent = t('已选 ') + count + t(' 项');
     } else {
         bar.style.display = 'none';
     }
@@ -9031,7 +9168,7 @@ function uploadFile() {
     }
 
     var conflicts = findUploadConflicts();
-    if (conflicts.length && !confirm('以下同名内容已存在于当前目录：\n' + conflicts.join('\n') + '\n\n是否继续上传？')) {
+    if (conflicts.length && !confirm(t('以下同名内容已存在于当前目录：') + '\n' + conflicts.join('\n') + '\n\n' + t('是否继续上传？'))) {
         return;
     }
 
@@ -9482,11 +9619,11 @@ function drawDlGraph() {
 function updateDlLegend(totV, eoV, cfV, extV) {
     var f = function(v) { return v > 1024 ? formatSize(Math.round(v)) + '/s' : '0/s'; };
     var el;
-    if ((el = document.getElementById('taskDlLegendTot'))) el.textContent = '总 ' + f(totV);
+    if ((el = document.getElementById('taskDlLegendTot'))) el.textContent = t('总 ') + f(totV);
     // 附带各通道在途段/片数，负载分配一目了然
     if ((el = document.getElementById('taskDlLegendEo'))) el.textContent = 'EO ' + f(eoV) + ' ×' + dlActive.eo;
     if ((el = document.getElementById('taskDlLegendCf'))) el.textContent = 'CF ' + f(cfV) + ' ×' + dlActive.cf;
-    if ((el = document.getElementById('taskDlLegendExt'))) el.textContent = '外部 ' + f(extV || 0) + ' ×' + dlActive.ext;
+    if ((el = document.getElementById('taskDlLegendExt'))) el.textContent = t('外部 ') + f(extV || 0) + ' ×' + dlActive.ext;
     updateDlLegendExtVisibility();
 }
 
@@ -9622,7 +9759,7 @@ function drawSpeedGraph() {
 function updateUlLegend(totV, eoV, cfV) {
     var f = function(v) { return v > 1024 ? formatSize(Math.round(v)) + '/s' : '0/s'; };
     var el;
-    if ((el = document.getElementById('ulLegendTot'))) el.textContent = '总 ' + f(totV);
+    if ((el = document.getElementById('ulLegendTot'))) el.textContent = t('总 ') + f(totV);
     if ((el = document.getElementById('ulLegendEo'))) el.textContent = 'EO ' + f(eoV);
     if ((el = document.getElementById('ulLegendCf'))) el.textContent = 'CF ' + f(cfV);
 }
@@ -9664,7 +9801,6 @@ function startUpload(doneBases) {
         startTime: Date.now(),
         smallDurSum: 0,
         smallDurCount: 0,
-        conflictCount: 0,
         sinceConflict: 0,
         blobs: [],
         eoBytes: 0,
@@ -9852,10 +9988,12 @@ function fillUploads() {
         st.inflightBytes += task.blob.size;
         st.activeTasks[task.relativePath] = task;
         renderChunkPanel();
-        (function(t) {
+        (function(t, st0) {
             runUploadTask(t, function(ok) {
-                var st2 = uploadState;
-                if (!st2) return;
+                // 竞态防护：旧一轮上传被新上传顶替后，其在途任务 abort 的迟到
+                // 回调不能操作新状态——只允许读写本任务所属的那一份状态对象
+                if (uploadState !== st0) return;
+                var st2 = st0;
                 st2.active--;
                 st2.inflightBytes = Math.max(0, st2.inflightBytes - t.blob.size);
                 delete st2.activeTasks[t.relativePath];
@@ -9895,7 +10033,7 @@ function fillUploads() {
                 updateUploadProgressUI();
                 fillUploads();
             });
-        })(task);
+        })(task, st);
         // 分拍发布：本 tick 已派发足够任务，剩余 40ms 后继续（连接错峰建立）
         if (++dispatched >= UL_DISPATCH_BURST && st.active < st.limit && st.nextIndex < uploadTasks.length) {
             setTimeout(fillUploads, 40);
@@ -10349,10 +10487,9 @@ function estimateEtaText() {
     var remainingTasks = uploadTasks.length - st.doneCount;
     var transferTime = speed > 0 ? remainingBytes / speed : 0;
     var avgSmallLatency = st.smallDurCount ? (st.smallDurSum / st.smallDurCount / 1000) : 2;
-    var conflictRate = st.conflictCount / Math.max(1, st.doneCount);
+    // blob 管线传输期无提交冲突概念，ETA 只计传输 + 小片延迟两项
     var eta = transferTime
-        + remainingTasks * avgSmallLatency * st.smallRatio / Math.max(1, st.limit)
-        + conflictRate * remainingTasks * 3;
+        + remainingTasks * avgSmallLatency * st.smallRatio / Math.max(1, st.limit);
     return formatEtaText(eta);
 }
 
@@ -10589,9 +10726,10 @@ document.addEventListener('DOMContentLoaded', function() {
         document.title = initName + ' - boring_student';
     }
 
-    updateBreadcrumbs();
+    // 面包屑含 t() 文案，必须在 initLang 之后渲染，否则非中文环境首帧显示中文
     initTheme();
     initLang();
+    updateBreadcrumbs();
     updateAuthBtn();
     initPwdEyes();
 

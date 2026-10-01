@@ -4,7 +4,6 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{title} - boring_student</title>
         <link rel="icon" href="/favicon.ico" type="image/x-icon">
-        <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
         <script>
             // 主题预初始化：在样式表加载前确定明暗，避免首屏闪烁（默认跟随系统）
             (function() {{
@@ -42,7 +41,8 @@
             <div id="fileListContainer" class="loading">加载中...</div>
         </div>
         <button class="btn" id="uploadFabBtn" onclick="openUploadModal()">上传文件</button>
-        <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 1200; display: flex; align-items: center; gap: 10px;">
+        <!-- z-index 必须低于 .modal-overlay(1000)：否则弹窗打开时顶栏仍浮在遮罩之上，移动端会遮挡弹窗 -->
+        <div class="auth-bar" style="position: fixed; top: 20px; right: 30px; z-index: 900; display: flex; align-items: center; gap: 10px;">
             <div class="pref-wrap">
                 <select id="themeSelect" title="主题 / Theme">
                     <option value="auto">跟随系统</option>
@@ -85,20 +85,24 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeLoginModal()">&times;</span>
                 <h2>登录</h2>
-                <div class="form-group">
-                    <label>用户名</label>
-                    <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username">
-                </div>
-                <div class="form-group">
-                    <label>密码</label>
-                    <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
-                </div>
-                <div class="form-group checkbox-row">
-                    <input type="checkbox" id="loginRememberPwd" checked>
-                    <label for="loginRememberPwd">记住密码</label>
-                </div>
-                <button class="btn" onclick="doLogin()" id="loginBtn" style="width: 100%;">登录</button>
-                <div id="loginMessage" class="message"></div>
+                <!-- form 包裹密码框：消除浏览器 "Password field is not contained in a form"
+                     警告并让密码管理器正确识别；onsubmit 拦截防回车/点击触发表单跳转 -->
+                <form onsubmit="return false;">
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
+                    </div>
+                    <div class="form-group checkbox-row">
+                        <input type="checkbox" id="loginRememberPwd" checked>
+                        <label for="loginRememberPwd">记住密码</label>
+                    </div>
+                    <button class="btn" onclick="doLogin()" id="loginBtn" style="width: 100%;">登录</button>
+                    <div id="loginMessage" class="message"></div>
+                </form>
             </div>
         </div>
 
@@ -167,14 +171,16 @@
                 <h2>删除文件</h2>
                 <p id="deleteConfirmText"></p>
                 <div id="deleteAuthFields">
-                    <div class="form-group">
-                        <label>用户名</label>
-                        <input type="text" id="deleteUsername" placeholder="请输入用户名" autocomplete="username">
-                    </div>
-                    <div class="form-group">
-                        <label>密码</label>
-                        <input type="password" id="deletePassword" placeholder="请输入密码" autocomplete="current-password">
-                    </div>
+                    <form onsubmit="return false;">
+                        <div class="form-group">
+                            <label>用户名</label>
+                            <input type="text" id="deleteUsername" placeholder="请输入用户名" autocomplete="username">
+                        </div>
+                        <div class="form-group">
+                            <label>密码</label>
+                            <input type="password" id="deletePassword" placeholder="请输入密码" autocomplete="current-password">
+                        </div>
+                    </form>
                 </div>
                 <button class="btn" onclick="confirmDelete()" id="deleteBtn" style="width: 100%;">确认删除</button>
                 <button class="btn" onclick="stopDelete()" id="deleteStopBtn" style="width: 100%; margin-top: 8px; display: none; background: #e67e22;">停止删除</button>
@@ -225,26 +231,33 @@
                     <button class="btn" onclick="changeOwnAvatar()" id="avBtn" style="width: 100%; background: #16a085;">保存头像</button>
                 </div>
                 <div class="modal-tab-panel" id="tabPanelPassword" style="display: none;">
-                    <div class="form-group">
-                        <label id="cpCurrentLabel">当前密码</label>
-                        <input type="password" id="cpCurrent" placeholder="请输入当前密码" autocomplete="current-password">
-                    </div>
-                    <div class="form-group">
-                        <label id="cpNewLabel">新密码</label>
-                        <input type="password" id="cpNew" placeholder="大于8位，含大小写字母和数字" autocomplete="new-password">
-                    </div>
-                    <div class="form-group">
-                        <label id="cpConfirmLabel">确认新密码</label>
-                        <input type="password" id="cpConfirm" placeholder="再次输入新密码" autocomplete="new-password">
-                    </div>
-                    <button class="btn" onclick="changeOwnPassword()" id="cpBtn" style="width: 100%;">修改密码</button>
+                    <form onsubmit="return false;">
+                        <!-- 隐藏用户名字段：密码表单无障碍建议（Chromium 控制台提示），供密码管理器关联账号 -->
+                        <input type="text" id="cpUsername" autocomplete="username" aria-hidden="true" tabindex="-1" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;">
+                        <div class="form-group">
+                            <label id="cpCurrentLabel">当前密码</label>
+                            <input type="password" id="cpCurrent" placeholder="请输入当前密码" autocomplete="current-password">
+                        </div>
+                        <div class="form-group">
+                            <label id="cpNewLabel">新密码</label>
+                            <input type="password" id="cpNew" placeholder="大于8位，含大小写字母和数字" autocomplete="new-password">
+                        </div>
+                        <div class="form-group">
+                            <label id="cpConfirmLabel">确认新密码</label>
+                            <input type="password" id="cpConfirm" placeholder="再次输入新密码" autocomplete="new-password">
+                        </div>
+                        <button class="btn" onclick="changeOwnPassword()" id="cpBtn" style="width: 100%;">修改密码</button>
+                    </form>
                 </div>
                 <div class="modal-tab-panel" id="tabPanelDelete" style="display: none;">
-                    <div class="form-group">
-                        <label id="daLabel">输入密码确认注销</label>
-                        <input type="password" id="daPassword" placeholder="注销后账户将被永久删除" autocomplete="current-password">
-                    </div>
-                    <button class="btn" onclick="deleteOwnAccount()" id="daBtn" style="width: 100%; background: #dc3545;">永久注销账户</button>
+                    <form onsubmit="return false;">
+                        <input type="text" id="daUsername" autocomplete="username" aria-hidden="true" tabindex="-1" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;">
+                        <div class="form-group">
+                            <label id="daLabel">输入密码确认注销</label>
+                            <input type="password" id="daPassword" placeholder="注销后账户将被永久删除" autocomplete="current-password">
+                        </div>
+                        <button class="btn" onclick="deleteOwnAccount()" id="daBtn" style="width: 100%; background: #dc3545;">永久注销账户</button>
+                    </form>
                 </div>
                 <div id="accountMessage" class="message"></div>
             </div>
@@ -271,27 +284,29 @@
             <div class="modal-content">
                 <span class="modal-close" onclick="closeAdminAddModal()">&times;</span>
                 <h2>添加用户</h2>
-                <div class="form-group">
-                    <label id="adminNewUsernameLabel">用户名</label>
-                    <input type="text" id="adminNewUsername" placeholder="新用户名">
-                </div>
-                <div class="form-group">
-                    <label id="adminNewPasswordLabel">密码（明文，将加密存储）</label>
-                    <input type="password" id="adminNewPassword" placeholder="新用户密码" autocomplete="new-password">
-                </div>
-                <div class="form-group">
-                    <label id="adminNewRoleLabel">角色</label>
-                    <select id="adminNewRole">
-                        <option value="user" selected>user</option>
-                        <option value="admin">admin</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label id="adminNewAvatarLabel">头像 URL（可选）</label>
-                    <input type="text" id="adminNewAvatar" placeholder="https://...">
-                </div>
-                <button class="btn" onclick="adminAddUser()" id="adminAddBtn" style="width: 100%;">添加用户</button>
-                <div id="adminAddMessage" class="message"></div>
+                <form onsubmit="return false;">
+                    <div class="form-group">
+                        <label id="adminNewUsernameLabel">用户名</label>
+                        <input type="text" id="adminNewUsername" placeholder="新用户名" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label id="adminNewPasswordLabel">密码（明文，将加密存储）</label>
+                        <input type="password" id="adminNewPassword" placeholder="新用户密码" autocomplete="new-password">
+                    </div>
+                    <div class="form-group">
+                        <label id="adminNewRoleLabel">角色</label>
+                        <select id="adminNewRole">
+                            <option value="user" selected>user</option>
+                            <option value="admin">admin</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label id="adminNewAvatarLabel">头像 URL（可选）</label>
+                        <input type="text" id="adminNewAvatar" placeholder="https://..." autocomplete="off">
+                    </div>
+                    <button class="btn" onclick="adminAddUser()" id="adminAddBtn" style="width: 100%;">添加用户</button>
+                    <div id="adminAddMessage" class="message"></div>
+                </form>
             </div>
         </div>
 

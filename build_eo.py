@@ -231,6 +231,12 @@ async function handleRequest(request) {
       // 返回含失败站点的全量结果（前端服务检测用：浏览器直连会触发 CORS 预检
       // 被代理 403）
       if (url.searchParams.get('probe') === 'api') {
+        // 全量探测会扇出数十个出网请求，按客户端 IP 限流防滥用刷量；
+        // 命中 5 分钟实例缓存时不消耗配额（前端正常轮询大多走缓存）
+        const probeCached = extProxiesApiCache.results && Date.now() - extProxiesApiCache.at < EXT_PROXIES_CACHE_MS;
+        if (!probeCached && probeApiLimited(clientIp(request))) {
+          return json({ error: 'Too many probe requests, try again later' }, 429);
+        }
         return json({ results: await probeExtProxiesApi() });
       }
       const usable = await listUsableExtProxies();
@@ -266,11 +272,20 @@ async function handleRequest(request) {
         return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
       }
 
+      // 登录失败限流（实例级滑动窗口）：同一 客户端IP+用户名 10 分钟内
+      // 最多 10 次失败，超出 429——挡住单实例内的在线爆破（边缘实例重建即重置）
+      const failKey = clientIp(request) + '|' + String(username).toLowerCase();
+      if (loginLimited(failKey)) {
+        return json({ error: 'Too many login attempts, try again later' }, 429);
+      }
+
       const { users } = await readUsersFile(true);
       const account = users[username];
       if (!account || account.password !== password) {
+        noteLoginFail(failKey);
         return json({ error: 'Invalid credentials' }, 401);
       }
+      loginFails.delete(failKey);
       return json({
         success: true,
         username,
@@ -358,7 +373,7 @@ async function handleRequest(request) {
       // GET 从 query 读取，其余方法从 body 读取（parseBody 已统一支持）
       const body = await parseBody(request);
 
-      const auth = await requireAdmin(body);
+      const auth = await requireAdmin(body, request);
       if (!auth.ok) return json({ error: auth.error }, auth.status);
 
       // 列表（密码哈希脱敏为 ***，不下发任何密码哈希）
@@ -697,10 +712,13 @@ async function requireLogin(request) {
   return { ok: true, username, role: account.role || 'user' };
 }
 
-// GET 从 query 读取，其余方法从 body 读取：{ admin_user, admin_pass }
+// GET 从 query 读取，其余方法从 body 读取：{ admin_user, admin_pass }；
+// 也接受 X-Admin-User / X-Admin-Pass 请求头（优先）——凭据放 URL query 会留在
+// 浏览器历史与访问日志里，前端列表请求已改用请求头形式，query 仅作向后兼容
 // admin_pass 必须是前端计算好的 SHA-512 哈希
-async function requireAdmin(body) {
-  const { admin_user, admin_pass } = body;
+async function requireAdmin(body, request) {
+  const admin_user = body.admin_user || (request && request.headers.get('X-Admin-User')) || '';
+  const admin_pass = body.admin_pass || (request && request.headers.get('X-Admin-Pass')) || '';
   if (!admin_user || !admin_pass) {
     return { ok: false, status: 401, error: 'Admin auth required (admin_user / admin_pass)' };
   }
@@ -946,6 +964,54 @@ function isSha512Hex(v) {
   return typeof v === 'string' && /^[0-9a-f]{128}$/i.test(v);
 }
 
+// 客户端 IP（EO/CF 平台注入的连接头优先），用于限流键
+function clientIp(request) {
+  const cf = request.headers.get('cf-connecting-ip');
+  if (cf) return cf.trim();
+  const xff = request.headers.get('x-forwarded-for');
+  if (xff) return xff.split(',')[0].trim();
+  return 'unknown';
+}
+
+// 登录失败限流（实例级滑动窗口）：同一 key（IP+用户名）10 分钟内最多 10 次失败
+const loginFails = new Map();   // key -> 失败时间戳数组
+const LOGIN_FAIL_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_FAIL_MAX = 10;
+
+function loginLimited(key) {
+  const now = Date.now();
+  const arr = (loginFails.get(key) || []).filter(t => now - t < LOGIN_FAIL_WINDOW_MS);
+  loginFails.set(key, arr);
+  return arr.length >= LOGIN_FAIL_MAX;
+}
+
+function noteLoginFail(key) {
+  const arr = loginFails.get(key) || [];
+  arr.push(Date.now());
+  loginFails.set(key, arr);
+  // 简易容量上限，防恶意构造大量 key 撑爆实例内存
+  if (loginFails.size > 5000) loginFails.clear();
+}
+
+// /api/proxies?probe=api 限流（实例级滑动窗口）：每个客户端 IP 5 分钟内
+// 最多触发 2 次全量探测（结果实例级缓存 5 分钟，正常轮询命中缓存不耗配额）
+const probeApiHits = new Map();   // ip -> 触发时间戳数组
+const PROBE_API_WINDOW_MS = 5 * 60 * 1000;
+const PROBE_API_MAX = 2;
+
+function probeApiLimited(ip) {
+  const now = Date.now();
+  const arr = (probeApiHits.get(ip) || []).filter(t => now - t < PROBE_API_WINDOW_MS);
+  if (arr.length >= PROBE_API_MAX) {
+    probeApiHits.set(ip, arr);
+    return true;
+  }
+  arr.push(now);
+  probeApiHits.set(ip, arr);
+  if (probeApiHits.size > 5000) probeApiHits.clear();
+  return false;
+}
+
 async function sha512(text) {
   const buf = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(String(text)));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -1052,7 +1118,7 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Cache-Control, Pragma, Expires, Authorization, X-Requested-With, If-None-Match, If-Modified-Since, Range, X-Auth-User, X-Auth-Pass',
+    'Access-Control-Allow-Headers': 'Content-Type, Cache-Control, Pragma, Expires, Authorization, X-Requested-With, If-None-Match, If-Modified-Since, Range, X-Auth-User, X-Auth-Pass, X-Admin-User, X-Admin-Pass',
     'Access-Control-Max-Age': '86400'
   };
 }
