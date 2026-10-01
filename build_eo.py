@@ -1123,14 +1123,19 @@ def git_commit_and_push(version):
         print('WARNING: 未找到 git，跳过版本控制提交')
         return False
 
+    # git 输出（含中文提交信息/文件名）为 UTF-8：显式解码防 Windows GBK 崩溃
+    def _run(args):
+        return subprocess.run(args, capture_output=True, text=True,
+                              encoding='utf-8', errors='replace')
+
     # 检查是否在 git 仓库中
-    r = subprocess.run([git, 'rev-parse', '--git-dir'], capture_output=True, text=True)
+    r = _run([git, 'rev-parse', '--git-dir'])
     if r.returncode != 0:
         print('WARNING: 不在 git 仓库中，跳过提交')
         return False
 
     # 检查是否有变更
-    r = subprocess.run([git, 'status', '--porcelain'], capture_output=True, text=True)
+    r = _run([git, 'status', '--porcelain'])
     # 注意：不能 strip() 整个 stdout——porcelain 格式为 2 字符状态 + 空格 + 路径，
     # 首行前导空格被剥掉会导致解析错位
     changed_lines = [line for line in r.stdout.splitlines() if line.strip()]
@@ -1153,19 +1158,18 @@ def git_commit_and_push(version):
         return True
 
     for p in to_stage:
-        subprocess.run([git, 'add', p], capture_output=True)
+        _run([git, 'add', p])
 
     commit_msg = make_commit_message(to_stage, version)
     commit_body = '\n'.join(f'- {p}' for p in to_stage)
-    r = subprocess.run([git, 'commit', '-m', commit_msg, '-m', commit_body],
-                       capture_output=True, text=True)
+    r = _run([git, 'commit', '-m', commit_msg, '-m', commit_body])
     if r.returncode != 0:
         print('Git commit failed:', r.stderr or r.stdout)
         return False
     print(f'Git commit: {commit_msg}')
 
     # 尝试推送
-    r = subprocess.run([git, 'push'], capture_output=True, text=True)
+    r = _run([git, 'push'])
     if r.returncode == 0:
         print('Git push: OK')
     else:
