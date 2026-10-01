@@ -68,7 +68,7 @@ ARCHITECTURE = {
         '  |                       +-- /api.github.com/ | /raw.githubusercontent.com/ | /github.com/（白名单代理，服务端注入 key）--> GitHub boringstudent/cloud-storage\n'
         '  |                       +-- /api/hash|proxies|my-ip|cf-ip|bg（公开接口）--> cip.cc / api.ip.sb / ipinfo.io / 图床\n'
         '  |-- CF 加速通道 --> cloud-ecr.pages.dev (cf-worker.js，注入 GITHUB_TOKEN) --> GitHub\n'
-        '  |-- 外部多代理（仅下载）--> 28 个公共 ghproxy 镜像（浏览器侧实测可用性）\n'
+        '  |-- 外部多代理（仅下载）--> 26 个公共 ghproxy 镜像（浏览器侧实测可用性）\n'
         '  +-- 背景图直连 loliapi 图床（不经 EO）'
     ),
 }
@@ -87,6 +87,8 @@ DATAFLOW = {
         '提交阶段：每 COMMIT_GROUP_SIZE=100 个 blob 合成 tree+commit 批量落盘；组间链式推进（上一组新引用直接作下一组基点）',
         '引用被抢先（422/409）：先读最新引用校验是否实际已成功（响应丢失），否则从最新引用重建 tree 重试，最多 12 次（300ms 快重试→1.6 倍退避封顶 5s+抖动）',
         '通道：EO/CF 双通道按在途均衡+实测速率加权分配（15% 概率地板）；开始前探测 CF 写能力（仅 400/422 视为可写）',
+        '传输无固定超时：大分片（45MB base64 后约 60MB）慢上行健康传输也会超 60s，固定超时会误判挂起致"状态码 0"反复重试——挂起仅由 sampleUploadSpeed 的 12 秒无进度看门狗判定中止换源',
+        '通道按钮显示与有效态同步：CF 开关开但探测失败/已熔断时按钮加 chan-down 删除线样式（title 附原因）；弹窗/进度卡每次打开重刷，语言切换后重刷防静态 i18n 覆盖',
         'CF 上传熔断（cfUlBroken）：探测可写不代表大 blob POST 能过（CF 对超大请求体 520/HTTP2 连接错误）——任务级连续失败 2 次本次会话永久停用 CF 上传全部回退 EO（toast 提示），单次成功清零计数；CF 已失败过时 putBlobToGitHub 跳过硬通道内原地重试（retries=0 立即交上层换源）',
         '自适应并行：初始 3 上限 8；分片 <15s 升档 >45s 降档；每 2 次提交冲突降档，连续 8 个无冲突升档',
         '停止/失败无副作用：未提交 blob 为悬空对象，GitHub 自动回收，无需回退',
@@ -121,7 +123,7 @@ DATAFLOW = {
         'makeShareUrl：{v:1, items:[{p:路径,n:名称,t:类型,s:大小}], ts} JSON → b64url 编码 → {origin}/s/<b64url>，纯前端无服务端存储',
         '复制外链=copyShareLink 直复制不弹窗（copyTextToClipboard+toast）；二维码=openQrModal 只显示二维码（qrMakeCanvas 本地生成）；右键菜单/批量栏（复制链接+二维码按钮）均可发起',
         'isSharePage（路径 /s/ 前缀）→ renderSharePage：b64url 解码还原清单，隐藏网盘 UI 展示无图标下载页（loadFileList 已守卫 isSharePage 防自动刷新冲突）；损坏链接显示错误提示',
-        '分享页下载：访客无通道偏好，shareEnsureChannels 默认开启 EO/CF/外部三通道（仅内存态不写偏好，渲染与点击下载双重确保）；下载前先 fetchFileTree——单文件分片走 downloadMergedFile 合并还原、普通文件走 downloadFile 多通道 blob 保存（手机端不再变在线预览）；多文件/文件夹经 shareCollectZipModels 展开目录+归并分片后 downloadFolderZip 打包；卡片样式 share-* CSS 类明暗主题自适应（QR canvas 自带白底可扫）；页面标题=分享对象名（pageTitle 与 document.title 同步）',
+        '分享页下载：访客无通道偏好，shareEnsureChannels 默认开启 EO/CF/外部三通道（仅内存态不写偏好，渲染与点击下载双重确保，EO/CF/多代理按钮显示同步刷新）；下载前先 fetchFileTree——单文件分片走 downloadMergedFile 合并还原、普通文件走 downloadFile 多通道 blob 保存（手机端不再变在线预览）；多文件/文件夹经 shareCollectZipModels 展开目录+归并分片后 downloadFolderZip 打包；卡片样式 share-* CSS 类明暗主题自适应（QR canvas 自带白底可扫）；页面标题=分享对象名（pageTitle 与 document.title 同步）',
         'QR 码前端零依赖生成（qrGenerate：byte 模式/级别 M/版本 1-40/8 掩码惩罚评估），不经服务端',
     ],
 }
@@ -168,7 +170,7 @@ API = {
         'GET/POST /api/hash → SHA-512 哈希（type=password|key & value=）',
         'GET/HEAD /api/my-ip（别名 /ip）→ 服务器出口 IP/归属地（cip.cc，8s 超时）',
         'GET/HEAD /api/cf-ip → CF 通道出口 IP/归属地（EO 经 CF /ip 取 IP 再查 api.ip.sb→ipinfo.io，缓存 5min）',
-        'GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 28 个不触网；?probe=api EO 视角全量诊断',
+        'GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 26 个不触网；?probe=api EO 视角全量诊断',
         'GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key）',
         'POST /api/change-password → 自助改密（旧/新哈希）',
         'POST /api/change-avatar → 自助改头像 URL（http/https ≤300 字符，空串清除）',
@@ -202,7 +204,7 @@ DEPENDENCIES = {
     'runtime_external': [
         'GitHub REST API（api.github.com / raw.githubusercontent.com / codeload）——存储后端',
         'Cloudflare Workers/Pages（cloud-ecr.pages.dev）——可选下载/上传加速通道',
-        '公共 ghproxy 镜像池 28 个——可选外部多代理下载（仅匿名下载，写操作永不经过）',
+        '公共 ghproxy 镜像池 26 个——可选外部多代理下载（仅匿名下载，写操作永不经过）',
         'loliapi 图床——页面背景图（浏览器直连）',
         'cip.cc / api.ip.sb / ipinfo.io / cloudflare cdn-cgi/trace——IP 与归属地查询',
     ],

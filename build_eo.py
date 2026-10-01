@@ -118,8 +118,8 @@ const EXT_PROXY_CANDIDATES = [
   'github.zzrbk.xyz',
   'github.boringhex.top',
   'github.ednovas.xyz',
-  'git.820828.xyz',
-  'kenyu.ggff.net'
+  'git.820828.xyz'
+  // 'kenyu.ggff.net'   // 已停用（应用户要求注释保留，暂不删除）
 ];
 // 探测结果实例级缓存：5 分钟内不重复探测（边缘实例随时可能重建，重建即重探）
 let extProxiesCache = { at: 0, list: null };
@@ -1069,7 +1069,10 @@ def run_smoke_test():
         print('WARNING: test_eo_smoke.js 不存在，跳过冒烟测试')
         return False
     print('Running smoke tests...')
-    r = subprocess.run([node, 'test_eo_smoke.js'], capture_output=True, text=True)
+    # 显式 UTF-8 读取子进程输出：Windows 默认 GBK 解码 Node 的 UTF-8 中文输出
+    # 会 UnicodeDecodeError 崩掉读取线程，把真实测试结果吞成 "NoneSMOKE TEST FAILED"
+    r = subprocess.run([node, 'test_eo_smoke.js'], capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
     print(r.stdout, end='')
     if r.returncode != 0:
         print('SMOKE TEST FAILED')

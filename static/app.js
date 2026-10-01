@@ -218,7 +218,7 @@ function probeExtProxiesBrowser(bases, done) {
 }
 
 // 外部代理探测结果共享：服务状态检测与多代理加载常在同一时段各自探测
-// 全量 28 个候选——并发两批会把代理站点打出 429 限流（并刷屏 CORS 报错）。
+// 全量 26 个候选——并发两批会把代理站点打出 429 限流（并刷屏 CORS 报错）。
 // 合并在飞批次（后到调用方排队共享结果）并缓存 60 秒；
 // 返回的 ctrls 仅属于实际发起批次（后到调用方返回空数组，中止语义由发起方持有）
 var extProbeInflight = null;
@@ -331,9 +331,8 @@ function extProxyRestore() {
         saved = localStorage.getItem(EXT_PROXY_STORAGE_KEY) || '0';
     } catch (e) {}
     if (saved === '1') {
-        var btn = document.getElementById('taskDlExtBtn');
-        if (btn) btn.classList.add('active');
         extProxySetEnabled(true, true);
+        dlExtBtnRefresh();
     }
 }
 
@@ -382,6 +381,13 @@ function dlChanBtnRefresh() {
     }
 }
 
+// "多代理"按钮状态与 extProxyState.enabled 同步（分享页内存态开启/偏好恢复
+// 等不经按钮点击的路径也要正确显示）
+function dlExtBtnRefresh() {
+    var btn = document.getElementById('taskDlExtBtn');
+    if (btn) btn.classList.toggle('active', !!extProxyState.enabled);
+}
+
 // ---- 上传通道开关（EO/CF）：与并行数一样实时生效（新任务立即避开已关闭通道） ----
 var UL_CHAN_STORAGE_KEY = 'cloud_web_ul_chans';
 var ulChanSwitch = { eo: true, cf: true };
@@ -412,7 +418,19 @@ function ulChanBtnRefresh() {
     var pairs = [['ulEoBtn', 'eo'], ['ulCfBtn', 'cf']];
     for (var i = 0; i < pairs.length; i++) {
         var btn = document.getElementById(pairs[i][0]);
-        if (btn) btn.classList.toggle('active', !!ulChanSwitch[pairs[i][1]]);
+        if (!btn) continue;
+        var chan = pairs[i][1];
+        var on = !!ulChanSwitch[chan];
+        // CF 开关开但通道实际不可用（探测失败/连续失败已熔断）时以 chan-down
+        // 删除线样式明示"开了却没在跑"，与 ulChannels 的实际调度行为一致
+        var down = chan === 'cf' && on && (cfUlBroken || cfUploadState === false);
+        btn.classList.toggle('active', on);
+        btn.classList.toggle('chan-down', down);
+        if (down) {
+            btn.title = t('CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）') + '——' +
+                (cfUlBroken ? t('CF 上传通道连续失败，已自动停用（本次会话上传只走 EO）')
+                            : (cfUploadHint || t('CF 侧未配置服务端 key 或未部署新版 cf-worker.js')));
+        }
     }
 }
 
@@ -447,6 +465,7 @@ function cfUlNoteFail() {
     cfUlFails++;
     if (cfUlFails >= 2 && !cfUlBroken) {
         cfUlBroken = true;
+        ulChanBtnRefresh();   // CF 按钮切换为"开了却没在跑"的删除线样式
         showToast('CF 上传通道连续失败，已自动停用（本次会话上传只走 EO）');
         setTimeout(hideToast, 3000);
     }
@@ -475,11 +494,13 @@ function probeCfUpload(cb) {
             cfUploadHint = 'CF 侧未配置服务端 key 或未部署新版 cf-worker.js';
         }
         cfUploadProbedAt = Date.now();
+        ulChanBtnRefresh();   // 探测结果落到 CF 按钮显示（不可用即删除线样式）
         cb(cfUploadState);
     };
     xhr.onerror = function() {
         cfUploadState = false;
         cfUploadProbedAt = Date.now();
+        ulChanBtnRefresh();
         cb(false);
     };
     xhr.send('not-json');
@@ -1642,6 +1663,10 @@ function applyI18nStatic() {
             if (/^\d+$/.test(opt.value)) opt.textContent = t('并行') + ': ' + opt.value;
         }
     }
+    // 通道按钮含动态状态（CF 上传不可用提示等）：静态绑定覆盖 title 后按当前状态重刷
+    dlChanBtnRefresh();
+    dlExtBtnRefresh();
+    ulChanBtnRefresh();
 }
 
 function langDetect() {
@@ -2661,6 +2686,7 @@ function openUploadModal() {
         return;
     }
     document.getElementById('uploadModal').classList.add('show');
+    ulChanBtnRefresh();   // 弹窗每次打开按当前开关/熔断/探测状态重刷通道按钮
 }
 
 function closeUploadModal() {
@@ -4610,6 +4636,7 @@ function shareEnsureChannels() {
     }
     if (!extProxyState.enabled) {
         extProxyState.enabled = true;
+        dlExtBtnRefresh();   // 内存态开启也要让"多代理"按钮显示为开
         extProxyLoad(function() {
             updateDlLegendExtVisibility();
             dlNotify();
@@ -4878,6 +4905,9 @@ function showTaskProgress(text, pct, onCancel, onRestart) {
     taskProgressDlTask = newTask;
     var el = document.getElementById('taskProgress');
     el.classList.add('show');
+    // 进度卡每次出现都按当前通道状态重刷按钮（含分享页内存态开启的三通道）
+    dlChanBtnRefresh();
+    dlExtBtnRefresh();
     taskProgressCancelFn = onCancel || null;
     taskProgressRestartFn = onRestart || null;
     document.getElementById('taskProgressCancel').style.display = onCancel ? '' : 'none';
@@ -9854,7 +9884,8 @@ function runUploadTask(task, done) {
                         if (st.adaptive && st.limit > UPLOAD_LIMIT_MIN) {
                             st.limit--;
                         }
-                        setMsg('uploadMessage', '分片上传失败(状态码 ' + status + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
+                        var statusText = status === 0 ? '网络连接中断/超时' : ('状态码 ' + status);
+                        setMsg('uploadMessage', '分片上传失败(' + statusText + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
                         setTimeout(tryOnce, 1000 * attempt);
                         return;
                     }
@@ -10227,8 +10258,11 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
     xhr.open('POST', url, true);
     if (chan === 'eo') applyEoAuth(xhr);
     xhr.setRequestHeader('Content-Type', 'application/json');
-    // 链路挂起（连接不报错也不再发数据）：超时兜底，避免任务永久卡住
-    xhr.timeout = 60000;
+    // 不使用固定超时：大分片（45MB 分片 base64 后约 60MB 请求体）在慢上行
+    // 链路上健康传输也会超过 60s，固定超时会把正常传输误判为挂起，反复
+    // "状态码 0"重试永远传不完；链路挂起（连接不断但不再发数据）由
+    // sampleUploadSpeed 的 12 秒无进度看门狗中止换源，判定以进度为准
+    xhr.timeout = 0;
     xhr.upload.onprogress = function(e) {
         if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
