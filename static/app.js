@@ -627,15 +627,14 @@ function stopPreviewMedia() {
 }
 
 // 分片档位（按 base64 上限反算原始字节：base64 体积 = 原始×4/3，预留 4KB JSON 余量）：
-// 45MB / 30MB / 20MB / 10MB（base64）。链路对超大请求体的硬性限制（边缘平台
-// 入口重置连接、上游处理超时等）在浏览器侧只表现为"状态码 0"连接中断，
-// 无法与普通断网区分——大分片连续网络失败即自动降档（见 runUploadTask），
-// 逐级下探直到能穿通链路
+// GitHub API 创建 blob 上限 25MB——最高档 base64 取 24MB 留 1MB 安全余量；
+// 链路对超大请求体的硬性限制（边缘平台入口重置连接、上游处理超时等）在
+// 浏览器侧只表现为"状态码 0"连接中断，无法与普通断网区分——大分片连续
+// 网络失败即自动降档（见 runUploadTask），逐级下探直到能穿通链路
 var CHUNK_SIZE_LEVELS = [
-    Math.floor((47185920 - 4096) * 3 / 4),   // ≈33.7MB 原始
-    Math.floor((31457280 - 4096) * 3 / 4),   // ≈22.5MB 原始
-    Math.floor((20971520 - 4096) * 3 / 4),   // ≈15MB 原始
-    Math.floor((10485760 - 4096) * 3 / 4)    // ≈7.5MB 原始
+    Math.floor((25165824 - 4096) * 3 / 4),   // ≈18.8MB 原始（GitHub 25MB 上限留 1MB 余量）
+    Math.floor((16777216 - 4096) * 3 / 4),   // ≈12.5MB 原始
+    Math.floor((8388608 - 4096) * 3 / 4)     // ≈6.2MB 原始
 ];
 // 档位会话内粘滞：一次上传降到的档位对后续上传继续生效，不在每批上传时
 // 重置回最大档反复踩链路上限（每批重新探测要白白浪费数趟大请求体上行流量）
@@ -10283,9 +10282,9 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
     xhr.open('POST', url, true);
     if (chan === 'eo') applyEoAuth(xhr);
     xhr.setRequestHeader('Content-Type', 'application/json');
-    // 不使用固定超时：大分片（45MB 分片 base64 后约 60MB 请求体）在慢上行
-    // 链路上健康传输也会超过 60s，固定超时会把正常传输误判为挂起，反复
-    // "状态码 0"重试永远传不完；链路挂起（连接不断但不再发数据）由
+    // 不使用固定超时：大分片在慢上行链路上健康传输也会超过 60s，固定超时
+    // 会把正常传输误判为挂起，反复"状态码 0"重试永远传不完；
+    // 链路挂起（连接不断但不再发数据）由
     // sampleUploadSpeed 的 12 秒无进度看门狗中止换源，判定以进度为准
     xhr.timeout = 0;
     xhr.upload.onprogress = function(e) {
