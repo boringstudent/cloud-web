@@ -162,10 +162,13 @@ function extSiteNoteSlow(base) {
     }
 }
 
-// 浏览器侧分批探测候选代理：8 路并发，单个 6 秒超时；简单 GET（不带任何
+// 浏览器侧分批探测候选代理：8 路并发，首轮 8 秒超时；简单 GET（不带任何
 // 自定义头，避免 CORS 预检被代理 403），要求 2xx 且响应体确为探测文件内容
-// （防劫持/插页假 200），4xx 视为可达（与 EO 口径一致）；快速失败（非超时）
-// 300ms 后复测一次。done(results) 每条为 { site, ok, rtt, status, err }；
+// （防劫持/插页假 200），4xx 视为可达（与 EO 口径一致）。
+// 注意：浏览器无法区分"站点无 CORS 头"与真实断网——二者 fetch 都抛
+// TypeError 表现为 network（地址栏直接打开正常 ≠ 跨域 fetch 可用）；
+// 慢节点首轮易被误杀，超时放宽门槛复测一次（12 秒），其余快速失败
+// 300ms 后复测一次（6 秒）。done(results) 每条为 { site, ok, rtt, status, err }；
 // 返回全部 AbortController（供服务状态强制重检时中止）
 function probeExtProxiesBrowser(bases, done) {
     var results = new Array(bases.length);
@@ -192,10 +195,12 @@ function probeExtProxiesBrowser(bases, done) {
         });
     }
     function probeOne(base, cb) {
-        attempt(base, 6000, function(r) {
+        attempt(base, 8000, function(r) {
             // 429=站点限流：立即复测只会加重限流并刷屏 CORS 报错，不再复测
-            if (r.ok || r.err === 'timeout' || r.status === 429) { cb(r); return; }
-            setTimeout(function() { attempt(base, 4000, function(r2) { cb(r2.ok ? r2 : r); }); }, 300);
+            if (r.ok || r.status === 429) { cb(r); return; }
+            // 超时放宽门槛：慢节点给一次 12 秒长超时复测；其余快速失败 300ms 后短复测
+            var retryMs = r.err === 'timeout' ? 12000 : 6000;
+            setTimeout(function() { attempt(base, retryMs, function(r2) { cb(r2.ok ? r2 : r); }); }, 300);
         });
     }
     function launch() {
@@ -2432,6 +2437,7 @@ var svcChecking = false;
 var svcCheckGen = 0;    // 代数令牌：被取代的旧检测回调一律忽略
 var svcCheckXhrs = [];  // 当前轮次在途请求，供强制重检时中止
 var svcExpanded = false; // 角标点击展开/折叠三路详情面板
+var nextSvcCheckAt = Date.now() + SVC_CHECK_INTERVAL;   // 面板倒计时自动重检时刻
 
 // 浏览器无法 ICMP ping，以请求往返时间（RTT）作为延时
 function measureRtt(url, cb) {
@@ -2535,6 +2541,14 @@ function renderSvcStatus() {
         checkSvcStatus(true);
     });
     reDiv.appendChild(reBtn);
+    // 与主页面文件列表同款的倒计时自动刷新（秒数由下方 1s ticker 更新）
+    var cd = document.createElement('span');
+    cd.className = 'svc-rtt';
+    cd.id = 'svcCheckCountdown';
+    cd.textContent = Math.max(0, Math.ceil((nextSvcCheckAt - Date.now()) / 1000)) + 's';
+    reDiv.appendChild(document.createTextNode(' ('));
+    reDiv.appendChild(cd);
+    reDiv.appendChild(document.createTextNode(')'));
     tip.appendChild(reDiv);
 }
 
@@ -2617,6 +2631,7 @@ function checkSvcStatus(force) {
         svcChecking = false;
     }
     svcChecking = true;
+    nextSvcCheckAt = Date.now() + SVC_CHECK_INTERVAL;   // 手动/自动重检都重置倒计时
     var gen = svcCheckGen;
     // 立即重置为“检测中”，重新检测时才有即时反馈（否则角标保持旧状态看似没反应）
     svcStatus.api = null;
@@ -2703,10 +2718,21 @@ function checkGitExtServices(gen, finish) {
     svcCheckXhrs.push(xhr);
 }
 
+// 服务状态倒计时自动重检：与文件列表 45s 倒计时同口径，页面隐藏时暂停
 setInterval(function() {
     if (document.hidden) return;
-    checkSvcStatus();
-}, SVC_CHECK_INTERVAL);
+    var now = Date.now();
+    if (now >= nextSvcCheckAt) {
+        nextSvcCheckAt = now + SVC_CHECK_INTERVAL;
+        checkSvcStatus();
+        return;
+    }
+    var cd = document.getElementById('svcCheckCountdown');
+    if (cd) {
+        var text = Math.max(0, Math.ceil((nextSvcCheckAt - now) / 1000)) + 's';
+        if (cd.textContent !== text) cd.textContent = text;
+    }
+}, 1000);
 
 function openUploadModal() {
     if (!getSavedAuth()) {
