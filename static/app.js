@@ -2438,6 +2438,22 @@ var svcCheckGen = 0;    // 代数令牌：被取代的旧检测回调一律忽�
 var svcCheckXhrs = [];  // 当前轮次在途请求，供强制重检时中止
 var svcExpanded = false; // 角标点击展开/折叠三路详情面板
 var nextSvcCheckAt = Date.now() + SVC_CHECK_INTERVAL;   // 面板倒计时自动重检时刻
+var SVC_STATUS_CACHE_KEY = 'cloud_web_svc_status';      // 上次检测结果持久化（刷新回显用）
+var svcStatusAt = 0;    // 最近一次检测完成时间（含缓存回显），面板"检测时间"据此显示
+
+// 页面加载：回显上次检测缓存（含检测时间），刷新后立即有数据而不必全量重测；
+// 返回是否有缓存可显
+function svcStatusRestore() {
+    try {
+        var j = JSON.parse(localStorage.getItem(SVC_STATUS_CACHE_KEY) || 'null');
+        if (!j || typeof j !== 'object') return false;
+        svcStatus.api = j.api || null;
+        svcStatus.git = j.git || null;
+        svcStatus.cf = j.cf || null;
+        svcStatusAt = j.at || 0;
+        return true;
+    } catch (e) { return false; }
+}
 
 // 浏览器无法 ICMP ping，以请求往返时间（RTT）作为延时
 function measureRtt(url, cb) {
@@ -2528,7 +2544,7 @@ function renderSvcStatus() {
     timeLabel.className = 'svc-name';
     timeLabel.textContent = t('检测时间');
     timeDiv.appendChild(timeLabel);
-    timeDiv.appendChild(document.createTextNode(new Date().toLocaleTimeString()));
+    timeDiv.appendChild(document.createTextNode(new Date(svcStatusAt || Date.now()).toLocaleString()));
     tip.appendChild(timeDiv);
     // 面板内重新检测按钮（角标本体点击只负责展开/折叠）
     var reDiv = document.createElement('div');
@@ -2620,8 +2636,10 @@ function addGitSvcTip(tip, g) {
 }
 
 // force=true（手动重检）时中止上一轮未完成的检测立即重来；定时轮询不重入。
-// 三路并行检测：EO 边缘函数（含 IP/归属地/ISP）、Git 外部代理逐个探测、CF 加速通道
-function checkSvcStatus(force) {
+// 三路并行检测：EO 边缘函数（含 IP/归属地/ISP）、Git 外部代理逐个探测、CF 加速通道。
+// light=true 为轻量复测：只测 EO/CF 两个同源接口（成本可忽略），Git 外部的
+// 67 站点全量探测跳过并保留已有结果——页面加载时刷新数据用，不轰炸代理站。
+function checkSvcStatus(force, light) {
     if (svcChecking) {
         if (!force) return;
         svcCheckGen++;
@@ -2631,20 +2649,29 @@ function checkSvcStatus(force) {
         svcChecking = false;
     }
     svcChecking = true;
-    nextSvcCheckAt = Date.now() + SVC_CHECK_INTERVAL;   // 手动/自动重检都重置倒计时
+    // 只有全量重检才重置 Git 外部倒计时（轻量复测不动，否则倒计时永远到不了）
+    if (!light) nextSvcCheckAt = Date.now() + SVC_CHECK_INTERVAL;
     var gen = svcCheckGen;
-    // 立即重置为“检测中”，重新检测时才有即时反馈（否则角标保持旧状态看似没反应）
-    svcStatus.api = null;
-    svcStatus.git = null;
-    svcStatus.cf = null;
-    renderSvcStatus();
-    var pending = 3;
+    // 全量重检立即重置为“检测中”，重新检测时才有即时反馈（否则角标保持旧状态看似没反应）；
+    // 轻量复测保留旧值静默刷新，不闪烁
+    if (!light) {
+        svcStatus.api = null;
+        svcStatus.git = null;
+        svcStatus.cf = null;
+        renderSvcStatus();
+    }
+    var pending = light ? 2 : 3;
     var finish = function() {
         if (gen !== svcCheckGen) return;
         pending--;
         if (pending <= 0) {
             svcChecking = false;
             svcCheckXhrs = [];
+            svcStatusAt = Date.now();
+            // 检测结果持久化：页面刷新后直接回显，不必为显示数据而全量重测
+            try {
+                localStorage.setItem(SVC_STATUS_CACHE_KEY, JSON.stringify({ at: svcStatusAt, api: svcStatus.api, git: svcStatus.git, cf: svcStatus.cf }));
+            } catch (e) {}
         }
         renderSvcStatus();
     };
@@ -2653,7 +2680,7 @@ function checkSvcStatus(force) {
         svcStatus.api = res;
         finish();
     });
-    checkGitExtServices(gen, finish);
+    if (!light) checkGitExtServices(gen, finish);
     // CF 加速：改由同源 EO 接口 /api/cf-ip 提供——EO 先从 CF worker /ip 拿
     // 出口 IP（worker 侧优先 Cloudflare 自带 cdn-cgi/trace，纯文本只含 IP），
     // 再由 EO 按该 IP 查归属地/ISP，与 EO 行同口径；
@@ -10620,13 +10647,16 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载
-    // 服务状态不在页面加载时立即检测（每次刷新都全量探测 67 个代理太激进），
-    // 首次检测由 10 分钟倒计时或手动"重新检测"触发
+    // 服务状态不在页面加载时全量检测（每次刷新都探测 67 个代理太激进）：
+    // 先回显上次检测缓存，再轻量复测 EO/CF 两个同源接口；
+    // Git 外部首次全量检测由 10 分钟倒计时或手动"重新检测"触发
     if (_isShare) {
         renderSharePage();
     } else {
         loadFileList();
     }
+    if (svcStatusRestore()) renderSvcStatus();
+    checkSvcStatus(false, true);
     initSearchBox();
 
     var dropZone = document.getElementById('dropZone');
