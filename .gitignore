@@ -10,3 +10,4 @@ server.log
 
 # 代理测速工具输出
 github_proxy_test_*.xlsx
+__pycache__/
