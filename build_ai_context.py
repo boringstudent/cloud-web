@@ -82,7 +82,7 @@ DATAFLOW = {
         'admin 接口用 admin_user/admin_pass（同哈希），服务端校验 role=admin',
     ],
     'upload': [
-        '文件按 CHUNK_SIZE_LEVELS（45MB/30MB，按 base64 后不超 GitHub 单文件限制反算）分片，too large 自动降档续传',
+        '文件按 CHUNK_SIZE_LEVELS（base64 上限 45/30/20/10MB 四档反算原始大小）分片，too large 自动降档续传；大分片连续状态码 0（第 2 次任务级尝试仍网络失败，≥8MB 分片）同样自动降档——链路对超大请求体的硬限制只表现为连接中断；降到的档位会话内粘滞（不在每批上传重置）',
         '传输阶段：POST /git/blobs 纯对象创建（不动引用，任意并行零冲突）；分片预读缓存领先调度 2 个任务',
         '提交阶段：每 COMMIT_GROUP_SIZE=100 个 blob 合成 tree+commit 批量落盘；组间链式推进（上一组新引用直接作下一组基点）',
         '引用被抢先（422/409）：先读最新引用校验是否实际已成功（响应丢失），否则从最新引用重建 tree 重试，最多 12 次（300ms 快重试→1.6 倍退避封顶 5s+抖动）',

@@ -626,10 +626,19 @@ function stopPreviewMedia() {
     }
 }
 
+// 分片档位（按 base64 上限反算原始字节：base64 体积 = 原始×4/3，预留 4KB JSON 余量）：
+// 45MB / 30MB / 20MB / 10MB（base64）。链路对超大请求体的硬性限制（边缘平台
+// 入口重置连接、上游处理超时等）在浏览器侧只表现为"状态码 0"连接中断，
+// 无法与普通断网区分——大分片连续网络失败即自动降档（见 runUploadTask），
+// 逐级下探直到能穿通链路
 var CHUNK_SIZE_LEVELS = [
-    Math.floor((47185920 - 4096) * 3 / 4),
-    Math.floor((31457280 - 4096) * 3 / 4)
+    Math.floor((47185920 - 4096) * 3 / 4),   // ≈33.7MB 原始
+    Math.floor((31457280 - 4096) * 3 / 4),   // ≈22.5MB 原始
+    Math.floor((20971520 - 4096) * 3 / 4),   // ≈15MB 原始
+    Math.floor((10485760 - 4096) * 3 / 4)    // ≈7.5MB 原始
 ];
+// 档位会话内粘滞：一次上传降到的档位对后续上传继续生效，不在每批上传时
+// 重置回最大档反复踩链路上限（每批重新探测要白白浪费数趟大请求体上行流量）
 var chunkSizeLevel = 0;
 
 function currentChunkLabel() {
@@ -8907,7 +8916,7 @@ function uploadFile() {
             showToast('CF 上传通道不可用（' + (cfUploadHint || 'CF 侧未配置服务端 key 或不可达') + '），本次仅经 EO 上传');
         }
         setTimeout(hideToast, 4000);
-        chunkSizeLevel = 0;
+        // 不重置 chunkSizeLevel：上次降到的档位会话内继续生效（粘滞）
         startUpload();
     });
 }
@@ -9867,6 +9876,22 @@ function runUploadTask(task, done) {
                             st.downgrading = true;
                             chunkSizeLevel++;
                             setMsg('uploadMessage', '分片过大，已自动减小分片大小（当前 ' + currentChunkLabel() + '），等待进行中的任务完成后重传...', 'success');
+                        }
+                        done(false);
+                        return;
+                    }
+
+                    // 大分片连续网络中断（状态码 0）：链路对超大请求体的硬性限制
+                    // （边缘平台入口重置连接、上游处理超时）在浏览器侧只表现为连接
+                    // 中断，与断网无法区分——同一分片第 2 次仍网络失败（每次任务级
+                    // 尝试还含通道内原地重试）即按"分片过大"降档，逐级下探直到穿通；
+                    // <8MB 小分片的状态码 0 视为真网络抖动，走常规重试
+                    if (status === 0 && attempt >= 2 && task.blob.size >= 8388608 &&
+                        chunkSizeLevel < CHUNK_SIZE_LEVELS.length - 1) {
+                        if (!st.downgrading) {
+                            st.downgrading = true;
+                            chunkSizeLevel++;
+                            setMsg('uploadMessage', '大分片多次网络中断，已自动减小分片大小（当前 ' + currentChunkLabel() + '），等待进行中的任务完成后重传...', 'success');
                         }
                         done(false);
                         return;
