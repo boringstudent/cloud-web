@@ -118,8 +118,54 @@ const EXT_PROXY_CANDIDATES = [
   'github.zzrbk.xyz',
   'github.boringhex.top',
   'github.ednovas.xyz',
-  'git.820828.xyz'
+  'git.820828.xyz',
   // 'kenyu.ggff.net'   // 已停用（应用户要求注释保留，暂不删除）
+  // ---- 2026-10-01 实测扩充（test_proxy_sites.py 三来源 20MB 测速全部可用）----
+  'git.tangbai.cc',
+  'gh.acmsz.top',
+  'gh.padao.fun',
+  'git.yylx.win',
+  'gh.halonice.com',
+  'cdn.gh-proxy.com',
+  'ghproxy.mirror.skybyte.me',
+  'github.chenc.dev',
+  'github.1ms.xx.kg',
+  'gh.meali.top',
+  'github.geekery.cn',
+  'github.mxw.qzz.io',
+  'ggg.clwap.dpdns.org',
+  'gh.my-website.ccwu.cc',
+  'jiashu.1win.eu.org',
+  'ghproxy.cc',
+  'ghproxy.icu',
+  'gh.inkchills.cn',
+  'hub.ddayh.com',
+  'api.gitproxy.dev',
+  'ghfile.geekertao.top',
+  'gh.monlor.com',
+  'cdn.akaere.online',
+  'gh.xmly.dev',
+  'js.jiangss.shop',
+  'ghfast.top',
+  'ghpxy.hwinzniej.top',
+  'gh.catmak.name',
+  'github-proxy.memory-echoes.cn',
+  'ghproxy.cxkpro.top',   // 曾停用，2026-10-01 实测可用，应用户要求重新启用
+  'github.lsdfxdk.nyc.mn',
+  'gh.996986.xyz',
+  'github.crdz.eu.org',
+  'github.788787.xyz',
+  'cf.ghproxy.cc',
+  'gh-proxy.org',
+  'github.ikgy.top',
+  'git.951959483.xyz',
+  'gh.nxnow.top',
+  'down.mxw.xx.kg',
+  'ghproxy.xzhouqd.com',
+  'gh.sixyin.com',
+  'gitproxy.mrhjx.cn'
+  // 注：github-proxy.lixxing.top 虽测速可用但不加入——其响应不带 CORS 头，
+  // 浏览器跨域永不可用（浏览器侧探测必然失败，加入只会浪费探测请求）
 ];
 // 探测结果实例级缓存：5 分钟内不重复探测（边缘实例随时可能重建，重建即重探）
 let extProxiesCache = { at: 0, list: null };

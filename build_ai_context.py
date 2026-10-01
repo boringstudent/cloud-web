@@ -68,7 +68,7 @@ ARCHITECTURE = {
         '  |                       +-- /api.github.com/ | /raw.githubusercontent.com/ | /github.com/（白名单代理，服务端注入 key）--> GitHub boringstudent/cloud-storage\n'
         '  |                       +-- /api/hash|proxies|my-ip|cf-ip|bg（公开接口）--> cip.cc / api.ip.sb / ipinfo.io / 图床\n'
         '  |-- CF 加速通道 --> cloud-ecr.pages.dev (cf-worker.js，注入 GITHUB_TOKEN) --> GitHub\n'
-        '  |-- 外部多代理（仅下载）--> 26 个公共 ghproxy 镜像（浏览器侧实测可用性）\n'
+        '  |-- 外部多代理（仅下载）--> 69 个公共 ghproxy 镜像（浏览器侧实测可用性）\n'
         '  +-- 背景图直连 loliapi 图床（不经 EO）'
     ),
 }
@@ -170,7 +170,7 @@ API = {
         'GET/POST /api/hash → SHA-512 哈希（type=password|key & value=）',
         'GET/HEAD /api/my-ip（别名 /ip）→ 服务器出口 IP/归属地（cip.cc，8s 超时）',
         'GET/HEAD /api/cf-ip → CF 通道出口 IP/归属地（EO 经 CF /ip 取 IP 再查 api.ip.sb→ipinfo.io，缓存 5min）',
-        'GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 26 个不触网；?probe=api EO 视角全量诊断',
+        'GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 69 个不触网；?probe=api EO 视角全量诊断',
         'GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key）',
         'POST /api/change-password → 自助改密（旧/新哈希）',
         'POST /api/change-avatar → 自助改头像 URL（http/https ≤300 字符，空串清除）',
@@ -197,15 +197,14 @@ API = {
 
 DEPENDENCIES = {
     'build_tools': [
-        'Python 3（build_eo.py / build_ai_context.py / tool_mindmap_speedtest.py）',
-        'pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验 / 思维导图数据源）',
-        'openpyxl（pip install openpyxl，可选，测速 Excel 输出，缺失时回退 CSV）',
+        'Python 3（build_eo.py / build_ai_context.py）',
+        'pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验）',
         'Node.js（node --check 构建校验 + 冒烟测试）',
     ],
     'runtime_external': [
         'GitHub REST API（api.github.com / raw.githubusercontent.com / codeload）——存储后端',
         'Cloudflare Workers/Pages（cloud-ecr.pages.dev）——可选下载/上传加速通道',
-        '公共 ghproxy 镜像池 26 个——可选外部多代理下载（仅匿名下载，写操作永不经过）',
+        '公共 ghproxy 镜像池 69 个——可选外部多代理下载（仅匿名下载，写操作永不经过）',
         'loliapi 图床——页面背景图（浏览器直连）',
         'cip.cc / api.ip.sb / ipinfo.io / cloudflare cdn-cgi/trace——IP 与归属地查询',
     ],
@@ -336,9 +335,6 @@ FILE_ROLES = {
     'README.md': '人类用功能/算法说明',
     'test_eo_smoke.js': 'eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）',
     'test_eo_server.js': 'eo.js 本地模拟服务器',
-    'tool_mindmap_speedtest.py': '手动运行工具（不进自动化链）：AI-CONTEXT.yaml→运行结构思维导图（mindmap.md/html，markmap CDN 渲染）；'
-                                 '外部代理站点（qqday/akams/moretools）可用性+20MB 下载测速（超时跳过、host+IP 去重、'
-                                 'form action 端点自动发现），结果输出 xlsx（openpyxl 缺失回退 csv，产物 gitignore）',
     'favicon.ico': '站点图标（构建时 base64 嵌入）',
     'xxx.json': '外部代理浏览器侧探测目标文件（raw 小文件）',
     'eo.js': 'EO 部署产物（gitignore，含 key 属服务端机密）',

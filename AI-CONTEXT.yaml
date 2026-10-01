@@ -1,9 +1,9 @@
 meta:
   schema: 1
-  generated_at: '2026-10-01T21:10:54'
-  git_commit: 8abeb85ae191e56841feaa6a8abb86eb96c72cbd
-  git_commit_short: 8abeb85
-  build_version: ''
+  generated_at: '2026-10-01T22:28:18'
+  git_commit: 52e5bb8a052d6ab1a2118c54427f6ceefc7e15fb
+  git_commit_short: 52e5bb8
+  build_version: '1790864897'
   generator: build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）
 project:
   name: cloud-web
@@ -17,18 +17,18 @@ project:
 files:
 - name: build_eo.py
   role: EO 一体化构建脚本（后端模板+前端资源烘焙→eo.js）
-  bytes: 53424
-  sha1: 747d8180
-  lines: 1254
+  bytes: 54769
+  sha1: bb382f77
+  lines: 1300
 - name: build_ai_context.py
   role: 本生成器：重建 AI-CONTEXT.yaml
-  bytes: 33723
-  sha1: 97c98a42
-  lines: 475
+  bytes: 33117
+  sha1: bb5afc6d
+  lines: 471
 - name: AI-CONTEXT.yaml
   role: AI 专用项目理解文件（本生成器产物，勿手改）
-  bytes: 46206
-  sha1: 032cac72
+  bytes: 46774
+  sha1: 330a0116
 - name: template.html
   role: 唯一 HTML 模板
   bytes: 26689
@@ -42,7 +42,7 @@ files:
 - name: static/app.js
   role: 全部前端逻辑
   bytes: 465230
-  sha1: 5ad0f520
+  sha1: f99dd65e
   lines: 10746
 - name: static/style.css
   role: 全部样式
@@ -61,25 +61,19 @@ files:
   lines: 215
 - name: README.md
   role: 人类用功能/算法说明
-  bytes: 48948
-  sha1: d9ad4834
-  lines: 201
+  bytes: 48746
+  sha1: 4439ec5d
+  lines: 207
 - name: test_eo_smoke.js
   role: eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）
-  bytes: 9019
-  sha1: a1950af2
+  bytes: 9020
+  sha1: 3d8a0ab9
   lines: 139
 - name: test_eo_server.js
   role: eo.js 本地模拟服务器
   bytes: 2222
   sha1: b5fca60e
   lines: 51
-- name: tool_mindmap_speedtest.py
-  role: 手动运行工具（不进自动化链）：AI-CONTEXT.yaml→运行结构思维导图（mindmap.md/html，markmap CDN 渲染）；外部代理站点（qqday/akams/moretools）可用性+20MB 下载测速（超时跳过、host+IP
-    去重、form action 端点自动发现），结果输出 xlsx（openpyxl 缺失回退 csv，产物 gitignore）
-  bytes: 20841
-  sha1: 8059464e
-  lines: 475
 - name: favicon.ico
   role: 站点图标（构建时 base64 嵌入）
   bytes: 146298
@@ -91,9 +85,9 @@ files:
   lines: 6
 - name: eo.js
   role: EO 部署产物（gitignore，含 key 属服务端机密）
-  bytes: 775616
-  sha1: 1988d7b9
-  lines: 14692
+  bytes: 776915
+  sha1: 02d07de9
+  lines: 14738
   gitignored: true
 - name: .eo-key
   role: 本地 GitHub key（gitignore）
@@ -102,8 +96,8 @@ files:
   gitignored: true
 - name: .gitignore
   role: 忽略 eo.js/.eo-key/build 等
-  bytes: 380
-  sha1: 83e9e856
+  bytes: 315
+  sha1: 7cabcc51
 architecture:
   modules:
   - name: build_eo.py
@@ -132,7 +126,7 @@ architecture:
       |                       +-- /api.github.com/ | /raw.githubusercontent.com/ | /github.com/（白名单代理，服务端注入 key）--> GitHub boringstudent/cloud-storage
       |                       +-- /api/hash|proxies|my-ip|cf-ip|bg（公开接口）--> cip.cc / api.ip.sb / ipinfo.io / 图床
       |-- CF 加速通道 --> cloud-ecr.pages.dev (cf-worker.js，注入 GITHUB_TOKEN) --> GitHub
-      |-- 外部多代理（仅下载）--> 26 个公共 ghproxy 镜像（浏览器侧实测可用性）
+      |-- 外部多代理（仅下载）--> 69 个公共 ghproxy 镜像（浏览器侧实测可用性）
       +-- 背景图直连 loliapi 图床（不经 EO）
 backend:
   file: build_eo.py（BACKEND 模板字符串，构建时替换 __XXX__ 占位符后写入 eo.js）
@@ -141,61 +135,61 @@ backend:
     API 写操作仅变更目标字段，409 冲突自动重读重试（≤3 次）
   user_json: '{ "<username>": { "password": "<sha512>", "role": "admin|user", "avatar": "<可选URL>" } }'
   routes:
-  - line: 160
+  - line: 206
     match: prefix
     path: /api.github.com/
-  - line: 161
+  - line: 207
     match: prefix
     path: /raw.githubusercontent.com/
-  - line: 162
+  - line: 208
     match: prefix
     path: /github.com/
-  - line: 167
+  - line: 213
     match: exact
     path: /api/hash
-  - line: 176
+  - line: 222
     match: exact
     path: /api/proxies
-  - line: 195
+  - line: 241
     match: exact
     path: /api/my-ip
-  - line: 195
+  - line: 241
     match: exact
     path: /ip
-  - line: 206
+  - line: 252
     match: exact
     path: /api/cf-ip
-  - line: 216
+  - line: 262
     match: exact
     path: /api/login
-  - line: 240
+  - line: 286
     match: exact
     path: /api/change-password
-  - line: 263
+  - line: 309
     match: exact
     path: /api/change-avatar
-  - line: 290
+  - line: 336
     match: exact
     path: /api/delete-account
-  - line: 311
+  - line: 357
     match: exact
     path: /api/users
-  - line: 311
+  - line: 357
     match: prefix
     path: /api/users/
-  - line: 393
+  - line: 439
     match: exact
     path: /api/bg
-  - line: 397
+  - line: 443
     match: prefix
     path: /api/
-  - line: 420
+  - line: 466
     match: exact
     path: /static/app.js
-  - line: 423
+  - line: 469
     match: exact
     path: /static/style.css
-  - line: 426
+  - line: 472
     match: exact
     path: /favicon.ico
   functions:
@@ -205,121 +199,121 @@ backend:
   - line: 49
     name: js_tpl_escape
     lang: python
-  - line: 150
+  - line: 196
     name: handleRequest
     lang: js-template
-  - line: 447
+  - line: 493
     name: pageResponse
     lang: js-template
-  - line: 458
+  - line: 504
     name: assetResponse
     lang: js-template
-  - line: 469
+  - line: 515
     name: faviconResponse
     lang: js-template
-  - line: 485
+  - line: 531
     name: secHeaders
     lang: js-template
-  - line: 496
+  - line: 542
     name: handleBg
     lang: js-template
-  - line: 536
+  - line: 582
     name: handleGithubProxy
     lang: js-template
-  - line: 637
+  - line: 683
     name: requireLogin
     lang: js-template
-  - line: 656
+  - line: 702
     name: requireAdmin
     lang: js-template
-  - line: 681
+  - line: 727
     name: getServerIpInfo
     lang: js-template
-  - line: 694
+  - line: 740
     name: fetchText
     lang: js-template
-  - line: 708
+  - line: 754
     name: mapLimited
     lang: js-template
-  - line: 727
+  - line: 773
     name: probeExtProxyOnce
     lang: js-template
-  - line: 754
+  - line: 800
     name: probeExtProxy
     lang: js-template
-  - line: 763
+  - line: 809
     name: listUsableExtProxies
     lang: js-template
-  - line: 777
+  - line: 823
     name: probeExtProxyApi
     lang: js-template
-  - line: 788
+  - line: 834
     name: probeExtProxiesApi
     lang: js-template
-  - line: 806
+  - line: 852
     name: getCfIpInfo
     lang: js-template
-  - line: 835
+  - line: 881
     name: queryIpSb
     lang: js-template
-  - line: 850
+  - line: 896
     name: queryCipCc
     lang: js-template
-  - line: 860
+  - line: 906
     name: queryIpinfoIo
     lang: js-template
-  - line: 876
+  - line: 922
     name: parseCipCc
     lang: js-template
-  - line: 899
+  - line: 945
     name: isSha512Hex
     lang: js-template
-  - line: 903
+  - line: 949
     name: sha512
     lang: js-template
-  - line: 908
+  - line: 954
     name: parseBody
     lang: js-template
-  - line: 931
+  - line: 977
     name: readUsersFile
     lang: js-template
-  - line: 949
+  - line: 995
     name: mutateUsers
     lang: js-template
-  - line: 976
+  - line: 1022
     name: ghHeaders
     lang: js-template
-  - line: 984
+  - line: 1030
     name: b64encode
     lang: js-template
-  - line: 991
+  - line: 1037
     name: b64decode
     lang: js-template
-  - line: 998
+  - line: 1044
     name: json
     lang: js-template
-  - line: 1005
+  - line: 1051
     name: corsHeaders
     lang: js-template
-  - line: 1016
+  - line: 1062
     name: _file_sha256
     lang: python
-  - line: 1024
+  - line: 1070
     name: _check_source_freshness
     lang: python
-  - line: 1042
+  - line: 1088
     name: update_ai_context
     lang: python
-  - line: 1062
+  - line: 1108
     name: run_smoke_test
     lang: python
-  - line: 1106
+  - line: 1152
     name: make_commit_message
     lang: python
-  - line: 1119
+  - line: 1165
     name: git_commit_and_push
     lang: python
-  - line: 1181
+  - line: 1227
     name: build
     lang: python
 frontend:
@@ -1280,7 +1274,7 @@ api:
   - GET/POST /api/hash → SHA-512 哈希（type=password|key & value=）
   - GET/HEAD /api/my-ip（别名 /ip）→ 服务器出口 IP/归属地（cip.cc，8s 超时）
   - GET/HEAD /api/cf-ip → CF 通道出口 IP/归属地（EO 经 CF /ip 取 IP 再查 api.ip.sb→ipinfo.io，缓存 5min）
-  - GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 26 个不触网；?probe=api EO 视角全量诊断
+  - GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 69 个不触网；?probe=api EO 视角全量诊断
   - GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key）
   - POST /api/change-password → 自助改密（旧/新哈希）
   - POST /api/change-avatar → 自助改头像 URL（http/https ≤300 字符，空串清除）
@@ -1301,14 +1295,13 @@ api:
   - '错误统一 {"error": "英文描述"}，前端 API_ERROR_MAP 映射中文；400 参数 · 401 凭据 · 403 权限 · 404 不存在 · 405 方法 · 409 已存在 · 502 上游'
 dependencies:
   build_tools:
-  - Python 3（build_eo.py / build_ai_context.py / tool_mindmap_speedtest.py）
-  - pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验 / 思维导图数据源）
-  - openpyxl（pip install openpyxl，可选，测速 Excel 输出，缺失时回退 CSV）
+  - Python 3（build_eo.py / build_ai_context.py）
+  - pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验）
   - Node.js（node --check 构建校验 + 冒烟测试）
   runtime_external:
   - GitHub REST API（api.github.com / raw.githubusercontent.com / codeload）——存储后端
   - Cloudflare Workers/Pages（cloud-ecr.pages.dev）——可选下载/上传加速通道
-  - 公共 ghproxy 镜像池 26 个——可选外部多代理下载（仅匿名下载，写操作永不经过）
+  - 公共 ghproxy 镜像池 69 个——可选外部多代理下载（仅匿名下载，写操作永不经过）
   - loliapi 图床——页面背景图（浏览器直连）
   - cip.cc / api.ip.sb / ipinfo.io / cloudflare cdn-cgi/trace——IP 与归属地查询
   browser_requirements:
