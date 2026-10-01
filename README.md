@@ -93,6 +93,11 @@ static/style.css    全部样式（背景图由浏览器直连 loliapi 图床，
                     服务端 /api/bg 中转接口保留备用）
 test_eo_smoke.js    eo.js 本地冒烟测试（Node 模拟 fetch 事件，验证路由/资源/安全）
 test_eo_server.js   eo.js 本地模拟服务器（Node HTTP 包装 fetch 处理器，端到端预览）
+tool_mindmap_speedtest.py
+                    手动运行工具（不进自动化构建链）：从 AI-CONTEXT.yaml 生成
+                    项目运行结构思维导图（mindmap.md / mindmap.html），并对
+                    指定的外部 GitHub 代理站点做可用性 + 下载测速，结果输出
+                    Excel 表格（产物均已 gitignore）
 ```
 
 ### 运行原理
@@ -175,3 +180,21 @@ node test_eo_server.js 3210        # 可选：本地 EO 模拟服务器，完整
 将本地生成的 `eo.js` 全部内容粘贴到腾讯云 EdgeOne 边缘函数（或按其函数部署方式上传），绑定域名后即完成部署——页面、API、GitHub 代理与下载中转全部同源可用。接口详见 [API.md](API.md)。
 
 > 注意：`eo.js` 内含 GitHub key，属于服务端机密，请勿提交或泄露；key 只会随函数在服务端执行，浏览器端获取的页面与静态资源中不含任何后端凭据。未配置 key 时构建产物为脱敏版（占位符 key），仅可用于查看与路由测试。
+
+### 手动工具：思维导图与代理站点测速
+
+`tool_mindmap_speedtest.py` 是**按需手动运行**的工具脚本，不属于 `build_eo.py` 自动化构建链：
+
+```bash
+pip install pyyaml openpyxl          # 依赖：pyyaml（读 AI-CONTEXT.yaml）+ openpyxl（Excel 输出，缺失时回退 CSV）
+
+python tool_mindmap_speedtest.py             # 全部执行：思维导图 + 站点测速
+python tool_mindmap_speedtest.py mindmap     # 仅生成思维导图
+python tool_mindmap_speedtest.py speedtest   # 仅站点测速
+python tool_mindmap_speedtest.py speedtest --size-mb 20 --timeout 10 --overall 120 --url <测试文件URL>
+```
+
+- **思维导图**：解析 `AI-CONTEXT.yaml` 提取项目大体运行结构（项目概览/模块架构/运行数据流/接口结构/前端功能组/构建工作流/外部依赖），生成 `mindmap.md`（Markdown 大纲）与 `mindmap.html`（markmap 可交互导图，浏览器打开，渲染依赖 jsdelivr CDN 需联网）。
+- **代理站点测速**：内置目标为 `https://github.qqday.com/`、`https://github.akams.cn/`、`https://www.moretools.app/zh-CN/github-proxy`。对每站先测首页可用性（HTTP 状态/耗时），**首页超时（默认 10s）直接跳过本站全部测试**；随后经代理下载一个 **20MB 测试文件**（Git for Windows 发行版安装包，收到 20MB 即断开不下完整文件，可用 `--url` 更换），测量**首字节延时**与**平均速度（MB/s）**。
+- **去重**：按"首页重定向后主机名 + 解析 IP 集合"双重判定，与前序站点重复的跳过下载测试；导航/聚合页（本身非直链代理）会自动从首页 `<form action>` 发现真实代理端点再测，端点同样参与去重；无法定位直链端点的站点仅记录首页可用性并在备注注明原因。
+- **Excel 输出**：`站点测速结果_<时间戳>.xlsx`——"测速结果"表（站点/URL/最终 URL/解析 IP/首页状态与耗时/去重结果/下载端点/下载状态/首字节延时/下载量/用时/平均速度/备注，成功绿底、跳过灰底或黄底，带筛选与冻结首行）+ "测试说明"表（测试参数与口径）。未安装 openpyxl 时自动回退输出同名 CSV。所有产物均已 gitignore。

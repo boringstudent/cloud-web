@@ -197,8 +197,9 @@ API = {
 
 DEPENDENCIES = {
     'build_tools': [
-        'Python 3（build_eo.py / build_ai_context.py）',
-        'pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验）',
+        'Python 3（build_eo.py / build_ai_context.py / tool_mindmap_speedtest.py）',
+        'pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验 / 思维导图数据源）',
+        'openpyxl（pip install openpyxl，可选，测速 Excel 输出，缺失时回退 CSV）',
         'Node.js（node --check 构建校验 + 冒烟测试）',
     ],
     'runtime_external': [
@@ -335,6 +336,9 @@ FILE_ROLES = {
     'README.md': '人类用功能/算法说明',
     'test_eo_smoke.js': 'eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）',
     'test_eo_server.js': 'eo.js 本地模拟服务器',
+    'tool_mindmap_speedtest.py': '手动运行工具（不进自动化链）：AI-CONTEXT.yaml→运行结构思维导图（mindmap.md/html，markmap CDN 渲染）；'
+                                 '外部代理站点（qqday/akams/moretools）可用性+20MB 下载测速（超时跳过、host+IP 去重、'
+                                 'form action 端点自动发现），结果输出 xlsx（openpyxl 缺失回退 csv，产物 gitignore）',
     'favicon.ico': '站点图标（构建时 base64 嵌入）',
     'xxx.json': '外部代理浏览器侧探测目标文件（raw 小文件）',
     'eo.js': 'EO 部署产物（gitignore，含 key 属服务端机密）',

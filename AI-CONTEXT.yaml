@@ -1,9 +1,9 @@
 meta:
   schema: 1
-  generated_at: '2026-10-01T20:46:59'
-  git_commit: 4805fc0476a75b3b78c7969cfbfd7ceb8b703211
-  git_commit_short: 4805fc0
-  build_version: '1790858818'
+  generated_at: '2026-10-01T21:10:54'
+  git_commit: 8abeb85ae191e56841feaa6a8abb86eb96c72cbd
+  git_commit_short: 8abeb85
+  build_version: ''
   generator: build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）
 project:
   name: cloud-web
@@ -22,13 +22,13 @@ files:
   lines: 1254
 - name: build_ai_context.py
   role: 本生成器：重建 AI-CONTEXT.yaml
-  bytes: 33117
-  sha1: f6bd13df
-  lines: 471
+  bytes: 33723
+  sha1: 97c98a42
+  lines: 475
 - name: AI-CONTEXT.yaml
   role: AI 专用项目理解文件（本生成器产物，勿手改）
-  bytes: 46181
-  sha1: b6884e8a
+  bytes: 46206
+  sha1: 032cac72
 - name: template.html
   role: 唯一 HTML 模板
   bytes: 26689
@@ -61,9 +61,9 @@ files:
   lines: 215
 - name: README.md
   role: 人类用功能/算法说明
-  bytes: 46304
-  sha1: f3dc771e
-  lines: 178
+  bytes: 48948
+  sha1: d9ad4834
+  lines: 201
 - name: test_eo_smoke.js
   role: eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）
   bytes: 9019
@@ -74,6 +74,12 @@ files:
   bytes: 2222
   sha1: b5fca60e
   lines: 51
+- name: tool_mindmap_speedtest.py
+  role: 手动运行工具（不进自动化链）：AI-CONTEXT.yaml→运行结构思维导图（mindmap.md/html，markmap CDN 渲染）；外部代理站点（qqday/akams/moretools）可用性+20MB 下载测速（超时跳过、host+IP
+    去重、form action 端点自动发现），结果输出 xlsx（openpyxl 缺失回退 csv，产物 gitignore）
+  bytes: 20841
+  sha1: 8059464e
+  lines: 475
 - name: favicon.ico
   role: 站点图标（构建时 base64 嵌入）
   bytes: 146298
@@ -96,8 +102,8 @@ files:
   gitignored: true
 - name: .gitignore
   role: 忽略 eo.js/.eo-key/build 等
-  bytes: 247
-  sha1: 64771e18
+  bytes: 380
+  sha1: 83e9e856
 architecture:
   modules:
   - name: build_eo.py
@@ -1295,8 +1301,9 @@ api:
   - '错误统一 {"error": "英文描述"}，前端 API_ERROR_MAP 映射中文；400 参数 · 401 凭据 · 403 权限 · 404 不存在 · 405 方法 · 409 已存在 · 502 上游'
 dependencies:
   build_tools:
-  - Python 3（build_eo.py / build_ai_context.py）
-  - pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验）
+  - Python 3（build_eo.py / build_ai_context.py / tool_mindmap_speedtest.py）
+  - pyyaml（pip install pyyaml，AI-CONTEXT 生成与校验 / 思维导图数据源）
+  - openpyxl（pip install openpyxl，可选，测速 Excel 输出，缺失时回退 CSV）
   - Node.js（node --check 构建校验 + 冒烟测试）
   runtime_external:
   - GitHub REST API（api.github.com / raw.githubusercontent.com / codeload）——存储后端
