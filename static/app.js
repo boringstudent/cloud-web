@@ -428,7 +428,7 @@ function ulChanBtnRefresh() {
         btn.classList.toggle('chan-down', down);
         if (down) {
             btn.title = t('CF 上传通道开关（实时生效，需 CF 侧配置服务端 key）') + '——' +
-                (cfUlBroken ? t('CF 上传通道连续失败，已自动停用（本次会话上传只走 EO）')
+                (cfUlBroken ? t('CF 上传通道连续失败，已自动停用（15 分钟后自动重试，上传暂走 EO）')
                             : (cfUploadHint || t('CF 侧未配置服务端 key 或未部署新版 cf-worker.js')));
         }
     }
@@ -456,19 +456,36 @@ var cfUploadHint = '';      // 探测失败时的诊断提示（区分未部署/
 
 // CF 上传通道熔断：探测可写（400/422）不代表大 blob POST 也能过——CF 对超大
 // 请求体会 520/连接级失败（ERR_HTTP2_PROTOCOL_ERROR），大分片会在坏通道上
-// 反复消耗重试次数。连续失败 2 次即本次会话永久停用 CF 上传、全部回退 EO
-//（单次成功清零计数；一旦熔断会话内不恢复，下次访问重新探测）
+// 反复消耗重试次数。只有**传输层失败**才计入熔断（状态码 0 连接级失败/超时、
+// 5xx CF 边缘错误）：4xx 说明请求已穿过 CF 到达 GitHub（通道本身是好的，
+// 失败是 API 语义问题），"慢速换源"主动中止（-1）也不是通道故障——均不计。
+// 连续 3 次才熔断（单次成功清零计数）；熔断非永久：15 分钟后半开恢复
+// （计数清零重新放行，再失败再熔断）
 var cfUlFails = 0;
 var cfUlBroken = false;
+var cfUlBrokenAt = 0;
+var CF_UL_BREAK_THRESHOLD = 3;
+var CF_UL_RECOVER_MS = 15 * 60 * 1000;
 
 function cfUlNoteFail() {
     cfUlFails++;
-    if (cfUlFails >= 2 && !cfUlBroken) {
+    if (cfUlFails >= CF_UL_BREAK_THRESHOLD && !cfUlBroken) {
         cfUlBroken = true;
+        cfUlBrokenAt = Date.now();
         ulChanBtnRefresh();   // CF 按钮切换为"开了却没在跑"的删除线样式
-        showToast('CF 上传通道连续失败，已自动停用（本次会话上传只走 EO）');
+        showToast('CF 上传通道连续失败，已自动停用（15 分钟后自动重试，上传暂走 EO）');
         setTimeout(hideToast, 3000);
     }
+}
+
+// 熔断半开恢复：超时有新任务分配时自动清零重新放行
+function cfUlUsable() {
+    if (cfUlBroken && Date.now() - cfUlBrokenAt > CF_UL_RECOVER_MS) {
+        cfUlBroken = false;
+        cfUlFails = 0;
+        ulChanBtnRefresh();
+    }
+    return !cfUlBroken;
 }
 
 function probeCfUpload(cb) {
@@ -9625,7 +9642,7 @@ function applyConcurrencyChange() {
 function ulChannels(exclude) {
     var chans = [];
     if (ulChanSwitch.eo && exclude !== 'eo') chans.push('eo');
-    if (ulChanSwitch.cf && exclude !== 'cf' && cfUploadState === true && !cfUlBroken) chans.push('cf');
+    if (ulChanSwitch.cf && exclude !== 'cf' && cfUploadState === true && cfUlUsable()) chans.push('cf');
     if (!chans.length) chans.push('eo');
     return chans;
 }
@@ -9898,23 +9915,26 @@ function runUploadTask(task, done) {
 
                     // 外部代理失败按代理熔断，并在失败通道之外换源重试；
                     // 404 已在 putBlobToGitHub 按代理累计（API 不支持不代表
-                    // raw 下载也不可用），不再计入下载熔断
-                    if (task.chan === 'ext' && status !== 404) extNoteFail(task._extBase);
-                    // CF 连续失败 2 次熔断（本次会话只走 EO），大 blob 不再反复踩坏通道
-                    if (task.chan === 'cf') cfUlNoteFail();
+                    // raw 下载也不可用），不再计入下载熔断；-1 慢速换源是主动
+                    // 中止不是站点故障，同样不计
+                    if (task.chan === 'ext' && status !== 404 && status !== -1) extNoteFail(task._extBase);
+                    // CF 只计传输层失败（0 连接级失败/超时、5xx 边缘错误）：
+                    // 4xx 说明请求已穿过 CF 到达 GitHub（通道本身好的），
+                    // -1 慢速换源是性能切换非故障，均不计入熔断
+                    if (task.chan === 'cf' && (status === 0 || status >= 500)) cfUlNoteFail();
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
                         task.chan = pickUploadChannel(task.blob.size, task.chan, true);
                         // adaptive: failures hint the network is saturated, back off
                         if (st.adaptive && st.limit > UPLOAD_LIMIT_MIN) {
                             st.limit--;
                         }
-                        var statusText = status === 0 ? '网络连接中断/超时' : ('状态码 ' + status);
+                        var statusText = status === -1 ? '通道异常慢，已换源' : (status === 0 ? '网络连接中断/超时' : ('状态码 ' + status));
                         setMsg('uploadMessage', '分片上传失败(' + statusText + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
                         setTimeout(tryOnce, 1000 * attempt);
                         return;
                     }
 
-                    var errMsg = status === 0 ? '网络连接中断，可能是文件过大或网络不稳定' : ('状态码: ' + status);
+                    var errMsg = status === -1 ? '各通道持续异常缓慢' : (status === 0 ? '网络连接中断，可能是文件过大或网络不稳定' : ('状态码: ' + status));
                     try {
                         var error = JSON.parse(responseText);
                         if (error.message) errMsg = error.message;
@@ -10336,7 +10356,8 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
         if (task && task._wdAbort) {
             task._wdAbort = false;
             if (task._slowSwitch) {
-                onError(0, '');
+                // -1 = 慢速换源主动中止：通道只是慢不是故障，不计入熔断/代理失败
+                onError(-1, '');
                 return;
             }
             if (retries > 0) {
