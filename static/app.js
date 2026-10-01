@@ -458,7 +458,7 @@ var cfUploadHint = '';      // 探测失败时的诊断提示（区分未部署/
 // 请求体会 520/连接级失败（ERR_HTTP2_PROTOCOL_ERROR），大分片会在坏通道上
 // 反复消耗重试次数。只有**传输层失败**才计入熔断（状态码 0 连接级失败/超时、
 // 5xx CF 边缘错误）：4xx 说明请求已穿过 CF 到达 GitHub（通道本身是好的，
-// 失败是 API 语义问题），"慢速换源"主动中止（-1）也不是通道故障——均不计。
+// 失败是 API 语义问题）不计。
 // 连续 3 次才熔断（单次成功清零计数）；熔断非永久：15 分钟后半开恢复
 // （计数清零重新放行，再失败再熔断）
 var cfUlFails = 0;
@@ -1647,6 +1647,10 @@ var I18N_BINDINGS = [
     ['#menuShare', 'text', '复制外链'],
     ['#menuQr', 'text', '二维码下载'],
     ['#qrHint', 'text', '扫码在手机上下载'],
+    ['#qrSaveText', 'text', '保存二维码'],
+    ['#qrSaveBtn', 'title', '保存二维码图片（PNG）'],
+    ['#qrShareText', 'text', '分享链接'],
+    ['#qrShareBtn', 'title', '调起系统分享（微信/QQ 等），不支持时复制链接'],
     ['#menuDelete', 'text', '删除'],
     ['#themeSelect', 'title', '主题'],
     ['#themeSelect option[value="auto"]', 'text', '跟随系统'],
@@ -4484,9 +4488,17 @@ function copyShareLink(items) {
     });
 }
 
-// 二维码下载：弹窗只显示二维码（手机扫码直达下载页）
+// 当前二维码弹窗内容（保存图片 / 系统分享用）
+var qrCurrentUrl = '';
+var qrCurrentCanvas = null;
+var qrCurrentName = '';
+
+// 二维码下载：弹窗显示二维码（手机扫码直达下载页）+ 保存图片 / 系统分享按钮
 function openQrModal(items, title) {
     var shareUrl = makeShareUrl(items);
+    qrCurrentUrl = shareUrl;
+    qrCurrentName = title || '';
+    qrCurrentCanvas = null;
     document.getElementById('qrTitle').textContent = t('二维码下载') + ': ' + title;
     var holder = document.getElementById('qrCanvasHolder');
     holder.innerHTML = '';
@@ -4494,11 +4506,57 @@ function openQrModal(items, title) {
     if (canvas) {
         canvas.className = 'qr-canvas';
         holder.appendChild(canvas);
+        qrCurrentCanvas = canvas;
         document.getElementById('qrHint').textContent = t('扫码在手机上下载');
     } else {
         document.getElementById('qrHint').textContent = t('内容过长，无法生成二维码');
     }
     document.getElementById('qrModal').classList.add('show');
+}
+
+// 保存二维码图片（PNG）：canvas 转 blob 走本地下载，PC/移动端一致
+function saveQrImage() {
+    if (!qrCurrentCanvas) {
+        showToast(t('内容过长，无法生成二维码'));
+        setTimeout(hideToast, 2000);
+        return;
+    }
+    var name = '分享二维码-' + (qrCurrentName || 'share').replace(/[\\/:*?"<>|]/g, '_') + '.png';
+    if (qrCurrentCanvas.toBlob) {
+        qrCurrentCanvas.toBlob(function(blob) {
+            if (blob) saveBlobAs(blob, name);
+        }, 'image/png');
+        return;
+    }
+    // 老内核回退：dataURL 直接下载
+    var link = document.createElement('a');
+    link.href = qrCurrentCanvas.toDataURL('image/png');
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// 系统分享（微信/QQ 等）：支持 Web Share API 的环境（移动端全线 +
+// PC 端 Chrome/Edge）调起系统分享面板；不支持的环境回退复制链接
+function shareQrLink() {
+    var url = qrCurrentUrl;
+    if (!url) return;
+    if (navigator.share) {
+        navigator.share({
+            title: qrCurrentName || document.title,
+            text: t('分享链接') + (qrCurrentName ? ': ' + qrCurrentName : ''),
+            url: url
+        }).catch(function() {});   // 用户取消分享属正常操作，静默忽略
+        return;
+    }
+    copyTextToClipboard(url, function() {
+        showToast(t('当前浏览器不支持系统分享，链接已复制'));
+        setTimeout(hideToast, 2000);
+    }, function() {
+        showToast(t('复制失败，请手动复制') + ': ' + url);
+        setTimeout(hideToast, 4000);
+    });
 }
 
 function closeQrModal() {
@@ -9830,7 +9888,6 @@ function runUploadTask(task, done) {
         // 读盘阶段无网络句柄：清空旧 xhr 引用与看门狗标记，防止误中止/误重试
         task.xhr = null;
         task._wdAbort = false;
-        task._slowSwitch = false;
         // 优先消费预读缓存：读盘/base64 已提前完成，槽位全程用于网络传输
         readTaskContent(st, task, function(base64Content, readErr) {
             if (st.cancelled) {
@@ -9915,12 +9972,10 @@ function runUploadTask(task, done) {
 
                     // 外部代理失败按代理熔断，并在失败通道之外换源重试；
                     // 404 已在 putBlobToGitHub 按代理累计（API 不支持不代表
-                    // raw 下载也不可用），不再计入下载熔断；-1 慢速换源是主动
-                    // 中止不是站点故障，同样不计
-                    if (task.chan === 'ext' && status !== 404 && status !== -1) extNoteFail(task._extBase);
+                    // raw 下载也不可用），不再计入下载熔断
+                    if (task.chan === 'ext' && status !== 404) extNoteFail(task._extBase);
                     // CF 只计传输层失败（0 连接级失败/超时、5xx 边缘错误）：
-                    // 4xx 说明请求已穿过 CF 到达 GitHub（通道本身好的），
-                    // -1 慢速换源是性能切换非故障，均不计入熔断
+                    // 4xx 说明请求已穿过 CF 到达 GitHub（通道本身好的），不计入熔断
                     if (task.chan === 'cf' && (status === 0 || status >= 500)) cfUlNoteFail();
                     if (attempt < UPLOAD_MAX_ATTEMPTS) {
                         task.chan = pickUploadChannel(task.blob.size, task.chan, true);
@@ -9928,13 +9983,13 @@ function runUploadTask(task, done) {
                         if (st.adaptive && st.limit > UPLOAD_LIMIT_MIN) {
                             st.limit--;
                         }
-                        var statusText = status === -1 ? '通道异常慢，已换源' : (status === 0 ? '网络连接中断/超时' : ('状态码 ' + status));
+                        var statusText = status === 0 ? '网络连接中断/超时' : ('状态码 ' + status);
                         setMsg('uploadMessage', '分片上传失败(' + statusText + ')，正在重试 (' + attempt + '/' + (UPLOAD_MAX_ATTEMPTS - 1) + '): ' + task.label, 'success');
                         setTimeout(tryOnce, 1000 * attempt);
                         return;
                     }
 
-                    var errMsg = status === -1 ? '各通道持续异常缓慢' : (status === 0 ? '网络连接中断，可能是文件过大或网络不稳定' : ('状态码: ' + status));
+                    var errMsg = status === 0 ? '网络连接中断，可能是文件过大或网络不稳定' : ('状态码: ' + status);
                     try {
                         var error = JSON.parse(responseText);
                         if (error.message) errMsg = error.message;
@@ -10125,40 +10180,24 @@ function sampleUploadSpeed() {
         uploadSpeedHist.ext.shift();
     }
     drawSpeedGraph();
-    // per-chunk speeds + 各通道单连接峰值（慢速换源判定基准）
-    if (!st._peaks) st._peaks = {};
+    // per-chunk speeds（分片详情面板速率显示）
     for (var key in st.activeTasks) {
         var t = st.activeTasks[key];
         var chunkSpeed = ((t.loadedBytes || 0) - (t.sampledBytes || 0)) / dt;
         t.sampledBytes = t.loadedBytes || 0;
-        t._lastChunkSpeed = chunkSpeed;
         t.speedText = chunkSpeed > 1024 ? formatSize(Math.round(chunkSpeed)) + '/s' : '';
-        var pk = t.chan || 'eo';
-        if ((t.loadedBytes || 0) > 262144) {
-            // 新高抬升，否则每秒轻微衰减让峰值随网络变差缓慢回落
-            st._peaks[pk] = chunkSpeed > (st._peaks[pk] || 0) ? chunkSpeed : (st._peaks[pk] || 0) * 0.995;
-        }
     }
     // 停滞看门狗：12 秒无任何上传进度即中止换源——部分外部代理对 POST
     // 只接不发（连接挂起不报错），在途槽位会被长期占住，表现为"分到了
     // 任务却迟迟不上传"；中止后按失败重试逻辑换代理/通道重传。
-    // 慢速换源：当前速率低于本通道峰值 30% 判定异常慢，中止后交上层换
-    // 通道重试（每任务最多 2 次 + 任务重试次数上限，不会死循环；
-    // <4MB 小分片与起步 6 秒内不判定——小文件速度低属正常）
+    // （"通道异常慢换源"已移除：慢的通道仍有产出，主动中止只会浪费已传流量
+    // 并干扰熔断计数；只有完全停滞才中止）
     for (var key2 in st.activeTasks) {
         var t2 = st.activeTasks[key2];
         if (!t2.xhr) continue;
         var lastProg = t2._lastProgAt || t2.startTime || now;
-        var stalled = now - lastProg > 12000;
-        var peak2 = st._peaks[t2.chan || 'eo'] || 0;
-        var el2 = (now - (t2.startTime || now)) / 1000;
-        var tooSlow = !stalled && peak2 > 0 && t2.blob.size >= 4194304 && el2 > 6 &&
-            (t2.loadedBytes || 0) >= 1048576 && (t2._slowSwitches || 0) < 2 &&
-            (t2._lastChunkSpeed || 0) < peak2 * 0.3;
-        if (stalled || tooSlow) {
+        if (now - lastProg > 12000) {
             t2._wdAbort = true;
-            t2._slowSwitch = tooSlow;
-            if (tooSlow) t2._slowSwitches = (t2._slowSwitches || 0) + 1;
             if (t2.chan === 'ext') extNoteFail(t2._extBase);
             try { t2.xhr.abort(); } catch (e) {}
             t2._lastProgAt = now;   // 避免每秒重复中止同一任务
@@ -10351,15 +10390,9 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
         onError(0, '');
     };
     xhr.onabort = function() {
-        // 停滞看门狗主动中止：按网络错误换源重试；用户停止上传时不重试。
-        // 慢速换源（_slowSwitch）跳过同通道内重试，直接交上层换通道
+        // 停滞看门狗主动中止：按网络错误换源重试；用户停止上传时不重试
         if (task && task._wdAbort) {
             task._wdAbort = false;
-            if (task._slowSwitch) {
-                // -1 = 慢速换源主动中止：通道只是慢不是故障，不计入熔断/代理失败
-                onError(-1, '');
-                return;
-            }
             if (retries > 0) {
                 setTimeout(retryInPlace, 800);
                 return;

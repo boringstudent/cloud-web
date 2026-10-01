@@ -374,6 +374,16 @@
                 <h2 id="qrTitle">二维码下载</h2>
                 <div id="qrCanvasHolder"></div>
                 <div id="qrHint">扫码在手机上下载</div>
+                <div class="qr-actions">
+                    <button type="button" id="qrSaveBtn" class="btn qr-action-btn qr-save" onclick="saveQrImage()" title="保存二维码图片（PNG）">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M8 8l4-4 4 4"/><path d="M6 11v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-8"/></svg>
+                        <span id="qrSaveText">保存二维码</span>
+                    </button>
+                    <button type="button" id="qrShareBtn" class="btn qr-action-btn qr-share" onclick="shareQrLink()" title="调起系统分享（微信/QQ 等），不支持时复制链接">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.7l6.8-4.4"/><path d="M8.6 13.3l6.8 4.4"/></svg>
+                        <span id="qrShareText">分享链接</span>
+                    </button>
+                </div>
             </div>
         </div>
 

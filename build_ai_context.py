@@ -89,7 +89,7 @@ DATAFLOW = {
         '通道：EO/CF 双通道按在途均衡+实测速率加权分配（15% 概率地板）；开始前探测 CF 写能力（仅 400/422 视为可写）',
         '传输无固定超时：大分片慢上行健康传输也会超 60s，固定超时会误判挂起致"状态码 0"反复重试——挂起仅由 sampleUploadSpeed 的 12 秒无进度看门狗判定中止换源',
         '通道按钮显示与有效态同步：CF 开关开但探测失败/已熔断时按钮加 chan-down 删除线样式（title 附原因）；弹窗/进度卡每次打开重刷，语言切换后重刷防静态 i18n 覆盖',
-        'CF 上传熔断（cfUlBroken）：探测可写不代表大 blob POST 能过——只计传输层失败（状态码 0/5xx；4xx 已穿通 CF 非通道故障、-1 慢速换源主动中止均不计），连续 3 次熔断回退 EO（toast 提示，单次成功清零计数），15 分钟后半开恢复（cfUlUsable 计数清零重新放行）；CF 已失败过时 putBlobToGitHub 跳过硬通道内原地重试（retries=0 立即交上层换源）',
+        'CF 上传熔断（cfUlBroken）：探测可写不代表大 blob POST 能过——只计传输层失败（状态码 0/5xx；4xx 已穿通 CF 非通道故障不计），连续 3 次熔断回退 EO（toast 提示，单次成功清零计数），15 分钟后半开恢复（cfUlUsable 计数清零重新放行）；CF 已失败过时 putBlobToGitHub 跳过硬通道内原地重试（retries=0 立即交上层换源）；上传"通道异常慢换源"已移除（只有 12 秒零进度停滞才中止换源）',
         '自适应并行：初始 3 上限 8；分片 <15s 升档 >45s 降档；每 2 次提交冲突降档，连续 8 个无冲突升档',
         '停止/失败无副作用：未提交 blob 为悬空对象，GitHub 自动回收，无需回退',
     ],
@@ -121,7 +121,7 @@ DATAFLOW = {
     ],
     'share': [
         'makeShareUrl：{v:1, items:[{p:路径,n:名称,t:类型,s:大小}], ts} JSON → b64url 编码 → {origin}/s/<b64url>，纯前端无服务端存储',
-        '复制外链=copyShareLink 直复制不弹窗（copyTextToClipboard+toast）；二维码=openQrModal 只显示二维码（qrMakeCanvas 本地生成）；右键菜单/批量栏（复制链接+二维码按钮）均可发起',
+        '复制外链=copyShareLink 直复制不弹窗（copyTextToClipboard+toast）；二维码=openQrModal 显示二维码（qrMakeCanvas 本地生成）+保存 PNG 按钮（saveQrImage canvas toBlob 下载）+系统分享按钮（shareQrLink 走 Web Share API 调起微信/QQ 等，不支持回退复制链接；PC/移动端通用）；右键菜单/批量栏（复制链接+二维码按钮）均可发起',
         'isSharePage（路径 /s/ 前缀）→ renderSharePage：b64url 解码还原清单，隐藏网盘 UI 展示无图标下载页（loadFileList 已守卫 isSharePage 防自动刷新冲突）；损坏链接显示错误提示',
         '分享页下载：访客无通道偏好，shareEnsureChannels 默认开启 EO/CF/外部三通道（仅内存态不写偏好，渲染与点击下载双重确保，EO/CF/多代理按钮显示同步刷新）；下载前先 fetchFileTree——单文件分片走 downloadMergedFile 合并还原、普通文件走 downloadFile 多通道 blob 保存（手机端不再变在线预览）；多文件/文件夹经 shareCollectZipModels 展开目录+归并分片后 downloadFolderZip 打包；卡片样式 share-* CSS 类明暗主题自适应（QR canvas 自带白底可扫）；页面标题=分享对象名（pageTitle 与 document.title 同步）',
         'QR 码前端零依赖生成（qrGenerate：byte 模式/级别 M/版本 1-40/8 掩码惩罚评估），不经服务端',
