@@ -10619,13 +10619,14 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载与服务检测
+    // 全部资源与请求同源，无需预取配置/凭据，直接首屏加载
+    // 服务状态不在页面加载时立即检测（每次刷新都全量探测 67 个代理太激进），
+    // 首次检测由 10 分钟倒计时或手动"重新检测"触发
     if (_isShare) {
         renderSharePage();
     } else {
         loadFileList();
     }
-    checkSvcStatus();
     initSearchBox();
 
     var dropZone = document.getElementById('dropZone');

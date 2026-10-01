@@ -144,12 +144,12 @@ const EXT_PROXY_CANDIDATES = [
   'ghfile.geekertao.top',
   'gh.monlor.com',
   'cdn.akaere.online',
-  'gh.xmly.dev',
+  // 'gh.xmly.dev'   // 应用户要求注释停用（2026-10-01）
   'js.jiangss.shop',
   'ghfast.top',
   'ghpxy.hwinzniej.top',
   'gh.catmak.name',
-  'github-proxy.memory-echoes.cn',
+  // 'github-proxy.memory-echoes.cn'   // 429 限流频繁，应用户要求注释停用（2026-10-01）
   'ghproxy.cxkpro.top',   // 曾停用，2026-10-01 实测可用，应用户要求重新启用
   'github.lsdfxdk.nyc.mn',
   'gh.996986.xyz',

@@ -1,9 +1,9 @@
 meta:
   schema: 1
-  generated_at: '2026-10-01T22:56:35'
-  git_commit: 12c3b9c839c16dfd2de20bf34bfc9021dda6dec1
-  git_commit_short: 12c3b9c
-  build_version: '1790866594'
+  generated_at: '2026-10-01T23:08:54'
+  git_commit: 64c5cd4c7b3f05a6af5f10ddadc9630806cd6e78
+  git_commit_short: 64c5cd4
+  build_version: '1790867333'
   generator: build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）
 project:
   name: cloud-web
@@ -17,8 +17,8 @@ project:
 files:
 - name: build_eo.py
   role: EO 一体化构建脚本（后端模板+前端资源烘焙→eo.js）
-  bytes: 54769
-  sha1: 756f86bb
+  bytes: 54890
+  sha1: ee7a237f
   lines: 1300
 - name: build_ai_context.py
   role: 本生成器：重建 AI-CONTEXT.yaml
@@ -28,7 +28,7 @@ files:
 - name: AI-CONTEXT.yaml
   role: AI 专用项目理解文件（本生成器产物，勿手改）
   bytes: 46210
-  sha1: 25b81400
+  sha1: ddc32d66
 - name: template.html
   role: 唯一 HTML 模板
   bytes: 26689
@@ -41,9 +41,9 @@ files:
   lines: 393
 - name: static/app.js
   role: 全部前端逻辑
-  bytes: 466745
-  sha1: 9515ec85
-  lines: 10772
+  bytes: 466891
+  sha1: f7422957
+  lines: 10773
 - name: static/style.css
   role: 全部样式
   bytes: 61155
@@ -61,13 +61,13 @@ files:
   lines: 215
 - name: README.md
   role: 人类用功能/算法说明
-  bytes: 48999
-  sha1: 5f288ce2
+  bytes: 49108
+  sha1: f0c4786c
   lines: 207
 - name: test_eo_smoke.js
   role: eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）
-  bytes: 9020
-  sha1: 3d8a0ab9
+  bytes: 9113
+  sha1: '51206063'
   lines: 139
 - name: test_eo_server.js
   role: eo.js 本地模拟服务器
@@ -85,9 +85,9 @@ files:
   lines: 6
 - name: eo.js
   role: EO 部署产物（gitignore，含 key 属服务端机密）
-  bytes: 778404
-  sha1: bcc8d04d
-  lines: 14764
+  bytes: 778670
+  sha1: 58a414ed
+  lines: 14765
   gitignored: true
 - name: .eo-key
   role: 本地 GitHub key（gitignore）
