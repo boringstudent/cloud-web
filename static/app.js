@@ -1649,7 +1649,7 @@ var I18N_BINDINGS = [
     ['#qrHint', 'text', '扫码在手机上下载'],
     ['#qrSaveText', 'text', '保存二维码'],
     ['#qrSaveBtn', 'title', '保存二维码图片（PNG）'],
-    ['#qrShareText', 'text', '分享链接'],
+    ['#qrShareText', 'text', '分享'],
     ['#qrShareBtn', 'title', '调起系统分享（微信/QQ 等），不支持时复制链接'],
     ['#menuDelete', 'text', '删除'],
     ['#themeSelect', 'title', '主题'],
@@ -4511,6 +4511,9 @@ function openQrModal(items, title) {
     } else {
         document.getElementById('qrHint').textContent = t('内容过长，无法生成二维码');
     }
+    // 系统分享按钮仅移动端显示（PC 无微信/QQ 等分享目标，桌面端隐藏）
+    var isMobile = /Android|webOS|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(navigator.userAgent);
+    document.getElementById('qrShareBtn').style.display = isMobile ? '' : 'none';
     document.getElementById('qrModal').classList.add('show');
 }
 
@@ -4545,7 +4548,7 @@ function shareQrLink() {
     if (navigator.share) {
         navigator.share({
             title: qrCurrentName || document.title,
-            text: t('分享链接') + (qrCurrentName ? ': ' + qrCurrentName : ''),
+            text: t('分享') + (qrCurrentName ? ': ' + qrCurrentName : ''),
             url: url
         }).catch(function() {});   // 用户取消分享属正常操作，静默忽略
         return;
