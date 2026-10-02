@@ -12,6 +12,10 @@ const Config = {
 
 const whiteList = [] // 白名单，路径中包含白名单字符的请求才会通过，例如 ['/username/']
 
+// 用户数据仓库（与 EO 侧默认一致 boringstudent/cloud-user）：写操作鉴权读取
+// user.json、以及拒绝代理该仓库都基于它；可用 USER_REPO 环境变量覆盖
+const DEFAULT_USER_REPO = 'boringstudent/cloud-user'
+
 // ============================================================
 // ========== 服务端 GitHub Token 注入（写操作鉴权） ==========
 // ============================================================
@@ -37,9 +41,9 @@ function injectGithubToken(reqHdrNew, urlStr, env) {
 // ============================================================
 // 写操作（上传/删除等）需要登录用户凭据：请求头 X-Auth-User / X-Auth-Pass
 // 携带明文密码（HTTPS），服务端读取 user.json 做与 EO 完全相同的加盐
-// sha512(salt+明文) 校验。user.json 位于 USER_REPO 环境变量指定的仓库，
-// 由本函数用 GITHUB_TOKEN 读取；未配置 USER_REPO 或 token 无该仓库读权限
-// 时，写操作一律 401（默认安全，绝不匿名放行写）。
+// sha512(salt+明文) 校验。user.json 位于用户数据仓库（USER_REPO，默认
+// boringstudent/cloud-user），由本函数用 GITHUB_TOKEN 读取；token 无该仓库
+// 读权限时，写操作一律 401（默认安全，绝不匿名放行写）。
 
 // 转义正则元字符，防止仓库名中的特殊字符破坏匹配
 function regexEscape(s) {
@@ -66,9 +70,9 @@ let cfUsersCache = { at: 0, users: null };
 const CF_USERS_CACHE_TTL = 60 * 1000;
 async function readUsersFile(env) {
 	const tk = env && (env.GITHUB_TOKEN || env.TOKEN);
-	const repo = env && env.USER_REPO;
+	const repo = (env && env.USER_REPO) || DEFAULT_USER_REPO;
 	const branch = (env && env.BRANCH) || 'main';
-	if (!tk || !repo) return null;
+	if (!tk) return null;
 	if (cfUsersCache.users && Date.now() - cfUsersCache.at < CF_USERS_CACHE_TTL) {
 		return cfUsersCache.users;
 	}
@@ -100,7 +104,7 @@ async function verifyLoginAuth(env, reqHeaders) {
 	}
 	const users = await readUsersFile(env);
 	if (!users) {
-		return { ok: false, status: 401, error: 'Auth unavailable (USER_REPO not configured or token lacks read scope)' };
+		return { ok: false, status: 401, error: 'Auth unavailable (GITHUB_TOKEN lacks read scope for user repo)' };
 	}
 	const account = users[username];
 	if (!account || !(await verifyPassword(account, password)).ok) {
@@ -280,7 +284,7 @@ async function httpHandler(req, pathname, env) {
 
 	// 拒绝代理用户数据仓库（防止匿名读取 user.json 等敏感数据）；
 	// user.json 只由本函数服务端校验时读取，永不透传给客户端
-	const userRepo = env && env.USER_REPO;
+	const userRepo = (env && env.USER_REPO) || DEFAULT_USER_REPO;
 	if (userRepo && new RegExp('api\\.github\\.com/repos/' + regexEscape(userRepo) + '(?:/|$)', 'i').test(urlStr)) {
 		return new Response(JSON.stringify({ error: 'forbidden repo' }), {
 			status: 403,

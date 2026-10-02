@@ -1,9 +1,9 @@
 meta:
   schema: 1
-  generated_at: '2026-10-02T13:06:24'
-  git_commit: 714992178ac8ac2937d854e698d0beaf58f73986
-  git_commit_short: '7149921'
-  build_version: '1790917583'
+  generated_at: '2026-10-02T13:10:05'
+  git_commit: 6b60f4b8cc63a9d1cdf04a88f19c14a385d16829
+  git_commit_short: 6b60f4b
+  build_version: '1790917804'
   generator: build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）
 project:
   name: cloud-web
@@ -22,13 +22,13 @@ files:
   lines: 1416
 - name: build_ai_context.py
   role: 本生成器：重建 AI-CONTEXT.yaml
-  bytes: 34996
-  sha1: '54864727'
+  bytes: 35022
+  sha1: 22b0e22a
   lines: 474
 - name: AI-CONTEXT.yaml
   role: AI 专用项目理解文件（本生成器产物，勿手改）
-  bytes: 48010
-  sha1: 2cba7523
+  bytes: 48685
+  sha1: '90843875'
 - name: template.html
   role: 唯一 HTML 模板
   bytes: 28188
@@ -51,9 +51,9 @@ files:
   lines: 2610
 - name: cf-worker.js
   role: CF 加速通道源码
-  bytes: 26511
-  sha1: edd69fd8
-  lines: 618
+  bytes: 26795
+  sha1: 4182bfe0
+  lines: 622
 - name: API.md
   role: 人类用接口文档
   bytes: 11684
@@ -61,9 +61,9 @@ files:
   lines: 217
 - name: README.md
   role: 人类用功能/算法说明
-  bytes: 50738
-  sha1: 50462ad0
-  lines: 210
+  bytes: 50891
+  sha1: d1c7c3d3
+  lines: 211
 - name: test_eo_smoke.js
   role: eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）
   bytes: 11325
@@ -86,7 +86,7 @@ files:
 - name: eo.js
   role: EO 部署产物（gitignore，含 key 属服务端机密）
   bytes: 793848
-  sha1: 657ff442
+  sha1: 0fdc7a78
   lines: 15024
   gitignored: true
 - name: .eo-key
@@ -1208,10 +1208,10 @@ cf_worker:
   - PROXY_RES 12 条正则覆盖 github.com/gist/codeload/githubusercontent 全子域/githubassets/S3 等
   - '环境变量 GITHUB_TOKEN（或 TOKEN）配置后，转发 api.github.com 时服务端注入 Authorization: Bearer（客户端永不接触）；成功时响应带 x-cf-auth-injected: 1 标记头（据此区分未配置与
     key 无效）'
-  - 写操作鉴权（与 EO 同口径）：api.github.com 的非 GET/HEAD 请求（上传/删除等）必须携带 X-Auth-User / X-Auth-Pass（明文密码），服务端用 GITHUB_TOKEN 读 USER_REPO
-    仓库 user.json 做加盐 sha512(salt+明文) 校验，未通过一律 401（默认安全，绝不匿名放行写）；明文密码头在转发前删除，不泄漏给 GitHub；未配置 USER_REPO 或 token 无该仓库读权限时写操作一律
-    401
-  - 环境变量 USER_REPO（用户数据仓库，与 EO 一致）+ BRANCH（默认 main）；拒绝代理 USER_REPO 仓库请求（403），user.json 永不透传给客户端；user.json 实例级 60s 缓存
+  - 写操作鉴权（与 EO 同口径）：api.github.com 的非 GET/HEAD 请求（上传/删除等）必须携带 X-Auth-User / X-Auth-Pass（明文密码），服务端用 GITHUB_TOKEN 读用户数据仓库 user.json
+    做加盐 sha512(salt+明文) 校验，未通过一律 401（默认安全，绝不匿名放行写）；明文密码头在转发前删除，不泄漏给 GitHub；token 无用户仓库读权限时写操作一律 401
+  - USER_REPO（用户数据仓库）默认 boringstudent/cloud-user（与 EO 一致，可环境变量覆盖）+ BRANCH（默认 main）；拒绝代理用户数据仓库请求（403），user.json 永不透传给客户端；user.json
+    实例级 60s 缓存
   - GET /ip 只回纯文本出口 IP（优先 cloudflare.com/cdn-cgi/trace，回退 api.ip.sb/ip）；归属地由 EO /api/cf-ip 另行查询
   - CORS：OPTIONS 预检回显浏览器请求头；转发时删 referer/host；accept-language zh-CN→zh-SG
   - whiteList 为空即全放行；Config.jsdelivr=0 默认关闭 jsDelivr 重写

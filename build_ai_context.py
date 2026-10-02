@@ -282,8 +282,8 @@ CF_WORKER = {
     'features': [
         'PROXY_RES 12 条正则覆盖 github.com/gist/codeload/githubusercontent 全子域/githubassets/S3 等',
         '环境变量 GITHUB_TOKEN（或 TOKEN）配置后，转发 api.github.com 时服务端注入 Authorization: Bearer（客户端永不接触）；成功时响应带 x-cf-auth-injected: 1 标记头（据此区分未配置与 key 无效）',
-        '写操作鉴权（与 EO 同口径）：api.github.com 的非 GET/HEAD 请求（上传/删除等）必须携带 X-Auth-User / X-Auth-Pass（明文密码），服务端用 GITHUB_TOKEN 读 USER_REPO 仓库 user.json 做加盐 sha512(salt+明文) 校验，未通过一律 401（默认安全，绝不匿名放行写）；明文密码头在转发前删除，不泄漏给 GitHub；未配置 USER_REPO 或 token 无该仓库读权限时写操作一律 401',
-        '环境变量 USER_REPO（用户数据仓库，与 EO 一致）+ BRANCH（默认 main）；拒绝代理 USER_REPO 仓库请求（403），user.json 永不透传给客户端；user.json 实例级 60s 缓存',
+        '写操作鉴权（与 EO 同口径）：api.github.com 的非 GET/HEAD 请求（上传/删除等）必须携带 X-Auth-User / X-Auth-Pass（明文密码），服务端用 GITHUB_TOKEN 读用户数据仓库 user.json 做加盐 sha512(salt+明文) 校验，未通过一律 401（默认安全，绝不匿名放行写）；明文密码头在转发前删除，不泄漏给 GitHub；token 无用户仓库读权限时写操作一律 401',
+        'USER_REPO（用户数据仓库）默认 boringstudent/cloud-user（与 EO 一致，可环境变量覆盖）+ BRANCH（默认 main）；拒绝代理用户数据仓库请求（403），user.json 永不透传给客户端；user.json 实例级 60s 缓存',
         'GET /ip 只回纯文本出口 IP（优先 cloudflare.com/cdn-cgi/trace，回退 api.ip.sb/ip）；归属地由 EO /api/cf-ip 另行查询',
         'CORS：OPTIONS 预检回显浏览器请求头；转发时删 referer/host；accept-language zh-CN→zh-SG',
         'whiteList 为空即全放行；Config.jsdelivr=0 默认关闭 jsDelivr 重写',
