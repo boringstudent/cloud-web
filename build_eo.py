@@ -65,11 +65,15 @@ const REPO = '__USER_REPO__';   // GitHub 用户数据仓库（禁止通过下�
 const BRANCH = '__BRANCH__';
 const FILE_PATH = 'user.json';
 const GITHUB_KEY = '__GITHUB_KEY__';
-// user.json 格式：
+// user.json 格式（v3 加盐存储）：
 // {
-//   "boring_student": { "password": "<sha512>", "role": "admin", "avatar": "https://..." },
-//   "fx":             { "password": "<sha512>", "role": "user" }
+//   "boring_student": { "password": "<sha512(salt+明文)>", "salt": "<32位hex>", "role": "admin", "avatar": "https://..." },
+//   "fx":             { "password": "<sha512(salt+明文)>", "salt": "<32位hex>", "role": "user" }
 // }
+// 客户端保存明文密码并随请求发送（HTTPS + 同源 POST），服务端 sha512(salt+明文)
+// 后与存储值比对——存储哈希本身不再是登录凭据，泄漏哈希不等于能登录。
+// 旧格式兼容：无 salt 字段的记录视为 sha512(明文) 无盐哈希，登录校验通过后
+// 自动升级为加盐存储。
 // avatar 为可选头像 URL（与密码同一记录），登录时随 /api/login 响应下发
 
 // 允许经本函数代理访问 GitHub 的存储仓库白名单（owner/repo，小写比较）。
@@ -263,14 +267,12 @@ async function handleRequest(request) {
     }
 
     // ---------- 2. 登录（公开，实时校验） ----------
-    // password 必须是前端计算好的 SHA-512 哈希，直接与存储哈希比对；
+    // password 为明文密码（HTTPS + 同源 POST 请求体），服务端 sha512(salt+明文)
+    // 后与存储值比对——存储哈希本身不是登录凭据；
     // 成功响应只含 role，不下发任何 key / key 哈希 / 密码哈希
     if (path === '/api/login') {
       const { username, password } = await parseBody(request);
       if (!username || !password) return json({ error: 'Missing username or password' }, 400);
-      if (!isSha512Hex(password)) {
-        return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
-      }
 
       // 登录失败限流（实例级滑动窗口）：同一 客户端IP+用户名 10 分钟内
       // 最多 10 次失败，超出 429——挡住单实例内的在线爆破（边缘实例重建即重置）
@@ -281,11 +283,30 @@ async function handleRequest(request) {
 
       const { users } = await readUsersFile(true);
       const account = users[username];
-      if (!account || account.password !== password) {
+      const ver = account ? await verifyPassword(account, password) : { ok: false };
+      if (!account || !ver.ok) {
         noteLoginFail(failKey);
         return json({ error: 'Invalid credentials' }, 401);
       }
       loginFails.delete(failKey);
+
+      // 旧无盐哈希记录：登录校验通过后自动升级为加盐存储（尽力而为，失败不影响登录）
+      if (ver.legacy) {
+        try {
+          const salt = newSalt();
+          const hashed = await saltedHash(salt, password);
+          const legacyHash = account.password;
+          await mutateUsers(`upgrade password salt: ${username}`, users => {
+            const acc = users[username];
+            if (acc && !acc.salt && acc.password === legacyHash) {
+              acc.salt = salt;
+              acc.password = hashed;
+            }
+            return { success: true, username, upgraded: true };
+          });
+        } catch (e) {}
+      }
+
       return json({
         success: true,
         username,
@@ -295,24 +316,24 @@ async function handleRequest(request) {
     }
 
     // ---------- 3. 用户自助修改密码 ----------
-    // password / new_password 均为前端计算好的 SHA-512 哈希；
-    // 新密码强度规则（>8 位且含大小写字母与数字）由前端校验，
-    // 因为服务端收到的已经是哈希，无法还原明文做强度检查
+    // password / new_password 均为明文密码；新密码强度规则（>8 位且含大小写字母
+    // 与数字）服务端收到明文后重新校验（前端同样校验，双保险）
     if (path === '/api/change-password') {
       const { username, password, new_password } = await parseBody(request);
       if (!username || !password || !new_password) {
         return json({ error: 'Missing username / password / new_password' }, 400);
       }
-      if (!isSha512Hex(password) || !isSha512Hex(new_password)) {
-        return json({ error: 'password / new_password must be SHA-512 hex strings (hashed by client)' }, 400);
-      }
+      const weak = passwordStrengthError(new_password);
+      if (weak) return json({ error: weak }, 400);
 
-      const result = await mutateUsers(`change password: ${username}`, users => {
+      const result = await mutateUsers(`change password: ${username}`, async users => {
         const account = users[username];
-        if (!account || account.password !== password) {
+        if (!account || !(await verifyPassword(account, password)).ok) {
           throw new ApiError(401, 'Invalid credentials');
         }
-        account.password = new_password;   // 只改这一个字段
+        const salt = newSalt();
+        account.salt = salt;
+        account.password = await saltedHash(salt, new_password);   // 只改这两个字段
         return { success: true, username };
       });
       return json(result);
@@ -326,18 +347,15 @@ async function handleRequest(request) {
       if (!username || !password) {
         return json({ error: 'Missing username or password' }, 400);
       }
-      if (!isSha512Hex(password)) {
-        return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
-      }
       const av = (avatar === undefined || avatar === null) ? '' : String(avatar).trim();
       if (av.length > 300) return json({ error: 'avatar URL too long (max 300)' }, 400);
       if (av && !/^https?:\/\//i.test(av)) {
         return json({ error: 'avatar must be an http(s) URL' }, 400);
       }
 
-      const result = await mutateUsers(`change avatar: ${username}`, users => {
+      const result = await mutateUsers(`change avatar: ${username}`, async users => {
         const account = users[username];
-        if (!account || account.password !== password) {
+        if (!account || !(await verifyPassword(account, password)).ok) {
           throw new ApiError(401, 'Invalid credentials');
         }
         if (av) account.avatar = av;         // 只改这一个字段
@@ -353,13 +371,10 @@ async function handleRequest(request) {
       if (!username || !password) {
         return json({ error: 'Missing username or password' }, 400);
       }
-      if (!isSha512Hex(password)) {
-        return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
-      }
 
-      const result = await mutateUsers(`delete account: ${username}`, users => {
+      const result = await mutateUsers(`delete account: ${username}`, async users => {
         const account = users[username];
-        if (!account || account.password !== password) {
+        if (!account || !(await verifyPassword(account, password)).ok) {
           throw new ApiError(401, 'Invalid credentials');
         }
         delete users[username];            // 只删这一个键
@@ -386,23 +401,23 @@ async function handleRequest(request) {
         return json({ users: masked });
       }
 
-      // 添加用户（password 为前端算好的 SHA-512 哈希，直接存储；avatar 可选）
+      // 添加用户（password 为明文，服务端生成盐并 sha512(salt+明文) 后存储；avatar 可选）
       if (path === '/api/users' && request.method === 'POST') {
         const { username, password, role, avatar } = body;
         if (!username || !password) return json({ error: 'Missing username or password' }, 400);
-        if (!isSha512Hex(password)) {
-          return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
-        }
+        const weak = passwordStrengthError(password);
+        if (weak) return json({ error: weak }, 400);
         const newRole = (role === 'admin') ? 'admin' : 'user';
         const newAvatar = avatar ? String(avatar).trim() : '';
         if (newAvatar && (newAvatar.length > 300 || !/^https?:\/\//i.test(newAvatar))) {
           return json({ error: 'avatar must be an http(s) URL (max 300 chars)' }, 400);
         }
-        const result = await mutateUsers(`add user: ${username} (${newRole})`, users => {
+        const result = await mutateUsers(`add user: ${username} (${newRole})`, async users => {
           if (users[username]) throw new ApiError(409, 'User already exists');
-          users[username] = newAvatar
-            ? { password, role: newRole, avatar: newAvatar }   // 只加这一个键
-            : { password, role: newRole };
+          const salt = newSalt();
+          const record = { password: await saltedHash(salt, password), salt, role: newRole };
+          if (newAvatar) record.avatar = newAvatar;   // 只加这一个键
+          users[username] = record;
           return { success: true, username, role: newRole };
         });
         return json(result);
@@ -415,8 +430,9 @@ async function handleRequest(request) {
       if (request.method === 'PUT' || request.method === 'PATCH') {
         const { password, role, avatar } = body;
         if (!password && !role && avatar === undefined) return json({ error: 'Nothing to update (password/role/avatar)' }, 400);
-        if (password && !isSha512Hex(password)) {
-          return json({ error: 'password must be a SHA-512 hex string (hashed by client)' }, 400);
+        if (password) {
+          const weak = passwordStrengthError(password);
+          if (weak) return json({ error: weak }, 400);
         }
         if (avatar !== undefined) {
           const av = String(avatar || '').trim();
@@ -424,9 +440,13 @@ async function handleRequest(request) {
             return json({ error: 'avatar must be an http(s) URL (max 300 chars)' }, 400);
           }
         }
-        const result = await mutateUsers(`update user: ${target}`, users => {
+        const result = await mutateUsers(`update user: ${target}`, async users => {
           if (!users[target]) throw new ApiError(404, 'User not found');
-          if (password) users[target].password = password;                 // 只改密码
+          if (password) {                                                   // 只改密码
+            const salt = newSalt();
+            users[target].salt = salt;
+            users[target].password = await saltedHash(salt, password);
+          }
           if (role) users[target].role = (role === 'admin') ? 'admin' : 'user'; // 只改角色
           if (avatar !== undefined) {
             const av = String(avatar || '').trim();
@@ -461,14 +481,14 @@ async function handleRequest(request) {
         endpoints: [
           'GET/POST /api/hash?type=password|key&value=xxx',
           'GET/HEAD /api/my-ip         (服务器出口 IP 信息；HEAD 用于 RTT 测量)',
-          'GET/POST /api/login?username=xxx&password=<sha512>',
-          'POST   /api/change-password  {username, password:<sha512>, new_password:<sha512>}',
-          'POST   /api/change-avatar    {username, password:<sha512>, avatar}',
-          'POST   /api/delete-account   {username, password:<sha512>}',
-          'GET    /api/users            (admin, admin_pass:<sha512>)',
-          'POST   /api/users            {admin_user, admin_pass:<sha512>, username, password:<sha512>, role, avatar?}',
-          'PUT    /api/users/:username  {admin_user, admin_pass:<sha512>, password?:<sha512>, role?, avatar?}',
-          'DELETE /api/users/:username  {admin_user, admin_pass:<sha512>}',
+          'GET/POST /api/login?username=xxx&password=<明文>',
+          'POST   /api/change-password  {username, password:<明文>, new_password:<明文>}',
+          'POST   /api/change-avatar    {username, password:<明文>, avatar}',
+          'POST   /api/delete-account   {username, password:<明文>}',
+          'GET    /api/users            (admin, admin_pass:<明文>)',
+          'POST   /api/users            {admin_user, admin_pass:<明文>, username, password:<明文>, role, avatar?}',
+          'PUT    /api/users/:username  {admin_user, admin_pass:<明文>, password?:<明文>, role?, avatar?}',
+          'DELETE /api/users/:username  {admin_user, admin_pass:<明文>}',
           'GET    /api/bg               (页面背景图中转)',
           '*      /api.github.com/<path>           (GitHub REST API 代理，限白名单仓库)',
           '*      /raw.githubusercontent.com/<path> (raw 下载中转，限白名单仓库)',
@@ -633,7 +653,7 @@ async function handleGithubProxy(request, url) {
     return json({ error: 'Repo not allowed: ' + owner + '/' + repo }, 403);
   }
 
-  // 写操作需要登录用户凭据（密码 SHA-512 哈希，与 /api/login 同一校验口径）
+  // 写操作需要登录用户凭据（明文密码，与 /api/login 同一加盐校验口径）
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     const auth = await requireLogin(request);
     if (!auth.ok) return json({ error: auth.error }, auth.status);
@@ -694,19 +714,16 @@ class ApiError extends Error {
 }
 
 // ==================== 权限校验 ====================
-// 代理写操作：请求头 X-Auth-User / X-Auth-Pass（密码 SHA-512 哈希）
+// 代理写操作：请求头 X-Auth-User / X-Auth-Pass（明文密码，服务端加盐校验）
 async function requireLogin(request) {
   const username = request.headers.get('X-Auth-User') || '';
   const password = request.headers.get('X-Auth-Pass') || '';
   if (!username || !password) {
     return { ok: false, status: 401, error: 'Login required (X-Auth-User / X-Auth-Pass)' };
   }
-  if (!isSha512Hex(password)) {
-    return { ok: false, status: 400, error: 'X-Auth-Pass must be a SHA-512 hex string (hashed by client)' };
-  }
   const { users } = await readUsersFile();
   const account = users[username];
-  if (!account || account.password !== password) {
+  if (!account || !(await verifyPassword(account, password)).ok) {
     return { ok: false, status: 401, error: 'Invalid credentials' };
   }
   return { ok: true, username, role: account.role || 'user' };
@@ -715,20 +732,16 @@ async function requireLogin(request) {
 // GET 从 query 读取，其余方法从 body 读取：{ admin_user, admin_pass }；
 // 也接受 X-Admin-User / X-Admin-Pass 请求头（优先）——凭据放 URL query 会留在
 // 浏览器历史与访问日志里，前端列表请求已改用请求头形式，query 仅作向后兼容
-// admin_pass 必须是前端计算好的 SHA-512 哈希
+// admin_pass 为明文密码（服务端加盐校验）
 async function requireAdmin(body, request) {
   const admin_user = body.admin_user || (request && request.headers.get('X-Admin-User')) || '';
   const admin_pass = body.admin_pass || (request && request.headers.get('X-Admin-Pass')) || '';
   if (!admin_user || !admin_pass) {
     return { ok: false, status: 401, error: 'Admin auth required (admin_user / admin_pass)' };
   }
-  if (!isSha512Hex(admin_pass)) {
-    return { ok: false, status: 400, error: 'admin_pass must be a SHA-512 hex string (hashed by client)' };
-  }
   const { users } = await readUsersFile();
   const account = users[admin_user];
-  if (!account) return { ok: false, status: 401, error: 'Invalid admin credentials' };
-  if (account.password !== admin_pass) {
+  if (!account || !(await verifyPassword(account, admin_pass)).ok) {
     return { ok: false, status: 401, error: 'Invalid admin credentials' };
   }
   if ((account.role || 'user') !== 'admin') {
@@ -1017,6 +1030,43 @@ async function sha512(text) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// ==================== 密码加盐（v3） ====================
+// 存储：salt（16 字节随机数，32 位 hex）+ password = sha512(salt + 明文)。
+// 客户端发送明文密码（HTTPS + 同源），服务端实时计算比对——存储哈希泄漏
+// 不等于能登录（哈希不再是凭据），且彩虹表/撞库因随机盐而失效。
+
+// 生成 16 字节随机盐（32 位 hex）
+function newSalt() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function saltedHash(salt, password) {
+  return sha512(String(salt) + String(password));
+}
+
+// 校验明文密码：有盐记录按 sha512(salt+明文) 比对；
+// 旧无盐记录（v2：password = sha512(明文)）兼容比对并标记 legacy 供登录时升级
+async function verifyPassword(account, plain) {
+  if (!account || typeof account.password !== 'string') return { ok: false, legacy: false };
+  if (account.salt) {
+    return { ok: (await saltedHash(account.salt, plain)) === account.password, legacy: false };
+  }
+  const ok = isSha512Hex(account.password) && (await sha512(plain)) === account.password;
+  return { ok, legacy: ok };
+}
+
+// 新密码强度规则（服务端拿到明文后校验，与前端 validateNewPassword 同口径）
+function passwordStrengthError(p) {
+  const s = String(p || '');
+  if (s.length <= 8) return 'Password must be longer than 8 characters';
+  if (!/[a-z]/.test(s)) return 'Password must contain lowercase letters (a-z)';
+  if (!/[A-Z]/.test(s)) return 'Password must contain uppercase letters (A-Z)';
+  if (!/[0-9]/.test(s)) return 'Password must contain digits (0-9)';
+  return null;
+}
+
 async function parseBody(request) {
   if (request.method === 'GET') {
     const out = {};
@@ -1062,7 +1112,7 @@ async function mutateUsers(message, mutate) {
   const api = `https://api.github.com/repos/${REPO}/contents/${FILE_PATH}`;
   for (let attempt = 0; attempt < 3; attempt++) {
     const { users, sha } = await readUsersFile(true);
-    const result = mutate(users);
+    const result = await mutate(users);   // mutate 可为 async（密码加盐/校验需要 await 哈希）
     const put = await fetch(api, {
       method: 'PUT',
       headers: ghHeaders(),

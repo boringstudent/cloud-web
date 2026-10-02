@@ -83,8 +83,8 @@ async function call(path, opts) {
   // 8. 代理写操作缺凭据 -> 401（不触网）
   r = await call('/api.github.com/repos/boringstudent/cloud-storage/contents/a.txt', { method: 'PUT' });
   check('代理写操作缺凭据 -> 401', r.status === 401);
-  r = await call('/api.github.com/repos/boringstudent/cloud-storage/contents/a.txt', { method: 'PUT', headers: { 'X-Auth-User': 'x', 'X-Auth-Pass': 'nothex' } });
-  check('代理写操作非法哈希 -> 400', r.status === 400);
+  // 加盐模型下 X-Auth-Pass 为明文密码，不再做 128hex 格式预检（错误密码统一 401，需触网不测）
+  check('代理写操作凭据不再做哈希格式预检', !fs.readFileSync(__dirname + '/eo.js', 'utf8').includes('X-Auth-Pass must be a SHA-512 hex'));
 
   // 8.5 外部上传已整体移除：取 key 接口不存在（未知 API -> 404）
   r = await call('/api/gitkey');
@@ -130,14 +130,16 @@ async function call(path, opts) {
   check('未知 /api/* -> JSON 404', r.status === 404 && (r.headers.get('Content-Type') || '').includes('application/json'));
   r = await call('/api/login');
   check('登录缺参数 -> 400', r.status === 400);
-  r = await call('/api/login?username=a&password=plain');
-  check('登录明文密码 -> 400', r.status === 400);
 
-  // 11. 登录支持 POST JSON 请求体（凭据不再走 URL query）
+  // 11. 登录支持 POST JSON 请求体（凭据不再走 URL query）；明文密码直发，
+  // 服务端 sha512(salt+明文) 加盐比对——存储哈希不再是登录凭据
   r = await call('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
   check('POST 登录缺参数 -> 400', r.status === 400);
-  r = await call('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'a', password: 'plain' }) });
-  check('POST 登录明文密码 -> 400', r.status === 400);
+  check('eo.js 服务端加盐哈希存储', eoSrc.includes('function newSalt') && eoSrc.includes('saltedHash') && eoSrc.includes('verifyPassword') && eoSrc.includes('account.salt'));
+  check('eo.js 不再要求客户端算哈希', !eoSrc.includes('hashed by client') && !eoSrc.includes('must be a SHA-512 hex string'));
+  check('eo.js 服务端校验新密码强度', eoSrc.includes('passwordStrengthError'));
+  check('app.js 登录发送明文（服务端加盐比对）', appJs.includes("apiSendJson('POST', API_BASE + '/api/login', { username: username, password: password }") && !appJs.includes('sha512Hex') && !appJs.includes('loginWithHash'));
+  check('app.js 本地保存明文凭据（v3）', appJs.includes('v: 3, u: username, p: password') && appJs.includes('v === 3 && obj.u && obj.p'));
 
   // 12. 安全加固：登录限流 / 探测限流 / 管理员请求头凭据 / CORS 放行
   check('eo.js 登录失败限流', eoSrc.includes('function loginLimited') && eoSrc.includes('Too many login attempts') && eoSrc.includes('noteLoginFail'));

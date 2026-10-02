@@ -9,11 +9,11 @@
 | Base URL | 当前边缘函数绑定的域名（页面与 API 同源） |
 | 请求方式 | GET（query 传参）或 POST/PUT/DELETE（JSON body） |
 | 返回格式 | API 统一返回 JSON，支持 CORS 跨域 |
-| 密码传输 | **只接受前端计算好的 SHA-512 哈希（128 位十六进制），明文一律不传输**，传非哈希值返回 400 |
-| 密码存储 | 用户数据存于 GitHub 私有仓库 `user.json`，仅存 SHA-512 哈希，不可逆 |
+| 密码传输 | 客户端本地保存明文密码并随请求发送（HTTPS + 同源 POST 请求体 / 自定义请求头），**不做前端哈希** |
+| 密码存储 | 用户数据存于 GitHub 私有仓库 `user.json`，每条记录存 16 字节随机盐 `salt` + `password = SHA-512(salt + 明文)`，**存储哈希本身不是登录凭据**，泄漏哈希无法直接登录，且彩虹表/撞库因随机盐失效；旧无盐记录（`password = SHA-512(明文)`）兼容校验，登录成功后自动升级为加盐存储 |
 | 密钥安全 | **GitHub key 只保存在边缘函数内，永不下发**；所有 GitHub 读写、下载中转均由函数在服务端注入 key 代理完成，客户端无任何后端凭据 |
 | 响应安全 | 所有接口均不返回密码哈希；用户列表中的密码字段脱敏为 `***`；用户数据仓库被代理白名单永久拒绝（403），任何后端数据无法经本函数泄漏到用户端 |
-| 密码规则 | 长度 > 8，必须含大小写字母和数字（由前端校验；服务端只收到哈希，无法校验强度） |
+| 密码规则 | 长度 > 8，必须含大小写字母和数字（前端与服务端双重校验，服务端收到明文后重新检查） |
 | 存储读写 | Contents API 实时读写；写操作仅变更目标字段，409 冲突自动重读重试（最多 3 次）；鉴权读有 60 秒实例级缓存，写后即时刷新 |
 
 ## 页面路由（非 API）
@@ -28,7 +28,7 @@
 
 ### `GET/POST /api/hash`
 
-对任意字符串做 SHA-512 哈希（可用于客户端自行计算密码哈希）。
+对任意字符串做 SHA-512 哈希（工具接口，与登录加盐哈希无直接关系——登录密码由服务端加盐计算）。
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
@@ -87,17 +87,17 @@ GET /api/gitkey        （带 X-Auth-User / X-Auth-Pass 头，admin）
 
 ### `GET/POST /api/login`
 
-用户登录。密码必须传 SHA-512 哈希，与存储哈希实时比对（登录强制实时读取，无缓存）；成功响应**只含角色信息**，不再返回任何 key 或 key 哈希。
+用户登录。传**明文密码**，服务端计算 `SHA-512(salt + 明文)` 后与存储值实时比对（登录强制实时读取，无缓存）；旧无盐记录校验通过后自动升级为加盐存储。成功响应**只含角色信息**，不再返回任何 key 或 key 哈希。
 
 **前端一律走 POST 请求体**（凭据放 URL query 会留在浏览器历史与访问日志里），GET query 形式仅为兼容保留。**登录失败限流**：同一 客户端IP+用户名 10 分钟内最多 10 次失败，超出返回 429（实例级滑动窗口，边缘实例重建即重置）。
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `username` | 是 | 用户名 |
-| `password` | 是 | 密码的 SHA-512 哈希（128 位 hex，前端计算） |
+| `password` | 是 | 明文密码（服务端加盐哈希后比对） |
 
 ```
-POST /api/login   { "username": "fx", "password": "<sha512哈希>" }
+POST /api/login   { "username": "fx", "password": "<明文密码>" }
 → { "success": true, "username": "fx", "role": "user", "avatar": "https://..." }
 ```
 
@@ -105,10 +105,10 @@ POST /api/login   { "username": "fx", "password": "<sha512哈希>" }
 
 ### `POST /api/change-password`
 
-用户自助修改自己的密码。旧密码与新密码均传 SHA-512 哈希；新密码强度规则由前端校验。响应不返回新密码哈希。
+用户自助修改自己的密码。旧密码与新密码均传**明文**；新密码强度规则由服务端重新校验（不满足返回 400），通过后生成新盐重新哈希存储。响应不返回新密码哈希。
 
 ```json
-{ "username": "fx", "password": "<旧密码sha512>", "new_password": "<新密码sha512>" }
+{ "username": "fx", "password": "<旧密码明文>", "new_password": "<新密码明文>" }
 → { "success": true, "username": "fx" }
 ```
 
@@ -117,16 +117,16 @@ POST /api/login   { "username": "fx", "password": "<sha512哈希>" }
 用户自助修改自己的头像 URL（http/https，最长 300 字符；空字符串表示清除自定义头像）。
 
 ```json
-{ "username": "fx", "password": "<sha512>", "avatar": "https://example.com/a.jpg" }
+{ "username": "fx", "password": "<明文密码>", "avatar": "https://example.com/a.jpg" }
 → { "success": true, "username": "fx", "avatar": "https://example.com/a.jpg" }
 ```
 
 ### `POST /api/delete-account`
 
-用户自助注销自己的账户（验证密码哈希后永久删除，不可恢复）。
+用户自助注销自己的账户（验证明文密码后永久删除，不可恢复）。
 
 ```json
-{ "username": "fx", "password": "<sha512>" }
+{ "username": "fx", "password": "<明文密码>" }
 → { "success": true, "deleted": "fx" }
 ```
 
@@ -134,25 +134,25 @@ POST /api/login   { "username": "fx", "password": "<sha512哈希>" }
 
 页面背景图中转（上游随机图接口，跟随 302 重定向，仅放行 `image/*`，10 秒超时，短缓存 300s）。失败返回 502，页面自动以纯色背景兜底。
 
-## Admin 接口（需 `admin_user` + `admin_pass` 哈希）
+## Admin 接口（需 `admin_user` + `admin_pass` 明文密码）
 
-GET 从 query 读取，其余方法从 body 读取；`admin_pass` 为管理员密码的 SHA-512 哈希，逐请求实时校验。**也接受 `X-Admin-User` / `X-Admin-Pass` 请求头（优先于 query/body）**——前端用户列表已改用请求头形式，避免凭据进入浏览器历史与访问日志。
+GET 从 query 读取，其余方法从 body 读取；`admin_pass` 为管理员**明文密码**，逐请求实时加盐校验。**也接受 `X-Admin-User` / `X-Admin-Pass` 请求头（优先于 query/body）**——前端用户列表已改用请求头形式，避免凭据进入浏览器历史与访问日志。
 
 ### `GET /api/users`
 
 查看全部用户（密码字段脱敏为 `***`）。
 
 ```
-GET /api/users   （X-Admin-User: boss，X-Admin-Pass: <sha512哈希>）
+GET /api/users   （X-Admin-User: boss，X-Admin-Pass: <明文密码>）
 → { "users": { "boss": { "password": "***", "role": "admin", "avatar": "https://..." } } }
 ```
 
 ### `POST /api/users`
 
-添加用户。新用户密码传 SHA-512 哈希，服务端直接存储；`avatar` 可选。
+添加用户。新用户密码传**明文**，服务端校验强度后生成随机盐并哈希存储；`avatar` 可选。
 
 ```json
-{ "admin_user": "boss", "admin_pass": "<sha512>", "username": "fx", "password": "<sha512>", "role": "user", "avatar": "https://..." }
+{ "admin_user": "boss", "admin_pass": "<明文密码>", "username": "fx", "password": "<新用户明文密码>", "role": "user", "avatar": "https://..." }
 → { "success": true, "username": "fx", "role": "user" }
 ```
 
@@ -161,7 +161,7 @@ GET /api/users   （X-Admin-User: boss，X-Admin-Pass: <sha512哈希>）
 修改指定用户的密码、角色和/或头像（至少传一项；`avatar` 传空字符串表示清除）。
 
 ```json
-{ "admin_user": "boss", "admin_pass": "<sha512>", "password": "<新sha512>", "role": "admin", "avatar": "https://..." }
+{ "admin_user": "boss", "admin_pass": "<明文密码>", "password": "<新明文密码>", "role": "admin", "avatar": "https://..." }
 → { "success": true, "username": "fx", "role": "admin" }
 ```
 
@@ -170,7 +170,7 @@ GET /api/users   （X-Admin-User: boss，X-Admin-Pass: <sha512哈希>）
 删除指定用户（参数放 body）。
 
 ```json
-{ "admin_user": "boss", "admin_pass": "<sha512>" }
+{ "admin_user": "boss", "admin_pass": "<明文密码>" }
 → { "success": true, "deleted": "fx" }
 ```
 
@@ -180,7 +180,7 @@ GET /api/users   （X-Admin-User: boss，X-Admin-Pass: <sha512哈希>）
 
 ```
 X-Auth-User: <用户名>
-X-Auth-Pass: <密码的SHA-512哈希>
+X-Auth-Pass: <明文密码>
 ```
 
 - 仅放行白名单存储仓库（`STORAGE_REPOS`）；其余仓库一律 403，用户数据仓库永久 403。
@@ -194,7 +194,7 @@ GitHub REST API 代理（contents 列表与读写、git trees 等）。
 ```
 GET /api.github.com/repos/<owner>/<repo>/contents/<path>
 PUT /api.github.com/repos/<owner>/<repo>/contents/<path>
-    头: X-Auth-User: fx   X-Auth-Pass: <sha512哈希>
+    头: X-Auth-User: fx   X-Auth-Pass: <明文密码>
 ```
 
 ### `GET /raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>`

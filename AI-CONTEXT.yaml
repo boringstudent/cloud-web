@@ -1,9 +1,9 @@
 meta:
   schema: 1
-  generated_at: '2026-10-02T01:52:10'
-  git_commit: 8a2a52ab5d4796157bf1961f2d065f04d4853106
-  git_commit_short: 8a2a52a
-  build_version: '1790877129'
+  generated_at: '2026-10-02T12:53:42'
+  git_commit: 05d14b6c8c00b114d89e6ee4c66fb27e563134e0
+  git_commit_short: 05d14b6
+  build_version: '1790916822'
   generator: build_ai_context.py（本文件由其自动重建，勿手改；python build_eo.py 构建时自动调用）
 project:
   name: cloud-web
@@ -17,33 +17,33 @@ project:
 files:
 - name: build_eo.py
   role: EO 一体化构建脚本（后端模板+前端资源烘焙→eo.js）
-  bytes: 58017
-  sha1: 35a8d4db
-  lines: 1366
+  bytes: 60601
+  sha1: 0b1052b2
+  lines: 1416
 - name: build_ai_context.py
   role: 本生成器：重建 AI-CONTEXT.yaml
-  bytes: 33407
-  sha1: b3299e8f
-  lines: 471
+  bytes: 34317
+  sha1: 4e27011e
+  lines: 472
 - name: AI-CONTEXT.yaml
   role: AI 专用项目理解文件（本生成器产物，勿手改）
-  bytes: 46300
-  sha1: 8dcdf182
+  bytes: 48010
+  sha1: 1728aa98
 - name: template.html
   role: 唯一 HTML 模板
-  bytes: 28176
-  sha1: fc744df9
+  bytes: 28188
+  sha1: 6f08d3ee
   lines: 408
 - name: 404.html
   role: template.html 构建同步副本
-  bytes: 28176
-  sha1: fc744df9
+  bytes: 28188
+  sha1: 6f08d3ee
   lines: 408
 - name: static/app.js
   role: 全部前端逻辑
-  bytes: 476525
-  sha1: 25332d8c
-  lines: 10941
+  bytes: 474081
+  sha1: 65b49976
+  lines: 10883
 - name: static/style.css
   role: 全部样式
   bytes: 61665
@@ -56,19 +56,19 @@ files:
   lines: 513
 - name: API.md
   role: 人类用接口文档
-  bytes: 11121
-  sha1: 1356c217
+  bytes: 11684
+  sha1: 150b94bb
   lines: 217
 - name: README.md
   role: 人类用功能/算法说明
-  bytes: 49781
-  sha1: 45851fe0
+  bytes: 50155
+  sha1: 5cbb954f
   lines: 207
 - name: test_eo_smoke.js
   role: eo.js 冒烟测试（Node 模拟 fetch 事件，不触网）
-  bytes: 10694
-  sha1: d8832a12
-  lines: 154
+  bytes: 11325
+  sha1: 64322d24
+  lines: 156
 - name: test_eo_server.js
   role: eo.js 本地模拟服务器
   bytes: 2222
@@ -85,9 +85,9 @@ files:
   lines: 6
 - name: eo.js
   role: EO 部署产物（gitignore，含 key 属服务端机密）
-  bytes: 793182
-  sha1: a5935a0c
-  lines: 15026
+  bytes: 793342
+  sha1: d1d222da
+  lines: 15018
   gitignored: true
 - name: .eo-key
   role: 本地 GitHub key（gitignore）
@@ -131,65 +131,66 @@ architecture:
 backend:
   file: build_eo.py（BACKEND 模板字符串，构建时替换 __XXX__ 占位符后写入 eo.js）
   key_security: GITHUB_KEY 仅存在于 EO 服务端；代理白名单永久拒绝用户数据仓库；用户列表密码字段脱敏 ***
-  auth_model: 读操作公开；写操作（PUT/DELETE/POST/PATCH 代理 + 用户 API）需 X-Auth-User/X-Auth-Pass（SHA-512 哈希）逐请求实时校验；鉴权读有 60s 实例级缓存，写后即时刷新；Contents
+  auth_model: 读操作公开；写操作（PUT/DELETE/POST/PATCH 代理 + 用户 API）需 X-Auth-User/X-Auth-Pass（明文密码）逐请求实时加盐校验；鉴权读有 60s 实例级缓存，写后即时刷新；Contents
     API 写操作仅变更目标字段，409 冲突自动重读重试（≤3 次）
-  user_json: '{ "<username>": { "password": "<sha512>", "role": "admin|user", "avatar": "<可选URL>" } }'
+  user_json: '{ "<username>": { "password": "<sha512(salt+明文)>", "salt": "<32位hex>", "role": "admin|user", "avatar": "<可选URL>"
+    } }（旧无盐记录兼容，登录成功后自动升级）'
   routes:
-  - line: 206
+  - line: 210
     match: prefix
     path: /api.github.com/
-  - line: 207
+  - line: 211
     match: prefix
     path: /raw.githubusercontent.com/
-  - line: 208
+  - line: 212
     match: prefix
     path: /github.com/
-  - line: 213
+  - line: 217
     match: exact
     path: /api/hash
-  - line: 222
+  - line: 226
     match: exact
     path: /api/proxies
-  - line: 247
+  - line: 251
     match: exact
     path: /api/my-ip
-  - line: 247
+  - line: 251
     match: exact
     path: /ip
-  - line: 258
+  - line: 262
     match: exact
     path: /api/cf-ip
-  - line: 268
+  - line: 273
     match: exact
     path: /api/login
-  - line: 301
+  - line: 321
     match: exact
     path: /api/change-password
-  - line: 324
+  - line: 345
     match: exact
     path: /api/change-avatar
-  - line: 351
+  - line: 369
     match: exact
     path: /api/delete-account
-  - line: 372
+  - line: 387
     match: exact
     path: /api/users
-  - line: 372
+  - line: 387
     match: prefix
     path: /api/users/
-  - line: 454
+  - line: 474
     match: exact
     path: /api/bg
-  - line: 458
+  - line: 478
     match: prefix
     path: /api/
-  - line: 481
+  - line: 501
     match: exact
     path: /static/app.js
-  - line: 484
+  - line: 504
     match: exact
     path: /static/style.css
-  - line: 487
+  - line: 507
     match: exact
     path: /favicon.ico
   functions:
@@ -199,133 +200,145 @@ backend:
   - line: 49
     name: js_tpl_escape
     lang: python
-  - line: 196
+  - line: 200
     name: handleRequest
     lang: js-template
-  - line: 508
+  - line: 528
     name: pageResponse
     lang: js-template
-  - line: 519
+  - line: 539
     name: assetResponse
     lang: js-template
-  - line: 530
+  - line: 550
     name: faviconResponse
     lang: js-template
-  - line: 546
+  - line: 566
     name: secHeaders
     lang: js-template
-  - line: 557
+  - line: 577
     name: handleBg
     lang: js-template
-  - line: 597
+  - line: 617
     name: handleGithubProxy
     lang: js-template
-  - line: 698
+  - line: 718
     name: requireLogin
     lang: js-template
-  - line: 719
+  - line: 736
     name: requireAdmin
     lang: js-template
-  - line: 745
+  - line: 758
     name: getServerIpInfo
     lang: js-template
-  - line: 758
+  - line: 771
     name: fetchText
     lang: js-template
-  - line: 772
+  - line: 785
     name: mapLimited
     lang: js-template
-  - line: 791
+  - line: 804
     name: probeExtProxyOnce
     lang: js-template
-  - line: 818
+  - line: 831
     name: probeExtProxy
     lang: js-template
-  - line: 827
+  - line: 840
     name: listUsableExtProxies
     lang: js-template
-  - line: 841
+  - line: 854
     name: probeExtProxyApi
     lang: js-template
-  - line: 852
+  - line: 865
     name: probeExtProxiesApi
     lang: js-template
-  - line: 870
+  - line: 883
     name: getCfIpInfo
     lang: js-template
-  - line: 899
+  - line: 912
     name: queryIpSb
     lang: js-template
-  - line: 914
+  - line: 927
     name: queryCipCc
     lang: js-template
-  - line: 924
+  - line: 937
     name: queryIpinfoIo
     lang: js-template
-  - line: 940
+  - line: 953
     name: parseCipCc
     lang: js-template
-  - line: 963
+  - line: 976
     name: isSha512Hex
     lang: js-template
-  - line: 968
+  - line: 981
     name: clientIp
     lang: js-template
-  - line: 981
+  - line: 994
     name: loginLimited
     lang: js-template
-  - line: 988
+  - line: 1001
     name: noteLoginFail
     lang: js-template
-  - line: 1002
+  - line: 1015
     name: probeApiLimited
     lang: js-template
-  - line: 1015
+  - line: 1028
     name: sha512
     lang: js-template
-  - line: 1020
-    name: parseBody
+  - line: 1039
+    name: newSalt
     lang: js-template
-  - line: 1043
-    name: readUsersFile
+  - line: 1045
+    name: saltedHash
+    lang: js-template
+  - line: 1051
+    name: verifyPassword
     lang: js-template
   - line: 1061
+    name: passwordStrengthError
+    lang: js-template
+  - line: 1070
+    name: parseBody
+    lang: js-template
+  - line: 1093
+    name: readUsersFile
+    lang: js-template
+  - line: 1111
     name: mutateUsers
     lang: js-template
-  - line: 1088
+  - line: 1138
     name: ghHeaders
     lang: js-template
-  - line: 1096
+  - line: 1146
     name: b64encode
     lang: js-template
-  - line: 1103
+  - line: 1153
     name: b64decode
     lang: js-template
-  - line: 1110
+  - line: 1160
     name: json
     lang: js-template
-  - line: 1117
+  - line: 1167
     name: corsHeaders
     lang: js-template
-  - line: 1128
+  - line: 1178
     name: _file_sha256
     lang: python
-  - line: 1136
+  - line: 1186
     name: _check_source_freshness
     lang: python
-  - line: 1154
+  - line: 1204
     name: update_ai_context
     lang: python
-  - line: 1174
+  - line: 1224
     name: run_smoke_test
     lang: python
-  - line: 1218
+  - line: 1268
     name: make_commit_message
     lang: python
-  - line: 1231
+  - line: 1281
     name: git_commit_and_push
     lang: python
-  - line: 1293
+  - line: 1343
     name: build
     lang: python
 frontend:
@@ -349,7 +362,7 @@ frontend:
     share*/makeShareUrl/b64url*/isSharePage/renderSharePage/copyShareLink/openQrModal/qr*/copyTextToClipboard: 分享链接（b64url
       编码 /s/ URL、本地 QR 生成、分享页渲染，纯前端无服务端存储）
     svc*/check*/measureRtt: 服务状态三路检测（EO/Git外部/CF，10min 自动刷新）
-    login/logout/saveAuth/getSavedAuth/*Remember: 认证会话（SHA-512/持久化/记住密码哈希迁移）
+    login/logout/saveAuth/getSavedAuth/*Remember: 认证会话（明文凭据 v3/持久化/记住密码明文迁移）
     theme*/applyTheme: 主题切换（auto/light/dark）
     lang*/initLang/applyI18n*/t: 多语言（4 语言词典翻译）
     '*BgTask*/showTaskProgress/updateTaskProgress': 进度卡片与后台浮泡 UI
@@ -438,589 +451,585 @@ frontend:
     name: currentChunkLabel
   - line: 675
     name: getPartNumber
-  - line: 684
+  - line: 686
     name: saveAuth
-  - line: 692
+  - line: 694
     name: getSavedAuth
-  - line: 707
+  - line: 709
     name: clearAuth
-  - line: 718
+  - line: 720
     name: saveRemember
-  - line: 726
+  - line: 728
     name: getRemember
-  - line: 744
+  - line: 747
     name: clearRemember
-  - line: 771
+  - line: 774
     name: translateApiError
-  - line: 777
-    name: sha512Hex
-  - line: 793
+  - line: 778
     name: apiGetJson
-  - line: 821
+  - line: 806
     name: apiSendJson
-  - line: 849
+  - line: 836
     name: loginUser
   - line: 858
-    name: loginWithHash
-  - line: 880
     name: fillAuthInputs
-  - line: 906
+  - line: 884
     name: pwdEyeRefresh
-  - line: 915
+  - line: 893
     name: togglePwdEye
-  - line: 924
+  - line: 902
     name: initPwdEyes
-  - line: 949
+  - line: 927
     name: themeResolve
-  - line: 954
+  - line: 932
     name: applyTheme
-  - line: 958
+  - line: 936
     name: themeSet
-  - line: 966
+  - line: 944
     name: initTheme
-  - line: 1635
+  - line: 1613
     name: t
-  - line: 1768
+  - line: 1746
     name: applyOwnText
-  - line: 1782
+  - line: 1760
     name: applyI18nStatic
-  - line: 1809
+  - line: 1787
     name: langDetect
-  - line: 1822
+  - line: 1800
     name: langSet
-  - line: 1839
+  - line: 1817
     name: initLang
-  - line: 1857
+  - line: 1835
     name: userAvatarUrl
-  - line: 1866
+  - line: 1844
     name: renderUserAvatar
-  - line: 1887
+  - line: 1865
     name: toggleUserMenu
-  - line: 1893
+  - line: 1871
     name: closeUserMenu
-  - line: 1900
+  - line: 1878
     name: applyAuthVisibility
-  - line: 1907
+  - line: 1885
     name: updateAuthBtn
-  - line: 1929
+  - line: 1907
     name: handleAuthBtnClick
-  - line: 1937
+  - line: 1915
     name: openLoginModal
-  - line: 1944
+  - line: 1922
     name: closeLoginModal
-  - line: 1948
+  - line: 1926
     name: doLogin
-  - line: 1989
+  - line: 1965
     name: logout
-  - line: 2001
+  - line: 1977
     name: openAccountModal
-  - line: 2020
+  - line: 1996
     name: closeAccountModal
-  - line: 2025
+  - line: 2001
     name: switchAccountTab
-  - line: 2038
+  - line: 2014
     name: changeOwnAvatar
-  - line: 2073
+  - line: 2049
     name: validateNewPassword
-  - line: 2081
+  - line: 2057
     name: changeOwnPassword
-  - line: 2148
+  - line: 2110
     name: deleteOwnAccount
-  - line: 2193
+  - line: 2148
     name: withAdminCreds
-  - line: 2199
+  - line: 2154
     name: openAdminModal
-  - line: 2207
+  - line: 2162
     name: closeAdminModal
-  - line: 2215
+  - line: 2170
     name: loadAdminUsers
-  - line: 2252
+  - line: 2207
     name: renderAdminUserList
-  - line: 2326
+  - line: 2281
     name: openAdminUserMenu
-  - line: 2342
+  - line: 2297
     name: closeAdminUserMenu
-  - line: 2348
+  - line: 2303
     name: closeAdminUserMenuHandler
-  - line: 2355
+  - line: 2310
     name: handleAdminMenuAction
-  - line: 2375
+  - line: 2330
     name: openAdminAddUser
-  - line: 2385
+  - line: 2340
     name: closeAdminAddModal
-  - line: 2389
+  - line: 2344
     name: adminAddUser
-  - line: 2440
+  - line: 2388
     name: adminResetPassword
-  - line: 2471
+  - line: 2413
     name: adminChangeRole
-  - line: 2494
+  - line: 2436
     name: adminDeleteUser
-  - line: 2556
+  - line: 2498
     name: svcStatusRestore
-  - line: 2569
+  - line: 2511
     name: measureRtt
-  - line: 2587
+  - line: 2529
     name: checkOneService
-  - line: 2627
+  - line: 2569
     name: renderSvcStatus
-  - line: 2681
+  - line: 2623
     name: addSvcTipLine
-  - line: 2710
+  - line: 2652
     name: addGitSvcTip
-  - line: 2752
+  - line: 2694
     name: checkSvcStatus
-  - line: 2810
+  - line: 2752
     name: checkGitExtServices
-  - line: 2874
+  - line: 2816
     name: openUploadModal
-  - line: 2884
+  - line: 2826
     name: closeUploadModal
-  - line: 2920
+  - line: 2862
     name: formatSize
-  - line: 2932
+  - line: 2874
     name: formatEtaText
-  - line: 2946
+  - line: 2888
     name: etaTextFromSpeed
-  - line: 2951
+  - line: 2893
     name: fetchFileTree
-  - line: 2984
+  - line: 2926
     name: fetchFolderSizes
-  - line: 2993
+  - line: 2935
     name: currentSearchQuery
-  - line: 3002
+  - line: 2944
     name: renderSearchResults
-  - line: 3108
+  - line: 3050
     name: searchModelToMenuInfo
-  - line: 3122
+  - line: 3064
     name: locateFileInList
-  - line: 3160
+  - line: 3102
     name: triggerSearch
-  - line: 3183
+  - line: 3125
     name: antiAutofillInput
-  - line: 3195
+  - line: 3137
     name: initSearchBox
-  - line: 3230
+  - line: 3172
     name: updateFolderSizes
-  - line: 3264
+  - line: 3206
     name: escapeHtml
-  - line: 3270
+  - line: 3212
     name: propRow
-  - line: 3275
+  - line: 3217
     name: rawUrlFor
-  - line: 3279
+  - line: 3221
     name: fetchRange
-  - line: 3295
+  - line: 3237
     name: decodeId3Text
-  - line: 3313
+  - line: 3255
     name: syncsafe
-  - line: 3318
+  - line: 3260
     name: parseId3v2
-  - line: 3343
+  - line: 3285
     name: parseId3v1
-  - line: 3367
+  - line: 3309
     name: fetchAudioTags
-  - line: 3407
+  - line: 3349
     name: fetchFileBlobDual
-  - line: 3727
+  - line: 3669
     name: crc32Chunk
-  - line: 3738
+  - line: 3680
     name: buildZipBlobAsync
-  - line: 3820
+  - line: 3762
     name: showProperties
-  - line: 3886
+  - line: 3828
     name: downloadFolder
-  - line: 3950
+  - line: 3892
     name: downloadFolderZip
-  - line: 4088
+  - line: 4030
     name: openDeleteModal
-  - line: 4116
+  - line: 4058
     name: closeDeleteModal
-  - line: 4127
+  - line: 4069
     name: setDeleteProgress
-  - line: 4140
+  - line: 4082
     name: bindEntryEvents
-  - line: 4184
+  - line: 4126
     name: openContextMenu
-  - line: 4214
+  - line: 4156
     name: closeContextMenu
-  - line: 4220
+  - line: 4162
     name: closeContextMenuHandler
-  - line: 4228
+  - line: 4170
     name: handleMenuAction
-  - line: 4297
+  - line: 4239
     name: qrGfMul
-  - line: 4304
+  - line: 4246
     name: qrRsGen
-  - line: 4319
+  - line: 4261
     name: qrRsRemainder
-  - line: 4338
+  - line: 4280
     name: qrGenerate
-  - line: 4576
+  - line: 4518
     name: qrMakeCanvas
-  - line: 4600
+  - line: 4542
     name: b64urlEncode
-  - line: 4607
+  - line: 4549
     name: b64urlDecode
-  - line: 4616
+  - line: 4558
     name: makeShareUrl
-  - line: 4628
+  - line: 4570
     name: copyTextToClipboard
-  - line: 4651
+  - line: 4593
     name: copyShareLink
-  - line: 4668
+  - line: 4610
     name: openQrModal
-  - line: 4692
+  - line: 4634
     name: saveQrImage
-  - line: 4716
+  - line: 4658
     name: shareQrLink
-  - line: 4736
+  - line: 4678
     name: closeQrModal
-  - line: 4742
+  - line: 4684
     name: isSharePage
-  - line: 4746
+  - line: 4688
     name: renderSharePage
-  - line: 4887
+  - line: 4829
     name: shareEnsureChannels
-  - line: 4906
+  - line: 4848
     name: shareFindParts
-  - line: 4921
+  - line: 4863
     name: shareCollectZipModels
-  - line: 4973
+  - line: 4915
     name: saveBlobAs
-  - line: 4989
+  - line: 4931
     name: downloadFile
-  - line: 5040
+  - line: 4982
     name: setMsg
-  - line: 5046
+  - line: 4988
     name: showToast
-  - line: 5052
+  - line: 4994
     name: hideToast
-  - line: 5071
+  - line: 5013
     name: taskRegister
-  - line: 5084
+  - line: 5026
     name: taskUnregister
-  - line: 5089
+  - line: 5031
     name: updateBgTaskStopBtn
-  - line: 5098
+  - line: 5040
     name: showBgTask
-  - line: 5109
+  - line: 5051
     name: updateBgTask
-  - line: 5116
+  - line: 5058
     name: clearBgTask
-  - line: 5125
+  - line: 5067
     name: persistBgTask
-  - line: 5131
+  - line: 5073
     name: clearBgTaskPersist
-  - line: 5138
+  - line: 5080
     name: restoreBgTaskHint
-  - line: 5157
+  - line: 5099
     name: showTaskProgress
-  - line: 5176
+  - line: 5118
     name: updateTaskProgress
-  - line: 5192
+  - line: 5134
     name: hideTaskProgress
-  - line: 5206
+  - line: 5148
     name: fetchMergedBlob
-  - line: 5547
+  - line: 5489
     name: streamImagePreview
-  - line: 5807
+  - line: 5749
     name: probeMediaSpeed
-  - line: 5907
+  - line: 5849
     name: fmtMediaTime
-  - line: 5921
+  - line: 5863
     name: buildMediaControls
-  - line: 6069
+  - line: 6011
     name: downloadMergedFile
-  - line: 6095
+  - line: 6037
     name: getFileExtension
-  - line: 6108
+  - line: 6050
     name: collectImageModels
-  - line: 6130
+  - line: 6072
     name: collectAudioModels
-  - line: 6141
+  - line: 6083
     name: audioPlModeLoad
-  - line: 6152
+  - line: 6094
     name: teardownAudioPlaylist
-  - line: 6166
+  - line: 6108
     name: audioPlRefreshHighlight
-  - line: 6187
+  - line: 6129
     name: audioPlStopLoadingUx
-  - line: 6198
+  - line: 6140
     name: audioPlStartLoadingUx
-  - line: 6240
+  - line: 6182
     name: audioEqStop
-  - line: 6248
+  - line: 6190
     name: audioEqStart
-  - line: 6287
+  - line: 6229
     name: makeVirtualParts
-  - line: 6300
+  - line: 6242
     name: audioPlMaybePreload
-  - line: 6342
+  - line: 6284
     name: audioPlPlay
-  - line: 6441
+  - line: 6383
     name: setupAudioPlaylist
-  - line: 6581
+  - line: 6523
     name: buildImageViewer
-  - line: 6650
+  - line: 6592
     name: imgViewerUpdateMinimap
-  - line: 6692
+  - line: 6634
     name: bindImageViewerEvents
-  - line: 6759
+  - line: 6701
     name: imgViewerApply
-  - line: 6777
+  - line: 6719
     name: imgViewerSetZoom
-  - line: 6784
+  - line: 6726
     name: imgViewerActualSize
-  - line: 6794
+  - line: 6736
     name: imgViewerSetList
-  - line: 6837
+  - line: 6779
     name: imgViewerLoadThumbs
-  - line: 6850
+  - line: 6792
     name: imgViewerPumpThumbs
-  - line: 6871
+  - line: 6813
     name: imgViewerSyncNav
-  - line: 6890
+  - line: 6832
     name: imgViewerGo
-  - line: 6915
+  - line: 6857
     name: destroyImageViewer
-  - line: 6940
+  - line: 6882
     name: detectLang
-  - line: 6952
+  - line: 6894
     name: highlightCode
-  - line: 6981
+  - line: 6923
     name: safeUrl
-  - line: 6990
+  - line: 6932
     name: safeAttr
-  - line: 6994
+  - line: 6936
     name: mdInline
-  - line: 7010
+  - line: 6952
     name: splitMdRow
-  - line: 7018
+  - line: 6960
     name: isMdTableDelim
-  - line: 7022
+  - line: 6964
     name: markdownToHtml
-  - line: 7166
+  - line: 7108
     name: minimapLineColors
-  - line: 7188
+  - line: 7130
     name: buildTextMinimap
-  - line: 7294
+  - line: 7236
     name: withTextMinimap
-  - line: 7306
+  - line: 7248
     name: renderMarkdownView
-  - line: 7315
+  - line: 7257
     name: renderTextView
-  - line: 7437
+  - line: 7379
     name: previewFile
-  - line: 7721
+  - line: 7663
     name: editFile
-  - line: 7775
+  - line: 7717
     name: closePreviewModal
-  - line: 7782
+  - line: 7724
     name: savePreviewFile
-  - line: 7817
+  - line: 7759
     name: updateFileOnGitHub
-  - line: 7883
+  - line: 7825
     name: restoreDeleteModalPrompt
-  - line: 7891
+  - line: 7833
     name: confirmDelete
-  - line: 7937
+  - line: 7879
     name: ghDeleteFile
-  - line: 7950
+  - line: 7892
     name: deleteFile
-  - line: 7979
+  - line: 7921
     name: deleteFolderError
-  - line: 7984
+  - line: 7926
     name: deleteFolder
-  - line: 8010
+  - line: 7952
     name: stopDelete
-  - line: 8018
+  - line: 7960
     name: deleteFolderFiles
-  - line: 8147
+  - line: 8089
     name: deleteAllDone
-  - line: 8158
+  - line: 8100
     name: safeDecode
-  - line: 8169
+  - line: 8111
     name: displayName
-  - line: 8183
+  - line: 8125
     name: getCurrentPath
-  - line: 8201
+  - line: 8143
     name: encodePath
-  - line: 8206
+  - line: 8148
     name: updateBreadcrumbs
-  - line: 8256
+  - line: 8198
     name: showRefreshIndicator
-  - line: 8261
+  - line: 8203
     name: hideRefreshIndicator
-  - line: 8267
+  - line: 8209
     name: anyModalOpen
-  - line: 8272
+  - line: 8214
     name: loadFileList
-  - line: 8345
+  - line: 8287
     name: showListError
-  - line: 8360
+  - line: 8302
     name: buildEntryModels
-  - line: 8441
+  - line: 8383
     name: createEntryElement
-  - line: 8506
+  - line: 8448
     name: toggleSelect
-  - line: 8518
+  - line: 8460
     name: applySelectionVisual
-  - line: 8529
+  - line: 8471
     name: updateBatchBar
-  - line: 8541
+  - line: 8483
     name: clearSelection
-  - line: 8552
+  - line: 8494
     name: selectAllFiles
-  - line: 8563
+  - line: 8505
     name: invertSelection
-  - line: 8579
+  - line: 8521
     name: batchDownload
-  - line: 8587
+  - line: 8529
     name: batchShare
-  - line: 8598
+  - line: 8540
     name: batchQr
-  - line: 8614
+  - line: 8556
     name: runFileDownloadPool
-  - line: 8679
+  - line: 8621
     name: runParallelDownload
-  - line: 8756
+  - line: 8698
     name: stopBatchDownload
-  - line: 8766
+  - line: 8708
     name: finishBatchDownload
-  - line: 8775
+  - line: 8717
     name: toggleBatchDownloadUI
-  - line: 8780
+  - line: 8722
     name: openBatchDeleteModal
-  - line: 8816
+  - line: 8758
     name: renderFileList
-  - line: 8983
+  - line: 8925
     name: finishRenderFileList
-  - line: 9009
+  - line: 8951
     name: buildUploadTasks
-  - line: 9036
+  - line: 8978
     name: setPendingFiles
-  - line: 9052
+  - line: 8994
     name: handleFileInput
-  - line: 9061
+  - line: 9003
     name: traverseEntry
-  - line: 9098
+  - line: 9040
     name: handleDrop
-  - line: 9135
+  - line: 9077
     name: findUploadConflicts
-  - line: 9156
+  - line: 9098
     name: uploadFile
-  - line: 9200
+  - line: 9142
     name: readTaskContent
-  - line: 9222
+  - line: 9164
     name: startTaskRead
-  - line: 9243
+  - line: 9185
     name: prefetchUploadReads
-  - line: 9256
+  - line: 9198
     name: resetUploadSpeedHist
-  - line: 9279
+  - line: 9221
     name: extUsableProxyCount
-  - line: 9287
+  - line: 9229
     name: dlGetLimitCap
-  - line: 9292
+  - line: 9234
     name: dlGetLimit
-  - line: 9302
+  - line: 9244
     name: dlRegisterScheduler
-  - line: 9306
+  - line: 9248
     name: dlUnregisterScheduler
-  - line: 9311
+  - line: 9253
     name: dlNotify
-  - line: 9318
+  - line: 9260
     name: dlUpdateCurUi
-  - line: 9323
+  - line: 9265
     name: dlSetMode
-  - line: 9337
+  - line: 9279
     name: dlAdaptiveSuccess
-  - line: 9358
+  - line: 9300
     name: dlAdaptiveFail
-  - line: 9381
+  - line: 9323
     name: dlChanNotePeak
-  - line: 9390
+  - line: 9332
     name: dlChanIsSlow
-  - line: 9398
+  - line: 9340
     name: dlChanInc
-  - line: 9402
+  - line: 9344
     name: dlChanDec
-  - line: 9406
+  - line: 9348
     name: dlRecentRates
-  - line: 9424
+  - line: 9366
     name: dlChannels
-  - line: 9441
+  - line: 9383
     name: pickDlFallback
-  - line: 9452
+  - line: 9394
     name: pickDlChannel
-  - line: 9525
+  - line: 9467
     name: dlTrackStart
-  - line: 9556
+  - line: 9498
     name: dlTrackStop
-  - line: 9567
+  - line: 9509
     name: dlTrackAdd
-  - line: 9575
+  - line: 9517
     name: drawDlGraph
-  - line: 9619
+  - line: 9561
     name: updateDlLegend
-  - line: 9631
+  - line: 9573
     name: updateDlLegendExtVisibility
-  - line: 9645
+  - line: 9587
     name: graphWindowPeak
-  - line: 9654
+  - line: 9596
     name: traceSmoothPath
-  - line: 9669
+  - line: 9611
     name: prepareGraphCanvas
-  - line: 9684
+  - line: 9626
     name: drawGraphGrid
-  - line: 9716
+  - line: 9658
     name: drawSpeedGraph
-  - line: 9759
+  - line: 9701
     name: updateUlLegend
-  - line: 9767
+  - line: 9709
     name: startUpload
-  - line: 9868
+  - line: 9810
     name: applyConcurrencyChange
-  - line: 9892
+  - line: 9834
     name: ulChannels
-  - line: 9903
+  - line: 9845
     name: stAddChanBytes
-  - line: 9909
+  - line: 9851
     name: pickUploadChannel
-  - line: 9977
+  - line: 9919
     name: fillUploads
-  - line: 10047
+  - line: 9989
     name: checkUploadSettled
-  - line: 10069
+  - line: 10011
     name: runUploadTask
-  - line: 10214
+  - line: 10156
     name: stopUploadTimer
-  - line: 10223
+  - line: 10165
     name: restartUploadTasks
-  - line: 10242
+  - line: 10184
     name: finishUpload
-  - line: 10307
+  - line: 10249
     name: stopUploadRollback
-  - line: 10328
+  - line: 10270
     name: failUpload
-  - line: 10341
+  - line: 10283
     name: sampleUploadSpeed
-  - line: 10408
+  - line: 10350
     name: renderChunkPanel
-  - line: 10430
+  - line: 10372
     name: renderChunkPanelNow
-  - line: 10468
+  - line: 10410
     name: estimateEtaText
-  - line: 10496
+  - line: 10438
     name: updateUploadProgressUI
-  - line: 10504
+  - line: 10446
     name: updateUploadProgressText
-  - line: 10524
+  - line: 10466
     name: gitApiUrl
-  - line: 10530
+  - line: 10472
     name: putBlobToGitHub
-  - line: 10607
+  - line: 10549
     name: commitBlobGroup
   constants:
   - line: 2
@@ -1067,129 +1076,129 @@ frontend:
     name: AUTH_STORAGE_KEY
   - line: 681
     name: REMEMBER_STORAGE_KEY
-  - line: 716
+  - line: 718
     name: REMEMBER_PWD_PLACEHOLDER
-  - line: 753
+  - line: 756
     name: API_ERROR_MAP
-  - line: 900
+  - line: 878
     name: PWD_EYE_SVG
-  - line: 901
+  - line: 879
     name: PWD_EYE_OFF_SVG
-  - line: 946
+  - line: 924
     name: THEME_STORAGE_KEY
-  - line: 988
+  - line: 966
     name: LANG_STORAGE_KEY
-  - line: 989
+  - line: 967
     name: I18N_LANGS
-  - line: 990
+  - line: 968
     name: LANG
-  - line: 992
+  - line: 970
     name: I18N
-  - line: 1642
+  - line: 1620
     name: I18N_BINDINGS
-  - line: 1851
+  - line: 1829
     name: USER_AVATAR_MAP
-  - line: 1855
+  - line: 1833
     name: USER_AVATAR_DEFAULT_SVG
-  - line: 2517
+  - line: 2459
     name: REFRESH_INTERVAL
-  - line: 2544
+  - line: 2486
     name: SVC_CHECK_INTERVAL
-  - line: 2551
+  - line: 2493
     name: SVC_STATUS_CACHE_KEY
-  - line: 2918
+  - line: 2860
     name: SIZE_UNITS
-  - line: 3716
+  - line: 3658
     name: CRC32_TABLE
-  - line: 4263
+  - line: 4205
     name: QR_ALIGN_POS
-  - line: 4273
+  - line: 4215
     name: QR_RS_M
-  - line: 4284
+  - line: 4226
     name: QR_GF_EXP
-  - line: 4285
+  - line: 4227
     name: QR_GF_LOG
-  - line: 4303
+  - line: 4245
     name: QR_GEN_CACHE
-  - line: 5060
+  - line: 5002
     name: BG_TASK_KEY
-  - line: 5544
+  - line: 5486
     name: PREVIEW_STREAMS
-  - line: 5545
+  - line: 5487
     name: PREVIEW_PARALLEL_MIN
-  - line: 5917
+  - line: 5859
     name: MEDIA_SVG_PLAY
-  - line: 5918
+  - line: 5860
     name: MEDIA_SVG_PAUSE
-  - line: 5919
+  - line: 5861
     name: MEDIA_SVG_FULLSCREEN
-  - line: 6100
+  - line: 6042
     name: AUDIO_EXTS
-  - line: 6101
+  - line: 6043
     name: VIDEO_EXTS
-  - line: 6102
+  - line: 6044
     name: IMAGE_EXTS
-  - line: 6123
+  - line: 6065
     name: AUDIO_PL_MODE_KEY
-  - line: 6124
+  - line: 6066
     name: AUDIO_PL_MODES
-  - line: 6125
+  - line: 6067
     name: AUDIO_PL_MODE_LABELS
-  - line: 6126
+  - line: 6068
     name: AUDIO_PRELOAD_MAX
-  - line: 6127
+  - line: 6069
     name: AUDIO_PRELOAD_SIZE_MAX
-  - line: 6836
+  - line: 6778
     name: IMG_THUMB_CONCURRENCY
-  - line: 6933
+  - line: 6875
     name: LANG_KEYWORDS
-  - line: 6950
+  - line: 6892
     name: LANG_KW_CACHE
-  - line: 7157
+  - line: 7099
     name: MINIMAP_COLORS
-  - line: 8253
+  - line: 8195
     name: LIST_RENDER_BATCH
-  - line: 9007
+  - line: 8949
     name: COMMIT_GROUP_SIZE
-  - line: 9192
+  - line: 9134
     name: UPLOAD_MAX_ATTEMPTS
-  - line: 9193
+  - line: 9135
     name: UPLOAD_LIMIT_MIN
-  - line: 9194
+  - line: 9136
     name: UPLOAD_LIMIT_MAX
-  - line: 9197
+  - line: 9139
     name: UPLOAD_READAHEAD
-  - line: 9254
+  - line: 9196
     name: SPEED_HISTORY_MAX
-  - line: 9265
+  - line: 9207
     name: DL_LIMIT_MIN
-  - line: 9266
+  - line: 9208
     name: DL_LIMIT_MAX
-  - line: 9267
+  - line: 9209
     name: DL_LIMIT_ADAPTIVE_START
-  - line: 9273
+  - line: 9215
     name: DL_LIMIT_EXT_PER_PROXY
-  - line: 9276
+  - line: 9218
     name: DL_LIMIT_EXT_HARD_MAX
-  - line: 9376
+  - line: 9318
     name: DL_SLOW_RATIO
-  - line: 9377
+  - line: 9319
     name: DL_SLOW_MIN_BYTES
-  - line: 9378
+  - line: 9320
     name: DL_SLOW_MIN_ELAPSED
-  - line: 9379
+  - line: 9321
     name: DL_SLOW_MAX_SWITCH
-  - line: 9419
+  - line: 9361
     name: DL_EOCF_CAP_WHEN_EXT
-  - line: 9449
+  - line: 9391
     name: DL_EXT_SHARE
-  - line: 9522
+  - line: 9464
     name: DL_HISTORY_MAX
-  - line: 9644
+  - line: 9586
     name: GRAPH_PEAK_WINDOW
-  - line: 9970
+  - line: 9912
     name: UL_DISPATCH_BURST
-  - line: 9973
+  - line: 9915
     name: UL_MAX_INFLIGHT_BYTES
 cf_worker:
   file: cf-worker.js
@@ -1204,11 +1213,13 @@ cf_worker:
   - whiteList 为空即全放行；Config.jsdelivr=0 默认关闭 jsDelivr 重写
 dataflow:
   auth:
-  - 浏览器 crypto.subtle 计算密码 SHA-512（128hex），明文不出浏览器
-  - POST /api/login（强制实时读 user.json 比对，无缓存）→ 返回 {success, username, role, avatar}；登录失败限流：IP+用户名 10 分钟 10 次超限 429
-  - localStorage cloud_web_auth 存 {用户名,哈希,角色,头像}，会话始终持久化
-  - 写操作请求头携带 X-Auth-User / X-Auth-Pass（缓存哈希），EO 逐请求实时校验（鉴权读 60s 实例级缓存，写后即时刷新）
-  - admin 接口用 admin_user/admin_pass（同哈希），服务端校验 role=admin；用户列表凭据走 X-Admin-User/X-Admin-Pass 请求头（优先于 query/body，凭据不进 URL）
+  - 客户端本地保存明文密码并随请求发送（HTTPS+同源），不做前端哈希；服务端 sha512(salt+明文) 与存储值比对——存储哈希不再是登录凭据，泄漏哈希无法登录
+  - POST /api/login（强制实时读 user.json 比对，无缓存）→ 返回 {success, username, role, avatar}；旧无盐记录（password=sha512(明文)）兼容校验并在登录成功后自动升级为加盐存储；登录失败限流：IP+用户名
+    10 分钟 10 次超限 429
+  - localStorage cloud_web_auth 存 {v:3,用户名,明文密码,角色,头像}，会话始终持久化；记住密码同存明文（v3）
+  - 写操作请求头携带 X-Auth-User / X-Auth-Pass（明文密码），EO 逐请求实时加盐校验（鉴权读 60s 实例级缓存，写后即时刷新）
+  - admin 接口用 admin_user/admin_pass（明文密码），服务端校验 role=admin；用户列表凭据走 X-Admin-User/X-Admin-Pass 请求头（优先于 query/body，凭据不进 URL）
+  - 新密码强度（>8 位且含大小写字母与数字）服务端收到明文后重新校验（passwordStrengthError），前端同口径双保险；改密/加用户/重置密码均由服务端生成 16 字节随机盐后 sha512(salt+明文) 存储
   upload:
   - 文件按 CHUNK_SIZE_LEVELS 分片：GitHub API 创建 blob 上限 25MB——base64 上限 24/16/8MB 三档反算原始大小（约 18.8/12.5/6.2MB，最高档留 1MB 余量），too large
     自动降档续传；大分片连续状态码 0（第 2 次任务级尝试仍网络失败，≥8MB 分片）同样自动降档——链路对超大请求体的硬限制只表现为连接中断；降到的档位会话内粘滞（不在每批上传重置）
@@ -1263,8 +1274,8 @@ config:
     CLOUD: 网盘存储仓库，默认 boringstudent/cloud-storage
     BRANCH: 分支，默认 main
   localstorage_keys:
-    cloud_web_auth: 登录会话 {username,hash,role,avatar}（始终持久化）
-    cloud_web_remember: 记住密码（默认勾选，只存 SHA-512 哈希，旧版明文自动迁移）
+    cloud_web_auth: 登录会话 {v:3,username,明文密码,role,avatar}（始终持久化）
+    cloud_web_remember: 记住密码（默认勾选，存明文 v3；旧哈希格式作废强制重输）
     cloud_web_theme: 主题 auto/light/dark
     cloud_web_lang: 语言 zh-CN/zh-TW/en/ja
     cloud_web_ext_proxy: 外部多代理下载开关
@@ -1277,11 +1288,12 @@ config:
       data: blob: https:; media-src ''self'' blob: https:; connect-src ''self'' https://cloud-ecr.pages.dev https:; font-src
       ''self'' data:; object-src ''none''; base-uri ''none''; form-action ''self''; frame-ancestors ''self'''
     cache: 页面不缓存；JS/CSS 按构建时间戳 ?v= 长缓存 immutable
-  user_json_format: '{ "<username>": { "password": "<sha512>", "role": "admin|user", "avatar": "<可选URL>" } }'
+  user_json_format: '{ "<username>": { "password": "<sha512(salt+明文)>", "salt": "<32位hex>", "role": "admin|user", "avatar":
+    "<可选URL>" } }（旧无盐记录兼容，登录成功后自动升级）'
 api:
   full_doc: API.md（完整接口文档）
   base: 与站点同源（EO 边缘函数绑定域名），统一 JSON 返回，支持 CORS
-  password_rule: 只接受前端算好的 SHA-512（128hex），明文一律 400；存储仅哈希不可逆
+  password_rule: 客户端发送明文密码（HTTPS+同源），服务端 sha512(salt+明文) 加盐比对；存储哈希不是登录凭据，随机盐防彩虹表
   page_routes:
   - GET / 及任意未命中子路径 → SPA 主页面（路径即目录），带 CSP，不缓存
   - GET /static/app.js | /static/style.css → 构建时嵌入资源（?v= 版本戳，immutable 长缓存）
@@ -1292,9 +1304,9 @@ api:
   - GET/HEAD /api/cf-ip → CF 通道出口 IP/归属地（EO 经 CF /ip 取 IP 再查 api.ip.sb→ipinfo.io，缓存 5min）
   - GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 69 个不触网；?probe=api EO 视角全量诊断（按 IP 限流：5 分钟 2 次，命中缓存不耗配额，超限 429）
   - GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key；前端走 POST 请求体，失败限流 429）
-  - POST /api/change-password → 自助改密（旧/新哈希）
+  - POST /api/change-password → 自助改密（旧/新明文，服务端强度校验+重新加盐）
   - POST /api/change-avatar → 自助改头像 URL（http/https ≤300 字符，空串清除）
-  - POST /api/delete-account → 自助注销（验哈希后永久删除）
+  - POST /api/delete-account → 自助注销（验明文密码后永久删除）
   - GET /api/bg → 背景图中转（仅 image/*，10s 超时，短缓存 300s；前端实际直连图床）
   admin_apis:
   - GET /api/users → 全部用户（密码脱敏 ***）
@@ -1321,7 +1333,7 @@ dependencies:
   - loliapi 图床——页面背景图（浏览器直连）
   - cip.cc / api.ip.sb / ipinfo.io / cloudflare cdn-cgi/trace——IP 与归属地查询
   browser_requirements:
-  - crypto.subtle（SHA-512，需 HTTPS/localhost）
+  - HTTPS 环境（明文密码仅经 HTTPS+同源传输）
   - fetch / XHR / localStorage / matchMedia / Pointer Events
   - WebAudio AnalyserNode（音频 EQ 动画，可选，缺时回退 CSS 动画）
   version_notes: 无 package.json / requirements.txt：运行时零第三方依赖，兼容所有现代浏览器（ES2017+）
@@ -1345,8 +1357,8 @@ i18n_theme:
 constraints:
 - 首屏列表必须逐条 appendChild 挂载，禁止 DocumentFragment 一次挂载
 - 前端数据请求禁止使用缓存（变更后 15s 穿透窗口附加时间戳）
-- 密码明文不出浏览器：一律前端 SHA-512 后传输；记住密码只存哈希不存明文
-- 会话始终持久化（无 UI 开关）；记住密码默认勾选
+- 密码由客户端本地保存明文并随请求发送（HTTPS+同源），服务端 sha512(salt+明文) 加盐比对；禁止恢复"前端算哈希直传当凭据"模式（存储哈希必须不能作为登录凭据）
+- 会话始终持久化（无 UI 开关）；记住密码默认勾选（存明文 v3）
 - 密码输入框必须有眼睛显隐切换：隐藏时闭眼划线图标(title=显示密码)，可见时睁眼图标(title=隐藏密码)；记住密码占位符状态下眼睛自动隐藏
 - 弹窗文本统一属性面板字体体系：Segoe UI/雅黑、13px 灰标签+14px 正文、标题加底部分隔线、章节标题大写字距
 - 用户管理需刷新按钮且每次操作后自动刷新列表

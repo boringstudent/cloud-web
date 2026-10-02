@@ -75,11 +75,12 @@ ARCHITECTURE = {
 
 DATAFLOW = {
     'auth': [
-        '浏览器 crypto.subtle 计算密码 SHA-512（128hex），明文不出浏览器',
-        'POST /api/login（强制实时读 user.json 比对，无缓存）→ 返回 {success, username, role, avatar}；登录失败限流：IP+用户名 10 分钟 10 次超限 429',
-        'localStorage cloud_web_auth 存 {用户名,哈希,角色,头像}，会话始终持久化',
-        '写操作请求头携带 X-Auth-User / X-Auth-Pass（缓存哈希），EO 逐请求实时校验（鉴权读 60s 实例级缓存，写后即时刷新）',
-        'admin 接口用 admin_user/admin_pass（同哈希），服务端校验 role=admin；用户列表凭据走 X-Admin-User/X-Admin-Pass 请求头（优先于 query/body，凭据不进 URL）',
+        '客户端本地保存明文密码并随请求发送（HTTPS+同源），不做前端哈希；服务端 sha512(salt+明文) 与存储值比对——存储哈希不再是登录凭据，泄漏哈希无法登录',
+        'POST /api/login（强制实时读 user.json 比对，无缓存）→ 返回 {success, username, role, avatar}；旧无盐记录（password=sha512(明文)）兼容校验并在登录成功后自动升级为加盐存储；登录失败限流：IP+用户名 10 分钟 10 次超限 429',
+        'localStorage cloud_web_auth 存 {v:3,用户名,明文密码,角色,头像}，会话始终持久化；记住密码同存明文（v3）',
+        '写操作请求头携带 X-Auth-User / X-Auth-Pass（明文密码），EO 逐请求实时加盐校验（鉴权读 60s 实例级缓存，写后即时刷新）',
+        'admin 接口用 admin_user/admin_pass（明文密码），服务端校验 role=admin；用户列表凭据走 X-Admin-User/X-Admin-Pass 请求头（优先于 query/body，凭据不进 URL）',
+        '新密码强度（>8 位且含大小写字母与数字）服务端收到明文后重新校验（passwordStrengthError），前端同口径双保险；改密/加用户/重置密码均由服务端生成 16 字节随机盐后 sha512(salt+明文) 存储',
     ],
     'upload': [
         '文件按 CHUNK_SIZE_LEVELS 分片：GitHub API 创建 blob 上限 25MB——base64 上限 24/16/8MB 三档反算原始大小（约 18.8/12.5/6.2MB，最高档留 1MB 余量），too large 自动降档续传；大分片连续状态码 0（第 2 次任务级尝试仍网络失败，≥8MB 分片）同样自动降档——链路对超大请求体的硬限制只表现为连接中断；降到的档位会话内粘滞（不在每批上传重置）',
@@ -137,8 +138,8 @@ CONFIG = {
         'BRANCH': '分支，默认 main',
     },
     'localstorage_keys': {
-        'cloud_web_auth': '登录会话 {username,hash,role,avatar}（始终持久化）',
-        'cloud_web_remember': '记住密码（默认勾选，只存 SHA-512 哈希，旧版明文自动迁移）',
+        'cloud_web_auth': '登录会话 {v:3,username,明文密码,role,avatar}（始终持久化）',
+        'cloud_web_remember': '记住密码（默认勾选，存明文 v3；旧哈希格式作废强制重输）',
         'cloud_web_theme': '主题 auto/light/dark',
         'cloud_web_lang': '语言 zh-CN/zh-TW/en/ja',
         'cloud_web_ext_proxy': '外部多代理下载开关',
@@ -154,13 +155,13 @@ CONFIG = {
                "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'",
         'cache': '页面不缓存；JS/CSS 按构建时间戳 ?v= 长缓存 immutable',
     },
-    'user_json_format': '{ "<username>": { "password": "<sha512>", "role": "admin|user", "avatar": "<可选URL>" } }',
+    'user_json_format': '{ "<username>": { "password": "<sha512(salt+明文)>", "salt": "<32位hex>", "role": "admin|user", "avatar": "<可选URL>" } }（旧无盐记录兼容，登录成功后自动升级）',
 }
 
 API = {
     'full_doc': 'API.md（完整接口文档）',
     'base': '与站点同源（EO 边缘函数绑定域名），统一 JSON 返回，支持 CORS',
-    'password_rule': '只接受前端算好的 SHA-512（128hex），明文一律 400；存储仅哈希不可逆',
+    'password_rule': '客户端发送明文密码（HTTPS+同源），服务端 sha512(salt+明文) 加盐比对；存储哈希不是登录凭据，随机盐防彩虹表',
     'page_routes': [
         'GET / 及任意未命中子路径 → SPA 主页面（路径即目录），带 CSP，不缓存',
         'GET /static/app.js | /static/style.css → 构建时嵌入资源（?v= 版本戳，immutable 长缓存）',
@@ -172,9 +173,9 @@ API = {
         'GET/HEAD /api/cf-ip → CF 通道出口 IP/归属地（EO 经 CF /ip 取 IP 再查 api.ip.sb→ipinfo.io，缓存 5min）',
         'GET/HEAD /api/proxies → 可用外部代理（服务端探测，缓存 5min）；?all=1 全量候选 69 个不触网；?probe=api EO 视角全量诊断（按 IP 限流：5 分钟 2 次，命中缓存不耗配额，超限 429）',
         'GET/POST /api/login → 登录（实时比对，返回 role/avatar，不返回任何 key；前端走 POST 请求体，失败限流 429）',
-        'POST /api/change-password → 自助改密（旧/新哈希）',
+        'POST /api/change-password → 自助改密（旧/新明文，服务端强度校验+重新加盐）',
         'POST /api/change-avatar → 自助改头像 URL（http/https ≤300 字符，空串清除）',
-        'POST /api/delete-account → 自助注销（验哈希后永久删除）',
+        'POST /api/delete-account → 自助注销（验明文密码后永久删除）',
         'GET /api/bg → 背景图中转（仅 image/*，10s 超时，短缓存 300s；前端实际直连图床）',
     ],
     'admin_apis': [
@@ -209,7 +210,7 @@ DEPENDENCIES = {
         'cip.cc / api.ip.sb / ipinfo.io / cloudflare cdn-cgi/trace——IP 与归属地查询',
     ],
     'browser_requirements': [
-        'crypto.subtle（SHA-512，需 HTTPS/localhost）',
+        'HTTPS 环境（明文密码仅经 HTTPS+同源传输）',
         'fetch / XHR / localStorage / matchMedia / Pointer Events',
         'WebAudio AnalyserNode（音频 EQ 动画，可选，缺时回退 CSS 动画）',
     ],
@@ -235,8 +236,8 @@ I18N_THEME = {
 CONSTRAINTS = [
     '首屏列表必须逐条 appendChild 挂载，禁止 DocumentFragment 一次挂载',
     '前端数据请求禁止使用缓存（变更后 15s 穿透窗口附加时间戳）',
-    '密码明文不出浏览器：一律前端 SHA-512 后传输；记住密码只存哈希不存明文',
-    '会话始终持久化（无 UI 开关）；记住密码默认勾选',
+    '密码由客户端本地保存明文并随请求发送（HTTPS+同源），服务端 sha512(salt+明文) 加盐比对；禁止恢复"前端算哈希直传当凭据"模式（存储哈希必须不能作为登录凭据）',
+    '会话始终持久化（无 UI 开关）；记住密码默认勾选（存明文 v3）',
     '密码输入框必须有眼睛显隐切换：隐藏时闭眼划线图标(title=显示密码)，可见时睁眼图标(title=隐藏密码)；记住密码占位符状态下眼睛自动隐藏',
     '弹窗文本统一属性面板字体体系：Segoe UI/雅黑、13px 灰标签+14px 正文、标题加底部分隔线、章节标题大写字距',
     '用户管理需刷新按钮且每次操作后自动刷新列表',
@@ -290,7 +291,7 @@ CF_WORKER = {
 BACKEND_STATIC = {
     'file': 'build_eo.py（BACKEND 模板字符串，构建时替换 __XXX__ 占位符后写入 eo.js）',
     'key_security': 'GITHUB_KEY 仅存在于 EO 服务端；代理白名单永久拒绝用户数据仓库；用户列表密码字段脱敏 ***',
-    'auth_model': '读操作公开；写操作（PUT/DELETE/POST/PATCH 代理 + 用户 API）需 X-Auth-User/X-Auth-Pass（SHA-512 哈希）逐请求实时校验；'
+    'auth_model': '读操作公开；写操作（PUT/DELETE/POST/PATCH 代理 + 用户 API）需 X-Auth-User/X-Auth-Pass（明文密码）逐请求实时加盐校验；'
                   '鉴权读有 60s 实例级缓存，写后即时刷新；Contents API 写操作仅变更目标字段，409 冲突自动重读重试（≤3 次）',
     'user_json': CONFIG['user_json_format'],
 }
@@ -315,7 +316,7 @@ FRONTEND_STATIC = {
         'switchAccountTab/changeOwn*/deleteOwnAccount': '我的账户（用户菜单三级子菜单+弹窗标签页：头像/密码/注销，openAccountModal(tab) 直达对应页）',
         'share*/makeShareUrl/b64url*/isSharePage/renderSharePage/copyShareLink/openQrModal/qr*/copyTextToClipboard': '分享链接（b64url 编码 /s/ URL、本地 QR 生成、分享页渲染，纯前端无服务端存储）',
         'svc*/check*/measureRtt': '服务状态三路检测（EO/Git外部/CF，10min 自动刷新）',
-        'login/logout/saveAuth/getSavedAuth/*Remember': '认证会话（SHA-512/持久化/记住密码哈希迁移）',
+        'login/logout/saveAuth/getSavedAuth/*Remember': '认证会话（明文凭据 v3/持久化/记住密码明文迁移）',
         'theme*/applyTheme': '主题切换（auto/light/dark）',
         'lang*/initLang/applyI18n*/t': '多语言（4 语言词典翻译）',
         '*BgTask*/showTaskProgress/updateTaskProgress': '进度卡片与后台浮泡 UI',
