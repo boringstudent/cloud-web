@@ -32,6 +32,83 @@ function injectGithubToken(reqHdrNew, urlStr, env) {
 	return false;
 }
 
+// ============================================================
+// ========== 写操作鉴权（与 EO 侧同口径的用户校验） ==========
+// ============================================================
+// 写操作（上传/删除等）需要登录用户凭据：请求头 X-Auth-User / X-Auth-Pass
+// 携带明文密码（HTTPS），服务端读取 user.json 做与 EO 完全相同的加盐
+// sha512(salt+明文) 校验。user.json 位于 USER_REPO 环境变量指定的仓库，
+// 由本函数用 GITHUB_TOKEN 读取；未配置 USER_REPO 或 token 无该仓库读权限
+// 时，写操作一律 401（默认安全，绝不匿名放行写）。
+
+// 转义正则元字符，防止仓库名中的特殊字符破坏匹配
+function regexEscape(s) {
+	return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function sha512(text) {
+	const buf = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(String(text)));
+	return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 与 EO verifyPassword 同口径：有盐按 sha512(salt+明文)，旧无盐按 sha512(明文)
+async function verifyPassword(account, plain) {
+	if (!account || typeof account.password !== 'string') return { ok: false };
+	if (account.salt) {
+		return { ok: (await sha512(String(account.salt) + String(plain))) === account.password };
+	}
+	const ok = /^[0-9a-f]{128}$/i.test(account.password) && (await sha512(plain)) === account.password;
+	return { ok };
+}
+
+// 读取 user.json（实例级 60s 缓存，避免分片上传的每次写都回源）
+let cfUsersCache = { at: 0, users: null };
+const CF_USERS_CACHE_TTL = 60 * 1000;
+async function readUsersFile(env) {
+	const tk = env && (env.GITHUB_TOKEN || env.TOKEN);
+	const repo = env && env.USER_REPO;
+	const branch = (env && env.BRANCH) || 'main';
+	if (!tk || !repo) return null;
+	if (cfUsersCache.users && Date.now() - cfUsersCache.at < CF_USERS_CACHE_TTL) {
+		return cfUsersCache.users;
+	}
+	try {
+		const res = await fetch('https://api.github.com/repos/' + repo + '/contents/user.json?ref=' + branch, {
+			headers: {
+				'Authorization': 'Bearer ' + tk,
+				'User-Agent': 'cloud-cf-worker',
+				'Accept': 'application/vnd.github+json'
+			}
+		});
+		if (!res.ok) return null;
+		const file = await res.json();
+		const text = atob(String(file.content || '').replace(/\s+/g, ''));
+		const users = JSON.parse(text);
+		cfUsersCache = { at: Date.now(), users };
+		return users;
+	} catch (e) {
+		return null;
+	}
+}
+
+// 校验写操作凭据；返回 { ok, status, error }
+async function verifyLoginAuth(env, reqHeaders) {
+	const username = (reqHeaders.get('X-Auth-User') || '').trim();
+	const password = reqHeaders.get('X-Auth-Pass') || '';
+	if (!username || !password) {
+		return { ok: false, status: 401, error: 'Login required (X-Auth-User / X-Auth-Pass)' };
+	}
+	const users = await readUsersFile(env);
+	if (!users) {
+		return { ok: false, status: 401, error: 'Auth unavailable (USER_REPO not configured or token lacks read scope)' };
+	}
+	const account = users[username];
+	if (!account || !(await verifyPassword(account, password)).ok) {
+		return { ok: false, status: 401, error: 'Invalid credentials' };
+	}
+	return { ok: true, username };
+}
+
 /** @type {ResponseInit} */
 const PREFLIGHT_INIT = {
 	status: 204,
@@ -166,7 +243,7 @@ async function ipOnlyResponse() {
 // ============================================================
 
 /** 处理 HTTP 请求 */
-function httpHandler(req, pathname, env) {
+async function httpHandler(req, pathname, env) {
 	const reqHdrRaw = req.headers
 
 	// 预检：所有 OPTIONS 请求统一处理，回显浏览器请求的头，兼容性最好
@@ -199,6 +276,34 @@ function httpHandler(req, pathname, env) {
 	}
 	if (urlStr.search(/^https?:\/\//) !== 0) {
 		urlStr = 'https://' + urlStr
+	}
+
+	// 拒绝代理用户数据仓库（防止匿名读取 user.json 等敏感数据）；
+	// user.json 只由本函数服务端校验时读取，永不透传给客户端
+	const userRepo = env && env.USER_REPO;
+	if (userRepo && new RegExp('api\\.github\\.com/repos/' + regexEscape(userRepo) + '(?:/|$)', 'i').test(urlStr)) {
+		return new Response(JSON.stringify({ error: 'forbidden repo' }), {
+			status: 403,
+			headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' }
+		});
+	}
+
+	// 写操作鉴权：api.github.com 的非只读请求（上传/删除等）必须携带有效
+	// 登录凭据（X-Auth-User / X-Auth-Pass 明文密码），否则任何人都能借本
+	// 服务端注入的 token 改写仓库文件。未通过一律 401，默认安全。
+	const isApiWrite = req.method !== 'GET' && req.method !== 'HEAD' &&
+		/^https?:\/\/api\.github\.com(?:\/|$)/i.test(urlStr);
+	if (isApiWrite) {
+		const auth = await verifyLoginAuth(env, reqHdrRaw);
+		if (!auth.ok) {
+			return new Response(JSON.stringify({ error: auth.error }), {
+				status: auth.status,
+				headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' }
+			});
+		}
+		// 明文密码头不转发给 GitHub，避免泄漏到上游日志
+		reqHdrNew.delete('x-auth-user');
+		reqHdrNew.delete('x-auth-pass');
 	}
 
 	// 服务端 Token 注入：配置 GITHUB_TOKEN 环境变量后，api.github.com
@@ -453,7 +558,7 @@ async function githubInterface() {
 				<p>✨ 支持带协议头(https://)或不带的 GitHub 链接，以及 api.github.com 的 REST API</p>
 				<p>🚀 release、archive 使用 cf 加速，blob/raw 走 raw 或 JsDelivr</p>
 				<p>🌐 查询服务器出口 IP（纯文本）：<span class="url-part">/ip</span></p>
-				<p>🔑 配置 GITHUB_TOKEN 环境变量后，api.github.com 请求在服务端注入鉴权（支持写操作）</p>
+				<p>🔑 配置 GITHUB_TOKEN + USER_REPO 后，api.github.com 读请求服务端注入鉴权；写操作（上传/删除）还需携带登录凭据（X-Auth-User / X-Auth-Pass）</p>
 				<p>⚠️ 注意：暂不支持文件夹下载</p>
 			</div>
 			<div class="example">

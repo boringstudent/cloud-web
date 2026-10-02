@@ -502,14 +502,18 @@ function probeCfUpload(cb) {
     var xhr = new XMLHttpRequest();
     xhr.open('PUT', cfApiUrl('.cf-write-probe'), true);
     xhr.setRequestHeader('Content-Type', 'application/json');
+    // 探测也带登录凭据：新版 cf-worker 对写操作做用户校验，不带凭据必被 401
+    applyEoAuth(xhr);
     xhr.onload = function() {
         // 仅 400/422 才算可写：鉴权通过、仅因请求体无效被拒；
         // 未鉴权的写请求 GitHub 对公开仓库返回 404（而非 401/403），不能误判为可用
         cfUploadState = xhr.status === 400 || xhr.status === 422;
-        // 诊断：新版 cf-worker 注入 key 后响应带 x-cf-auth-injected 标记——
-        // 401 且无标记 = CF 未配置 GITHUB_TOKEN 或未部署新版；401 且有标记 = key 无效/无权限
+        // 诊断：401 = CF 侧写操作鉴权未通过（未登录 / 未配置 USER_REPO /
+        // token 无用户仓库读权限 / 凭据无效）；401 且带标记 = key 无效或无写权限
         if (cfUploadState) {
             cfUploadHint = '';
+        } else if (xhr.status === 401) {
+            cfUploadHint = 'CF 侧写操作鉴权未通过（检查 USER_REPO 配置与 token 用户仓库读权限）';
         } else if (xhr.getResponseHeader('x-cf-auth-injected') === '1') {
             cfUploadHint = 'CF 服务端 key 无效或无仓库写权限（请检查 GITHUB_TOKEN 配置）';
         } else {
@@ -10474,7 +10478,9 @@ function putBlobToGitHub(base64Content, onSuccess, onError, onProgress, retries,
     var url = gitApiUrl('/git/blobs', chan === 'cf');
     var xhr = new XMLHttpRequest();
     xhr.open('POST', url, true);
-    if (chan === 'eo') applyEoAuth(xhr);
+    // CF 通道同样携带登录凭据头：CF 服务端对写操作做与 EO 同口径的用户校验，
+    // 未登录/凭据无效会被 401 拒绝（不再允许任何人借 CF 注入的 token 上传）
+    if (chan === 'eo' || chan === 'cf') applyEoAuth(xhr);
     xhr.setRequestHeader('Content-Type', 'application/json');
     // 不使用固定超时：大分片在慢上行链路上健康传输也会超过 60s，固定超时
     // 会把正常传输误判为挂起，反复"状态码 0"重试永远传不完；
